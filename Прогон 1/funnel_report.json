@@ -1,0 +1,14 @@
+{
+  "source": "telemetry_rebuilt.sqlite (rebuilt from run #1 CSVs)",
+  "candidates": 411,
+  "security_pass": 236,
+  "entry_state": 236,
+  "chain": "candidates=411 -> security_pass=236 -> birth_reject=102 -> no_live_momentum=30 -> momentum_too_late=75 -> admits=29 -> opened=26 -> cash_below_slot=3",
+  "pass_if_cap": {"pass_if_cap_1": 9, "pass_if_cap_2.5": 29, "pass_if_cap_4": 43, "pass_if_cap_12": 103},
+  "opened": {"portfolio_a": 26, "portfolio_b": 16},
+  "a_only": {
+    "fail_risk": {"mints": 4, "reasons": {"creator_burst_activity": 3, "creator_history_too_short": 1}, "pnl_leg_sum_rub": -136.34},
+    "unavailable": {"mints": 8, "reasons": {"creator_history_too_short": 5, "creator_token_ata_missing": 3}, "pnl_leg_sum_rub": -321.48}
+  },
+  "pnl": {"portfolio_a": -1035.56, "portfolio_b": -672.77}
+}
