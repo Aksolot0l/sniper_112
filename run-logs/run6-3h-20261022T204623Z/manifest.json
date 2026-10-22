@@ -74,7 +74,7 @@
     "decision_rule": "B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples); shadow_no_trail beats A iff >= +6 RUB with a CI excluding 0; several comparisons -> exploratory, Bonferroni alpha 0.0125",
     "expected_sign": "negative for both arms; B less negative"
   },
-  "status": "running",
+  "status": "completed",
   "early_stop_reason": null,
   "created_at_utc": "2026-10-22T20:46:25+00:00",
   "planned_duration_sec": 10800,
@@ -537,5 +537,238 @@
   "started_at_utc": "2026-10-22T20:46:25+00:00",
   "pumpportal_fast_source": true,
   "helius_program_fallback": false,
-  "sources": "pumpfun"
+  "sources": "pumpfun",
+  "ended_at_utc": "2026-10-22T23:46:29+00:00",
+  "actual_duration_sec": 10803.483,
+  "external_stop_reason": null,
+  "run_error_type": null,
+  "rpc_metrics": {
+    "rpc_method": "getMultipleAccounts",
+    "requests": 27724,
+    "logical_requests": 30300,
+    "batch_groups": 27418,
+    "failed_requests": 0,
+    "http_429_count": 222,
+    "retry_count": 222,
+    "unrecovered_failures": 0,
+    "unrecovered_rate": 0.0,
+    "requests_per_sec": 2.567,
+    "recovered_failures": 222,
+    "accounts_requested": 50808,
+    "null_accounts": 192,
+    "null_retries": 124,
+    "latency_ms_median": 43.59,
+    "latency_ms_p95": 83.16,
+    "latency_samples": 20000,
+    "error_types": {
+      "http_429": 222
+    },
+    "requests_per_profile": {
+      "portfolio_a": 1660,
+      "portfolio_b": 4380,
+      "shadow_gate": 159,
+      "shadow_no_trail": 786
+    },
+    "shadow_poll_dropped": 3424,
+    "shadow_poll_every_cycles": 5,
+    "shadow_poll_hz": 0.5
+  },
+  "portfolio_summary_file": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run6-3h-20261022T204623Z/ab_summary.json",
+  "telemetry": {
+    "dropped_events": 0,
+    "write_errors": 0,
+    "writer_error": null,
+    "failed": false
+  },
+  "funnel": {
+    "available": true,
+    "db": "telemetry.sqlite",
+    "candidates": 3812,
+    "security_pass": 2061,
+    "entry_state": 2061,
+    "portfolio_a_signal": {
+      "birth_out_of_band": 1201,
+      "live_momentum_entry": 167,
+      "momentum_too_late": 416,
+      "no_live_momentum": 277
+    },
+    "portfolio_b_signal": {
+      "birth_out_of_band": 1201,
+      "live_momentum_entry": 167,
+      "momentum_too_late": 416,
+      "no_live_momentum": 277
+    },
+    "opened": {
+      "portfolio_a": 167,
+      "portfolio_b": 166
+    },
+    "entry_skips": {
+      "portfolio_a": {},
+      "portfolio_b": {
+        "three_slots_already_open_or_pending": 1
+      }
+    },
+    "delta_buckets": {
+      "0": 1129,
+      "0.1-1": 243,
+      "1-2.5": 117,
+      "2.5-4": 147,
+      "4-12": 356,
+      ">12": 69
+    },
+    "pass_if_cap": {
+      "pass_if_cap_1": 91,
+      "pass_if_cap_12": 528,
+      "pass_if_cap_2.5": 167,
+      "pass_if_cap_3": 184,
+      "pass_if_cap_4": 281
+    },
+    "dev_buy_presence": {
+      "bought": 1668,
+      "unknown": 393
+    },
+    "chain": "candidates=3812 -> security_pass=2061 -> birth_reject=1201 -> no_live_momentum=277 -> momentum_too_late=416 -> admits=167 -> opened=167 -> cash_below_slot=0",
+    "admitted_by_current_cap": 167,
+    "gate_status": {
+      "fail_history": 53,
+      "fail_risk": 20,
+      "pass": 51,
+      "unavailable": 43
+    },
+    "gate_reasons": {
+      "creator_history_too_short": 67,
+      "creator_burst_activity": 25,
+      "creator_token_ata_missing": 21,
+      "creator_history_unavailable": 2,
+      "creator_repeat_deploy_in_session": 1
+    },
+    "probe_identity": {
+      "pump_curve_creator": 126,
+      "pumpportal_event_actor": 41
+    },
+    "a_only": {
+      "unavailable": {
+        "mints": 1,
+        "reasons": {
+          "creator_token_ata_missing": 1
+        },
+        "pnl_leg_sum_rub": -63.18
+      }
+    },
+    "security_fail_total": 1634,
+    "security_fail_observed": 469,
+    "security_fail_observed_share": 0.287,
+    "security_fail_rockets": 0,
+    "security_fail_rocket_share": 0.0,
+    "security_fail_reasons": {
+      "mint authority отозван — допечатать нельзя": 455,
+      "не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован": 14
+    },
+    "security_fail_skipped_deep": 0,
+    "observation_timing": {
+      "0": {
+        "rows": 3695,
+        "within_250ms": 3695,
+        "share": 1.0
+      },
+      "5": {
+        "rows": 3693,
+        "within_250ms": 3605,
+        "share": 0.9762
+      },
+      "10": {
+        "rows": 3691,
+        "within_250ms": 3585,
+        "share": 0.9713
+      },
+      "15": {
+        "rows": 3689,
+        "within_250ms": 3585,
+        "share": 0.9718
+      },
+      "60": {
+        "rows": 3675,
+        "within_250ms": 3609,
+        "share": 0.982
+      },
+      "120": {
+        "rows": 3652,
+        "within_250ms": 3619,
+        "share": 0.991
+      }
+    },
+    "observation_status": {
+      "cancelled_at_session_end": 75,
+      "no_price": 9151,
+      "ok": 12944
+    },
+    "cancelled_observations": 75,
+    "cancelled_excluded_from_stats": true,
+    "excluded_observations": 75,
+    "error_detail_coverage": {
+      "probes": 3674,
+      "failed": 915,
+      "with_detail": 915,
+      "share": 1.0
+    }
+  },
+  "creator_gate": {
+    "status_counts": {
+      "fail_history": 53,
+      "fail_risk": 20,
+      "pass": 51,
+      "unavailable": 43
+    },
+    "reason_counts": {
+      "creator_burst_activity": 25,
+      "creator_history_too_short": 67,
+      "creator_history_unavailable": 2,
+      "creator_repeat_deploy_in_session": 1,
+      "creator_token_ata_missing": 21
+    },
+    "probe_identity_counts": {
+      "pump_curve_creator": 126,
+      "pumpportal_event_actor": 41
+    },
+    "unavailable_share": 0.2575
+  },
+  "stop_policy": {
+    "reason": null,
+    "telemetry": {
+      "dropped_events": 0,
+      "write_errors": 0
+    },
+    "rpc": {
+      "window_requests": 1310,
+      "window_failed_attempts": 0,
+      "window_unrecovered": 0,
+      "unrecovered_rate": 0.0,
+      "raw_error_rate": 0.0
+    },
+    "stall": {
+      "portfolio_a": {
+        "sec_without_entry": 5.9,
+        "entry_state_since_last_entry": 2
+      },
+      "portfolio_b": {
+        "sec_without_entry": 5.9,
+        "entry_state_since_last_entry": 2
+      }
+    },
+    "resources": {
+      "disk_free_bytes": 21338697728,
+      "disk_free_gb": 19.873,
+      "helius_quota_remaining_pct": null
+    },
+    "thresholds": {
+      "rpc_error_rate": 0.02,
+      "rpc_window_sec": 600.0,
+      "rpc_latency_ms": 1000.0,
+      "rpc_latency_hold_sec": 300.0,
+      "stall_sec": 1800.0,
+      "disk_free_gb": 2.0,
+      "helius_quota_pct": 10.0
+    },
+    "pnl_never_stops_the_run": true
+  }
 }

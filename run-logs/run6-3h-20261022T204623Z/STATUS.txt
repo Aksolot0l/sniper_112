@@ -1,18 +1,18 @@
 run_id: run6-3h-20261022T204623Z
-snapshot_utc: 2026-10-22T23:36:55Z
-mode: light
-run_dir_size: 110M
-opens: 492
-closes: 490
-[23:36:22] 👁️ Новая монета: E3r8imFoRs7NgHXZniFTVHDpDDLNe9ETrnFykVvituK8 (Pump.fun | FITGIRL)
-[23:36:22] 🛑 E3r8…tuK8 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[23:36:31] 👁️ Новая монета: 2HS1r26U7jjLX5A3hDCX4Ap22UN5pF1LyqhAkaECpump (Pump.fun | MMPS)
-[23:36:32] 👁️ Новая монета: DMAnRNpug1qeT5dK4KsWYJbohDkdZR8DCGJWpMqPpump (Pump.fun | V4)
-[23:36:32] 🧪 [portfolio_a] OPEN DMAn…pump | birth=30.99 now=31.79 delta=+0.81 SOL | cost≈500.00 ₽ | tokens(out)=1689543137284 | fee=95+30 bps | slots=1/3
-[23:36:32] 🧪 [portfolio_b] OPEN DMAn…pump | birth=30.99 now=31.79 delta=+0.81 SOL | cost≈500.00 ₽ | tokens(out)=1689543137284 | fee=95+30 bps | slots=1/3
-[23:36:32] 🧪 [shadow_no_trail] OPEN DMAn…pump | birth=30.99 now=31.79 delta=+0.81 SOL | cost≈500.00 ₽ | tokens(out)=1689543137284 | fee=95+30 bps | slots=1/1
-[23:36:34] 👁️ Новая монета: 42aHkpDYJy423VZjNz2sMnT6BQaUDzfw4SccJAsQpump (Pump.fun | FITGIRL)
-[23:36:37] ✅ [portfolio_a] CLOSE DMAn…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-39.48 ₽ (-7.9%) | cash=1952.65 ₽
-[23:36:38] 👁️ Новая монета: CKBrjhGPi8jZoEhL8v5EWYFJshx6VF5rSATknMY3pump (Pump.fun | awd)
-[23:36:38] 👁️ Новая монета: 6XTt42YkVAUxL1Ee3c48Kep6LuuJGE7NGgssegFvgTkz (Pump.fun | RUGD)
-[23:36:39] 🛑 CKBr…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_supply_outside_standard_range (2000000000000000; expected 990000000000000..1000000000000000); pump_supply_mismatch_curve_token_total_supply (mint=2000000000000000, curve=1000000000000000); Pump.fun: кривая торгуется только за SOL; pump_mayhem_mode_excluded
+snapshot_utc: 2026-10-22T23:47:29Z
+mode: full
+run_dir_size: 191M
+opens: 524
+closes: 522
+[23:46:15] 👁️ Новая монета: FfRATGCsj7TdMjWpFRoY3wXZqU1848XmpUVJpdVDapdm (Pump.fun | FAUCET)
+[23:46:19] 👁️ Новая монета: CzYYDpumT8R7saqSeArLLrmcxWNV6hAkb1viPmRmoYtm (Pump.fun | CI)
+[23:46:19] 🛑 CzYY…oYtm — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB)
+[23:46:19] 👁️ Новая монета: 3ookPAJPBHqQgp7AqaTLV27W3sMbbicsGrzrPsMapump (Pump.fun | PAYOLA)
+[23:46:19] 🧪 [portfolio_a] OPEN 3ook…pump | birth=31.00 now=31.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=1729649897054 | fee=95+30 bps | slots=1/3
+[23:46:19] 🧪 [portfolio_b] OPEN 3ook…pump | birth=31.00 now=31.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=1729649897054 | fee=95+30 bps | slots=1/3
+[23:46:19] 🧪 [shadow_no_trail] OPEN 3ook…pump | birth=31.00 now=31.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=1729649897054 | fee=95+30 bps | slots=1/1
+[23:46:24] 👁️ Новая монета: GwjzgfKs3CqRunmZpVL4rdTj2HJ5LXPy54KeEHx6pump (Pump.fun | GTC)
+[23:46:24] 👁️ Новая монета: 8h5tDLCGKKuW7qL1UXoTdbPgWqatGVHWHGX1xbRMpump (Pump.fun | GTC)
+[23:46:25] ✅ [portfolio_a] CLOSE 3ook…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-12.38 ₽ (-2.5%) | cash=1748.61 ₽
+[23:46:29] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run6-3h-20261022T204623Z/SUMMARY.md
+[23:46:29] ⏹ A/B run finalized: run6-3h-20261022T204623Z; open and pending positions remain separately recorded.
