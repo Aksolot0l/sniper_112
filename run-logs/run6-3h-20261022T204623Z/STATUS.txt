@@ -1,18 +1,18 @@
 run_id: run6-3h-20261022T204623Z
-snapshot_utc: 2026-10-22T21:15:46Z
+snapshot_utc: 2026-10-22T21:44:01Z
 mode: light
-run_dir_size: 24M
-opens: 55
-closes: 55
-[21:15:12] 👁️ Новая монета: DUYcGM9FP5TvTaAy768EiQudCVKH5N9d8tq2JhFUGmNX (Pump.fun | CNCADE)
-[21:15:12] 👁️ Новая монета: GxnyuJ4crDTbMEAUiTJrvmvzoLoWEZKpR8LWFnTxpnt4 (Pump.fun | CNCADE)
-[21:15:12] 👁️ Новая монета: EmvNx57oEuKy7ttL2yhkfVJG9iQ7cc1cj1bLTpHnv99C (Pump.fun | CNCADE)
-[21:15:12] 👁️ Новая монета: 2X7iAZHsAig7kdmvt7fJFVHham4kajxYy5e56TH3Xc5m (Pump.fun | BILLY)
-[21:15:12] 🛑 DUYc…GmNX — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
-[21:15:12] 🛑 Gxny…pnt4 — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
-[21:15:12] 🛑 EmvN…v99C — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
-[21:15:12] 🛑 2X7i…Xc5m — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
-[21:15:15] 👁️ Новая монета: 95u9Gnwg7ftrsD4vxgmjJriCHk4z6whauPLpPzHgSvph (Pump.fun | JANE)
-[21:15:15] 🛑 95u9…Svph — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF)
-[21:15:16] 👁️ Новая монета: 4YUYp1biP2aTJYKqPjpe1pAKAaYLfqMLZtZ7CExiMehg (Pump.fun | HYPER)
-[21:15:16] 🛑 4YUY…Mehg — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (98sMhvDwXj1RQi5c5Mndm3vPe9cBqPrbLaufMXFNMh5g)
+run_dir_size: 40M
+opens: 143
+closes: 139
+[21:42:56] 👁️ Новая монета: EXBSGKEzasapA5iVu5VQhANXQjHqDNRpB9KACBPXpump (Pump.fun | GR3G)
+[21:42:57] 👁️ Новая монета: 6AWFmvuBBHSpKaaSjPc8tzEMr43kiGBd2Tr26nqjEdKW (Pump.fun | JUDGE)
+[21:42:57] 🛑 6AWF…EdKW — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[21:42:58] 👁️ Новая монета: FpUN16QcvAvvzkoCn4psNXsHmkjHrtDNF9ZegpwznVJA (Pump.fun | NPN)
+[21:42:58] 🛑 FpUN…nVJA — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[21:43:00] 👁️ Новая монета: nsDiRcVxUt3hZNsx1nVqic92YNBaQkKMfrrPEunpump (Pump.fun | CENTED)
+[21:43:00] 🧪 [portfolio_a] OPEN nsDi…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1664094559122 | fee=95+30 bps | slots=1/3
+[21:43:00] 🧪 [portfolio_b] OPEN nsDi…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1664094559122 | fee=95+30 bps | slots=1/3
+[21:43:00] 🧪 [shadow_gate] OPEN nsDi…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1664094559122 | fee=95+30 bps | slots=1/1
+[21:43:00] 🧪 [shadow_no_trail] OPEN nsDi…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1664094559122 | fee=95+30 bps | slots=1/1
+[21:43:03] 👁️ Новая монета: 96gSzf34SMapY1Jxzfhe8c4gNborJJictKXYRtMQpump (Pump.fun | vpnizen)
+[21:43:03] 🛑 96gS…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_supply_outside_standard_range (2000000000000000; expected 990000000000000..1000000000000000); pump_supply_mismatch_curve_token_total_supply (mint=2000000000000000, curve=1000000000000000); Pump.fun: кривая торгуется только за SOL; pump_mayhem_mode_excluded
