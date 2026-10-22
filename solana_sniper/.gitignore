@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+wallet.json
+trades.log
+sniper.db
+*.zip

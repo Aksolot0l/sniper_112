@@ -1,0 +1,468 @@
+"""Run isolated A/B-only Pump.fun paper portfolios; never signs/sends trades."""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import signal
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import aiohttp
+
+from config import load_settings
+from console import Color, log
+from creator_probe import CreatorOnchainProbe
+from creator_watch import CreatorWatch
+from detector import (
+    PUMP_PROGRAM_ID,
+    detector_worker,
+    probe_pumpportal,
+    pumpportal_listener,
+    select_programs,
+)
+from portfolio_ab import ABPaperSimulator
+from price import (
+    ReadOnlyRpcBatcher,
+    get_sol_usd,
+    reset_rpc_metrics,
+    set_rpc_batcher,
+)
+from storage import storage_worker
+from telemetry import CandidateCollector, set_collector
+from ws_client import ws_listener
+
+
+RUN_DURATION_SEC_DEFAULT = 3600
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def _observation_offsets() -> tuple[int, ...]:
+    raw = os.getenv('TELEMETRY_OBSERVATION_OFFSETS_SEC', '0,5,10,15,60,120')
+    try:
+        values = sorted({int(part.strip()) for part in raw.split(',') if part.strip()})
+        values = [value for value in values if value >= 0]
+        return tuple(values) if values else (0, 5, 10, 15, 60, 120)
+    except (TypeError, ValueError):
+        return (0, 5, 10, 15, 60, 120)
+
+
+def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
+    common = {
+        'initial_balance_rub': 1500,
+        'position_size_rub': 500,
+        'max_slots': 3,
+        'entry': (
+            '30.5 <= v_sol_birth <= 50.0 and '
+            '0.10 <= (v_sol_now - v_sol_birth) <= 12.0'
+        ),
+        'entry_note': (
+            'live-momentum band replaces the 2026-10 anti-filter '
+            '(v_sol_now <= v_sol_birth + 0.8 rejected every real runner '
+            'and bought dead delta==0 decoys)'
+        ),
+        'stop_loss': 'before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%',
+        'tp1': 'when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable',
+        'rocket_bypass': 'at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half',
+        'trailing': 'once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct',
+        'shelf_stagnation': 'sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s',
+        'no_progress': 'once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once',
+        'peak_timestamp_update': 'update only when pnl_pct >= best_pnl_pct + 0.4 percentage points',
+        'timeout_before_trailing_sec': 35,
+        'timeout_after_trailing_sec': 90,
+    }
+    return {
+        'run_id': run_id,
+        'status': 'starting',
+        'early_stop_reason': None,
+        'created_at_utc': _utc_now(),
+        'planned_duration_sec': int(os.getenv('RUN_DURATION_SEC', RUN_DURATION_SEC_DEFAULT)),
+        'paper_only': True,
+        'signed_transactions': 0,
+        'submitted_transactions': 0,
+        'portfolio_scope': ['portfolio_a', 'portfolio_b'],
+        'strategies': {
+            'portfolio_a': {**common, 'creator_probe': 'telemetry_only; no entry gate'},
+            'portfolio_b': {**common, 'creator_gate': 'signature_count_0_25 == 25 AND ata_exists AND token_balance_raw > 0'},
+        },
+        'rpc': {
+            'provider': 'Helius',
+            'http_host': urlsplit(settings.http_rpc_url).hostname,
+            'wss_host': urlsplit(settings.wss_url).hostname,
+            'methods': ['getMultipleAccounts', 'getSignaturesForAddress', 'getTokenAccountsByOwner'],
+            'read_only': True,
+            'credentials_stored': False,
+            'http_shadows_enabled': False,
+            'candidate_entry_batch_accounts': ['mint', 'curve', 'PUMP_GLOBAL_PDA', 'PUMP_FEE_CONFIG_PDA'],
+            'candidate_entry_batch_commitment': 'processed',
+            'null_retry': 'one retry after 120 ms',
+            'latency_policy': 'measure actual latency/errors; no SLA or coverage promise',
+        },
+        'fees': {
+            'source': 'on-chain Pump Global + FeeConfig; quote fills use SDK integer math',
+            'entry_network_fee_sol_model': settings.entry_fee_sol,
+            'exit_network_fee_sol_model_per_sell': settings.exit_fee_sol,
+            'network_fees_are_simulation_assumptions': True,
+            'on_chain_curve_fees': 'included in out_amount_raw; reported separately from network fees',
+            'unsupported_or_unknown': 'fail closed',
+        },
+        'filters': {
+            'sources': 'pumpfun', 'standard_supply': True, 'is_mayhem': False,
+            'quote_mint': 'SOL/WSOL only', 'mint_authority_revoked': True,
+            'freeze_authority_revoked': True, 'duplicate_symbol_gate': False,
+            'creator_history_policy': 'advisory telemetry/warnings only',
+            'portfolio_a_creator_gate': False,
+            'portfolio_b_creator_gate': 'signature_count_0_25 == 25 AND derived ATA exists AND ATA token balance > 0',
+            'creator_probe_failures': 'fail closed for B; do not gate A',
+        },
+        'observations_sec': list(_observation_offsets()),
+        'observation_policy': 'scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun',
+        'accounting': {
+            'snapshot_fill': 'out_amount_raw',
+            'conservative_shadow': 'min_out_raw at QUOTE_SLIPPAGE_BPS=100',
+            'quote_slippage_bps': 100,
+            'gross_curve_pnl_rub': 'realized snapshot PnL before modeled network fees; on-chain curve fee remains embedded in quote output',
+            'network_fees': 'tracked separately; deducted from realized returns and shown as open fee liability',
+            'usd_rub_rate': settings.usd_rub_rate,
+        },
+        'wallet_state_files': [
+            str(run_dir / 'wallet_portfolio_a.json'),
+            str(run_dir / 'wallet_portfolio_b.json'),
+        ],
+        'data_files': {
+            'sniper_db': str(run_dir / 'sniper.db'),
+            'telemetry_db': str(run_dir / 'telemetry.sqlite'),
+            'exports': str(run_dir / 'exports'),
+        },
+        'api_key_or_rpc_url_with_query': False,
+    }
+
+
+async def main() -> None:
+    settings = load_settings()
+    loop = asyncio.get_running_loop()
+    external_stop = asyncio.Event()
+    installed_signals: list[signal.Signals] = []
+    try:
+        loop.add_signal_handler(signal.SIGTERM, external_stop.set)
+        installed_signals.append(signal.SIGTERM)
+    except (NotImplementedError, RuntimeError, ValueError):
+        pass
+    run_id = os.getenv('RUN_ID', '').strip()
+    run_dir_raw = os.getenv('RUN_DIR', '').strip()
+    if not run_id or not run_dir_raw or not re.fullmatch(r'[A-Za-z0-9._-]+', run_id):
+        raise SystemExit('RUN_ID and RUN_DIR are required and RUN_ID must be path-safe.')
+    project_root = Path(__file__).resolve().parent
+    runs_root = (project_root / 'runs').resolve()
+    run_dir = Path(run_dir_raw).resolve()
+    if run_dir.parent != runs_root or run_dir.name != f'rocket2-ab-paper-{run_id}':
+        raise SystemExit('RUN_DIR must be the unique project runs/rocket2-ab-paper-<RUN_ID> archive.')
+    if not run_dir.is_dir():
+        raise SystemExit('RUN_DIR must already exist and be unique for this run.')
+    if (run_dir / 'manifest.json').exists():
+        raise SystemExit('RUN_DIR already has a manifest; refusing to overwrite an archive.')
+    for existing in run_dir.iterdir():
+        if existing.name == 'exports' and existing.is_dir() and not any(existing.iterdir()):
+            continue
+        # Files written by our own local runner before/while the bot starts.
+        if existing.name in {
+            'preflight_tests.log', 'run.log', 'supervisor_heartbeat.json',
+            'supervisor_heartbeat.tmp',
+        } and existing.is_file():
+            continue
+        raise SystemExit('RUN_DIR contains unexpected preexisting files; refusing to overwrite an archive.')
+    if not settings.api_key:
+        raise SystemExit('HELIUS_API_KEY is not present in the process environment; no RPC/run started.')
+    rpc_host = (urlsplit(settings.http_rpc_url).hostname or '').lower()
+    if 'helius' not in rpc_host:
+        raise SystemExit('The configured HTTP RPC host is not Helius; no RPC/run started.')
+    if settings.sources.strip().lower() != 'pumpfun':
+        raise SystemExit('SOURCES must be exactly pumpfun for the isolated A/B run.')
+    if settings.deposit_rub != 1500 or settings.max_positions != 3 or settings.max_trade_rub != 500:
+        raise SystemExit('A/B wallet sizing must be 1,500 ₽ with 3 slots × 500 ₽.')
+    if settings.honeypot_check:
+        raise SystemExit('HTTP shadow/honeypot quote checks must be disabled for this run.')
+    if os.getenv('PAPER_ONLY', '1').strip() != '1':
+        raise SystemExit('PAPER_ONLY must remain enabled.')
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _safe_manifest(settings, run_id, run_dir)
+    _write_json(run_dir / 'manifest.json', manifest)
+    reset_rpc_metrics()
+
+    creator_history_raw = os.getenv('CREATOR_HISTORY_DIR', str(project_root / 'runs'))
+    creator_history_dir = Path(creator_history_raw)
+    if not creator_history_dir.is_absolute():
+        creator_history_dir = project_root / creator_history_dir
+    blocklist_raw = os.getenv('CREATOR_BLOCKLIST_PATH', str(creator_history_dir / 'known_scam_sellers.txt'))
+    blocklist_path = Path(blocklist_raw)
+    if not blocklist_path.is_absolute():
+        blocklist_path = project_root / blocklist_path
+    creator_watch = CreatorWatch(creator_history_dir, blocklist_path)
+    try:
+        history = await asyncio.to_thread(creator_watch.load_history)
+        log(
+            '👤 Creator history loaded: '
+            f"wallets={history.get('creator_wallets', 0)}, "
+            f"repeats={history.get('repeat_creator_wallets', 0)}, "
+            f"files={history.get('files_scanned', 0)}; telemetry/warn-only.",
+            Color.CYAN,
+        )
+    except Exception as exc:
+        log(f'⚠️ Creator history unavailable ({type(exc).__name__}); probes remain non-blocking.', Color.YELLOW)
+
+    telemetry_path = Path(os.getenv('TELEMETRY_DB_PATH', str(run_dir / 'telemetry.sqlite')))
+    export_path = Path(os.getenv('TELEMETRY_EXPORT_DIR', str(run_dir / 'exports')))
+    collector = CandidateCollector(
+        str(telemetry_path), str(export_path),
+        shadow_notional_rub=0.0,
+        observation_offsets_sec=_observation_offsets(),
+        creator_watch=creator_watch,
+        enable_shadow_quotes=False,
+    )
+    await collector.start()
+    set_collector(collector)
+    collector.record_meta('run_id', run_id)
+    collector.record_meta('portfolio_scope', ['portfolio_a', 'portfolio_b'])
+    collector.record_meta('shadow_quotes_enabled', False)
+    collector.record_meta('paper_only', True)
+    collector.record_meta('rpc_host', rpc_host)
+
+    pump_fast = False
+    programs = select_programs(settings.sources)
+    if settings.pump_source == 'pumpportal':
+        pump_fast = await probe_pumpportal()
+        if pump_fast:
+            programs = {pid: name for pid, name in programs.items() if pid != PUMP_PROGRAM_ID}
+        else:
+            log('⚠️ PumpPortal unavailable; falling back to Helius Pump.fun program logs (read-only).', Color.YELLOW)
+
+    connector = aiohttp.TCPConnector(limit=100, ttl_dns_cache=300)
+    trades_queue: asyncio.Queue = asyncio.Queue()
+    coins_queue: asyncio.Queue = asyncio.Queue(maxsize=10_000)
+    watch_stop = asyncio.Event()
+    candidate_tasks: set[asyncio.Task] = set()
+    storage_task: asyncio.Task | None = None
+    producers: list[asyncio.Task] = []
+    candidate_worker_task: asyncio.Task | None = None
+    creator_probe: CreatorOnchainProbe | None = None
+    simulator: ABPaperSimulator | None = None
+    batcher: ReadOnlyRpcBatcher | None = None
+    run_error: Optional[str] = None
+    external_stop_reason: Optional[str] = None
+    actual_start_epoch = time.time()
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+        batcher = ReadOnlyRpcBatcher(
+            session, settings.http_rpc_url,
+            flush_window_sec=float(os.getenv('RPC_BATCH_WINDOW_SEC', '0.008')),
+        )
+        batcher.start()
+        set_rpc_batcher(batcher)
+        try:
+            sol_usd = await asyncio.wait_for(get_sol_usd(session), timeout=12.5)
+            if sol_usd and sol_usd > 0:
+                log(f'📈 SOL/USD conversion ready (${sol_usd:.2f}); USD/RUB={settings.usd_rub_rate:.2f}.', Color.DIM)
+            else:
+                log('⚠️ SOL/USD unavailable; entries remain fail-closed.', Color.YELLOW)
+        except asyncio.TimeoutError:
+            log('⚠️ SOL/USD warm-up exceeded 12.5s; entries remain fail-closed until available.', Color.YELLOW)
+
+        creator_probe = CreatorOnchainProbe(
+            session, settings.http_rpc_url, timeout_sec=0.35,
+            concurrency=2,
+            signature_cache_sec=settings.creator_cache_ttl_sec,
+            guard_min_signatures=settings.creator_guard_min_sig,
+            burst_window_sec=settings.creator_burst_window_sec,
+        )
+        simulator = ABPaperSimulator(
+            session, settings, run_id, run_dir, trades_queue,
+            creator_watch, creator_probe,
+        )
+        storage_task = asyncio.create_task(storage_worker(trades_queue, settings.db_path), name='ab-trade-storage')
+
+        try:
+            await simulator.start()
+            collector.record_meta('run_started_at_utc', _utc_now())
+            collector.record_meta('rpc_preflight_host', rpc_host)
+            manifest.update({
+                'status': 'running',
+                'started_at_utc': _utc_now(),
+                'pumpportal_fast_source': pump_fast,
+                'helius_program_fallback': not pump_fast,
+                'sources': 'pumpfun',
+            })
+            _write_json(run_dir / 'manifest.json', manifest)
+
+            requested_duration = max(0, int(os.getenv('RUN_DURATION_SEC', str(RUN_DURATION_SEC_DEFAULT))))
+            deadline_raw = os.getenv('OVERNIGHT_RUN_DEADLINE_EPOCH', '').strip()
+            if deadline_raw:
+                try:
+                    deadline_remaining = max(0, int(float(deadline_raw) - time.time()))
+                except (TypeError, ValueError, OverflowError):
+                    deadline_remaining = 0
+                duration = min(requested_duration, deadline_remaining)
+            else:
+                duration = requested_duration
+            if duration < 1:
+                raise RuntimeError('session_deadline_elapsed_before_run')
+
+            async def candidate_worker() -> None:
+                while True:
+                    coin = await coins_queue.get()
+                    try:
+                        try:
+                            collector.observe_candidate(coin, session, settings)
+                        except Exception as exc:
+                            log(f'⚠️ Telemetry candidate enqueue failed ({type(exc).__name__}).', Color.YELLOW)
+                        task = asyncio.create_task(simulator.handle_candidate(coin), name=f'ab-candidate-{coin.mint[:8]}')
+                        candidate_tasks.add(task)
+                        task.add_done_callback(candidate_tasks.discard)
+                    finally:
+                        coins_queue.task_done()
+
+            candidate_worker_task = asyncio.create_task(candidate_worker(), name='ab-candidate-worker')
+            # Helius program-log fallback uses a shared event queue. In the
+            # normal PumpPortal path, no other source or strategy is started.
+            if not pump_fast:
+                events_queue: asyncio.Queue = asyncio.Queue()
+                # Replace the placeholder task, if any, with the actual paired workers.
+                producers = []
+                producers.append(asyncio.create_task(
+                    detector_worker(events_queue, coins_queue, session,
+                                    settings.http_rpc_url, watch_stop),
+                    name='ab-helius-detector',
+                ))
+                producers.append(asyncio.create_task(
+                    ws_listener(events_queue, settings, programs, watch_stop),
+                    name='ab-helius-ws-listener',
+                ))
+            if pump_fast:
+                producers.append(asyncio.create_task(
+                    pumpportal_listener(coins_queue, watch_stop), name='ab-pumpportal-listener'
+                ))
+
+            if deadline_raw:
+                duration = min(duration, max(0, int(float(deadline_raw) - time.time())))
+            if duration < 1:
+                raise RuntimeError('session_deadline_elapsed_before_listener_start')
+            actual_start_epoch = time.time()
+            simulator.started_at_epoch = actual_start_epoch
+            manifest['started_at_utc'] = _utc_now()
+            _write_json(run_dir / 'manifest.json', manifest)
+            log(
+                f'▶️ RUN_ID={run_id} started; planned duration={duration}s; '
+                'only portfolio_a + portfolio_b; no signed/submitted transactions.',
+                Color.GREEN,
+            )
+            duration_task = asyncio.create_task(asyncio.sleep(duration), name='ab-run-duration')
+            early_stop_task = asyncio.create_task(simulator.early_stop_event.wait(), name='ab-early-stop-watch')
+            signal_task = asyncio.create_task(external_stop.wait(), name='ab-signal-watch')
+            done, pending = await asyncio.wait(
+                {duration_task, early_stop_task, signal_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            if early_stop_task in done and simulator.early_stop_reason:
+                log(f'⏹ Early stop: {simulator.early_stop_reason}; finalizing this RUN_ID.', Color.YELLOW)
+            elif signal_task in done and external_stop.is_set():
+                external_stop_reason = 'SIGTERM'
+                log('⏹ Session supervisor requested stop; finalizing without synthetic exits.', Color.YELLOW)
+        except asyncio.CancelledError:
+            run_error = 'cancelled'
+            raise
+        except Exception as exc:
+            run_error = type(exc).__name__
+            log(f'❌ A/B run stopped by {run_error}; no transaction was sent.', Color.RED)
+        finally:
+            watch_stop.set()
+            for task in producers:
+                task.cancel()
+            await asyncio.gather(*producers, return_exceptions=True)
+            if candidate_worker_task is not None:
+                try:
+                    await asyncio.wait_for(coins_queue.join(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    pass
+                candidate_worker_task.cancel()
+                await asyncio.gather(candidate_worker_task, return_exceptions=True)
+            if candidate_tasks:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*list(candidate_tasks), return_exceptions=True), timeout=12.0)
+                except asyncio.TimeoutError:
+                    for task in list(candidate_tasks):
+                        task.cancel()
+                    await asyncio.gather(*list(candidate_tasks), return_exceptions=True)
+            summary: dict[str, Any] = {}
+            if simulator is not None:
+                try:
+                    summary = await simulator.close()
+                except Exception as exc:
+                    log(f'⚠️ A/B state save failed ({type(exc).__name__}); no synthetic exit counted.', Color.YELLOW)
+            if creator_probe is not None:
+                try:
+                    await creator_probe.close()
+                except Exception as exc:
+                    log(f'⚠️ Creator probe shutdown ({type(exc).__name__}); probes are non-blocking.', Color.YELLOW)
+            try:
+                await asyncio.wait_for(trades_queue.join(), timeout=5.0)
+            except asyncio.TimeoutError:
+                log('⚠️ Trade DB queue did not fully drain before shutdown.', Color.YELLOW)
+            if storage_task is not None:
+                storage_task.cancel()
+                await asyncio.gather(storage_task, return_exceptions=True)
+            collector.record_meta('rpc_metrics_final', summary.get('rpc_metrics', {}))
+            collector.record_meta('run_error_type', run_error or 'none')
+            collector.record_meta('run_ended_at_utc', _utc_now())
+            await collector.close()
+            set_collector(None)
+            set_rpc_batcher(None)
+            if batcher is not None:
+                await batcher.close()
+            ended = time.time()
+            manifest.update({
+                'status': (
+                    'stopped_with_error' if run_error else
+                    'completed_early' if simulator is not None and simulator.early_stop_reason else
+                    'stopped_by_signal' if external_stop_reason else 'completed'
+                ),
+                'ended_at_utc': _utc_now(),
+                'actual_duration_sec': round(ended - actual_start_epoch, 3),
+                'early_stop_reason': simulator.early_stop_reason if simulator is not None else None,
+                'external_stop_reason': external_stop_reason,
+                'run_error_type': run_error,
+                'rpc_metrics': summary.get('rpc_metrics', {}),
+                'portfolio_summary_file': str(run_dir / 'ab_summary.json'),
+                'signed_transactions': 0,
+                'submitted_transactions': 0,
+            })
+            _write_json(run_dir / 'manifest.json', manifest)
+            log(f'⏹ A/B run finalized: {run_id}; open and pending positions remain separately recorded.', Color.CYAN)
+
+    for installed_signal in installed_signals:
+        loop.remove_signal_handler(installed_signal)
+
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print('\nStopped. Paper-only; no transactions submitted.')
+        sys.exit(0)

@@ -1,0 +1,16 @@
+# virtualenv / артефакты сборки
+.venv/
+__pycache__/
+*.pyc
+
+# данные прогонов и состояние
+solana_sniper/wallet.json
+solana_sniper/sniper.db
+solana_sniper/trades.log
+solana_sniper/runs/
+solana_sniper/log_exports/
+
+# локальные дампы
+*.sqlite
+*.db-wal
+*.db-shm

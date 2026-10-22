@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solana Pump.fun · Paper A/B</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --panel2:#0e141c; --line:#1e2937;
+    --txt:#e6edf6; --dim:#8496ad; --green:#37d67a; --red:#ff5d5d;
+    --amber:#f2b53b; --blue:#4da3ff; --violet:#a97bff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{padding:14px 18px;border-bottom:1px solid var(--line);
+         background:linear-gradient(180deg,#101822,#0b0f14);position:sticky;top:0;z-index:5}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .brand{font-weight:700;letter-spacing:.08em;font-size:13px;color:var(--blue)}
+  .pill{padding:3px 9px;border-radius:999px;font-size:12px;border:1px solid var(--line);
+        background:var(--panel2);color:var(--dim)}
+  .pill.ok{color:var(--green);border-color:#1d4d33;background:#0d1f16}
+  .pill.warn{color:var(--amber);border-color:#4a3a14;background:#1d1708}
+  .pill.bad{color:var(--red);border-color:#4d1d1d;background:#1f0d0d}
+  .meta{color:var(--dim);font-size:12px}
+  .counters{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .counter{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+           padding:4px 10px;font-size:12px;color:var(--dim)}
+  .counter b{color:var(--txt);font-size:13px}
+  nav{display:flex;gap:8px;padding:10px 18px;border-bottom:1px solid var(--line)}
+  nav button{background:var(--panel2);color:var(--dim);border:1px solid var(--line);
+             padding:6px 14px;border-radius:8px;cursor:pointer;font:inherit}
+  nav button.active{color:var(--txt);border-color:#2b4b74;background:#12253a}
+  main{padding:16px 18px 60px;max-width:1500px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h2{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px}
+  .tagA{background:#12253a;color:var(--blue);border:1px solid #2b4b74}
+  .tagB{background:#1d1230;color:var(--violet);border:1px solid #4a2f7a}
+  .tagA,.tagB{padding:2px 8px;border-radius:6px;font-size:11px;letter-spacing:.06em}
+  .money{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .kv{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .kv span{display:block;color:var(--dim);font-size:11px;margin-bottom:2px}
+  .kv b{font-size:15px;font-weight:600}
+  .pos{color:var(--green)} .neg{color:var(--red)} .zero{color:var(--dim)}
+  .slots{display:flex;gap:8px;margin:8px 0 12px;flex-wrap:wrap}
+  .slot{flex:1;min-width:96px;border:1px dashed var(--line);border-radius:8px;
+        padding:6px 8px;font-size:11px;color:var(--dim)}
+  .slot.filled{border-style:solid;border-color:#2b4b74;color:var(--txt);background:#0f1c2b}
+  .slot.loss{border-color:#4d1d1d;background:#1a0f0f}
+  .slot.gain{border-color:#1d4d33;background:#0d1f16}
+  .params{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px;
+          font-size:11px;color:var(--dim);border-top:1px solid var(--line);padding-top:10px;margin-top:6px}
+  .params b{color:var(--txt);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  td.wrap{white-space:normal;color:var(--dim)}
+  .scroll{max-height:260px;overflow:auto}
+  .muted{color:var(--dim)}
+  .section-title{margin:22px 0 8px;font-size:13px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+  .compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+  .bars{display:flex;flex-direction:column;gap:6px;font-size:12px}
+  .bar{display:flex;align-items:center;gap:8px}
+  .bar .lab{width:190px;color:var(--dim);flex:none;overflow:hidden;text-overflow:ellipsis}
+  .bar .track{flex:1;height:8px;background:var(--panel2);border-radius:99px;overflow:hidden}
+  .bar .fill{height:100%;background:#2b4b74}
+  .bar .num{width:42px;text-align:right;color:var(--txt)}
+  #logbox{background:#05080c;border:1px solid var(--line);border-radius:10px;padding:12px;
+          height:64vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-word;margin:0}
+  input[type=search]{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+                     padding:6px 10px;border-radius:8px;font:inherit;width:280px}
+  .notice{border:1px solid #4a3a14;background:#1d1708;color:#f2cf8b;padding:8px 10px;
+          border-radius:8px;font-size:12px;margin:10px 18px}
+  footer{position:fixed;bottom:0;left:0;right:0;background:#0a0e13;border-top:1px solid var(--line);
+         color:var(--dim);font-size:11px;padding:6px 18px;display:flex;justify-content:space-between}
+  .offline{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <div class="brand">SOLANA PUMP.FUN · PAPER A/B</div>
+    <div class="pill" id="paperBadge">PAPER ONLY · без подписи транзакций</div>
+    <div class="pill" id="statusPill">ожидание данных</div>
+    <div class="meta" id="runMeta">run_id: —</div>
+    <div class="meta" id="lastMeta">активность: —</div>
+  </div>
+  <div class="counters" id="counters"></div>
+</header>
+<div class="notice" id="notice" hidden></div>
+<nav>
+  <button id="tab-portfolios" data-view="portfolios" class="active">Портфели</button>
+  <button id="tab-logs" data-view="logs">Логи</button>
+</nav>
+<main>
+  <section id="view-portfolios">
+    <div class="grid" id="portfolioGrid"></div>
+    <div class="section-title">A/B воронка решений</div>
+    <div class="compare" id="compareBox"></div>
+    <div class="section-title">Сделки</div>
+    <div class="grid" id="tradesGrid"></div>
+  </section>
+  <section id="view-logs" hidden>
+    <div class="row" style="margin-bottom:10px">
+      <input type="search" id="logFilter" placeholder="фильтр по строкам (mint, OPEN, CLOSE…)">
+      <span class="meta" id="logCount"></span>
+    </div>
+    <pre id="logbox"></pre>
+  </section>
+</main>
+<footer>
+  <span id="footLeft">read-only монитор · данные из runs/&lt;RUN_ID&gt;</span>
+  <span id="footRight">обновление каждые 3 с</span>
+</footer>
+
+<script>
+'use strict';
+// When the file is opened straight from disk (file://), the monitor is assumed
+// to be running locally on the default port.
+const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8767' : '';
+const REFRESH_MS = 3000;
+const state = { snapshot: null, view: 'portfolios', logs: [], errors: 0 };
+
+const $ = (id) => document.getElementById(id);
+const num = (value, digits = 2) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return Number(value).toFixed(digits);
+};
+const rub = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '— ₽';
+  const n = Number(value);
+  return `${n >= 0 ? '' : '−'}${Math.abs(n).toFixed(2)} ₽`;
+};
+const pnlClass = (value) => {
+  if (value === null || value === undefined) return 'zero';
+  const n = Number(value);
+  if (n > 0) return 'pos';
+  if (n < 0) return 'neg';
+  return 'zero';
+};
+const shortMint = (mint) => (mint ? `${String(mint).slice(0, 5)}…${String(mint).slice(-4)}` : '—');
+const esc = (text) => String(text ?? '');
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = esc(text);
+  return node;
+}
+
+function slotsOf(portfolio) {
+  const total = Number(portfolio.max_slots ?? portfolio.strategy?.max_slots ?? 3) || 3;
+  const open = Array.isArray(portfolio.open_positions) ? portfolio.open_positions : [];
+  const pending = Array.isArray(portfolio.pending_positions) ? portfolio.pending_positions : [];
+  const nodes = [];
+  for (let index = 0; index < total; index += 1) {
+    const pos = open[index];
+    const pend = pending[index];
+    let cls = 'slot';
+    let label = `Слот ${index + 1}`;
+    let sub = 'свободен';
+    if (pos) {
+      const pnl = pos.pnl_pct ?? pos.unrealized_pnl_pct ?? pos.snapshot_pnl_pct;
+      cls = `slot filled ${pnlClass(pnl)}`;
+      label = `Слот ${index + 1} · ${shortMint(pos.mint)}`;
+      sub = `PnL ${pnl === null || pnl === undefined ? '—' : `${num(pnl)}%`}`;
+    } else if (pend) {
+      cls = 'slot filled';
+      label = `Слот ${index + 1} · ${shortMint(pend.mint)}`;
+      sub = 'вход в очереди';
+    }
+    const box = el('div', cls);
+    box.appendChild(el('div', '', label));
+    box.appendChild(el('div', 'muted', sub));
+    nodes.push(box);
+  }
+  return nodes;
+}
+
+function renderHeader(snap) {
+  const statusMap = {
+    fresh: ['ok', snap.freshness_label],
+    complete: ['ok', snap.freshness_label],
+    unverified: ['warn', snap.freshness_label],
+    stale: ['bad', snap.freshness_label],
+    unknown: ['', snap.freshness_label],
+  };
+  const [cls, text] = statusMap[snap.freshness] || ['', snap.freshness_label || '—'];
+  const pill = $('statusPill');
+  pill.className = `pill ${cls}`;
+  pill.textContent = text || '—';
+  $('runMeta').textContent = `run_id: ${snap.run_id || '—'} · manifest: ${snap.manifest_status || '—'}`;
+  $('lastMeta').textContent = `активность: ${snap.last_activity_label || '—'}`;
+
+  const counters = $('counters');
+  counters.textContent = '';
+  const counts = snap.telemetry_counts || {};
+  const entries = [
+    ['кандидаты', counts.candidates ?? 0],
+    ['решения', counts.decisions ?? 0],
+    ['наблюдения', counts.observations ?? 0],
+    ['пробы дева', counts.creator_probes ?? 0],
+    ['филлы', counts.paper_fills ?? 0],
+  ];
+  for (const [label, value] of entries) {
+    const box = el('div', 'counter');
+    box.appendChild(el('span', '', `${label}: `));
+    box.appendChild(el('b', '', String(value)));
+    counters.appendChild(box);
+  }
+
+  const notice = $('notice');
+  if (snap.notice) {
+    notice.hidden = false;
+    notice.textContent = snap.notice;
+  } else {
+    notice.hidden = true;
+  }
+}
+
+function renderPortfolio(portfolio) {
+  const arm = portfolio.name === 'portfolio_a' ? 'A' : 'B';
+  const tagCls = arm === 'A' ? 'tagA' : 'tagB';
+  const role = arm === 'A'
+    ? 'контроль · вход по живому импульсу'
+    : 'лечение · вход + creator_gate';
+  const card = el('div', 'card');
+  const head = el('h2');
+  head.appendChild(el('span', tagCls, `ПОРТФЕЛЬ ${arm}`));
+  head.appendChild(el('span', 'muted', role));
+  if (!portfolio.has_state) head.appendChild(el('span', 'pill warn', 'состояние ещё не записано'));
+  card.appendChild(head);
+
+  const money = el('div', 'money');
+  const cells = [
+    ['кэш', 'cash_balance_rub'],
+    ['реализованный PnL', 'realized_pnl_rub'],
+    ['оценка открытых', 'snapshot_pnl_rub'],
+    ['консервативный 100bps', 'conservative_100bps_pnl_rub'],
+  ];
+  for (const [label, key] of cells) {
+    const kv = el('div', 'kv');
+    kv.appendChild(el('span', '', label));
+    kv.appendChild(el('b', key === 'cash_balance_rub' ? '' : pnlClass(portfolio[key]),
+                       rub(portfolio[key])));
+    money.appendChild(kv);
+  }
+  card.appendChild(money);
+
+  const slots = el('div', 'slots');
+  for (const node of slotsOf(portfolio)) slots.appendChild(node);
+  card.appendChild(slots);
+
+  const params = el('div', 'params');
+  const strategy = portfolio.strategy || {};
+  const pairs = [
+    ['max_slots', portfolio.max_slots ?? strategy.max_slots ?? 3],
+    ['размер сделки', `${num(portfolio.position_size_rub ?? strategy.position_size_rub, 0)} ₽`],
+    ['trades (closed)', portfolio.closed_trade_count ?? 0],
+    ['entry band', `${num(strategy.v_sol_birth_min, 1)} → ${num(strategy.v_sol_birth_max, 1)} SOL`],
+    ['delta вход', `+${num(strategy.delta_min_sol, 2)} → +${num(strategy.delta_max_sol, 1)} SOL`],
+    ['TP1', `${num(strategy.tp1_pct, 0)}% (50%)`],
+    ['rocket_bypass_pct', `${num(strategy.rocket_bypass_pct, 0)}%`],
+    ['profit_retain_ratio', num(strategy.profit_retain_ratio, 2)],
+    ['SL до пика', `−${num(strategy.stop_loss_pct, 0)}%`],
+    ['stagnation', `${num(strategy.shelf_stagnation_sec, 1)} с`],
+    ['no-progress', `${num(strategy.no_progress_sec, 1)} с`],
+    ['creator_gate', strategy.require_creator_gate ? 'ON (B)' : 'OFF (A)'],
+  ];
+  for (const [label, value] of pairs) {
+    const line = el('div');
+    line.appendChild(el('b', '', `${label}: `));
+    line.appendChild(el('span', '', String(value)));
+    params.appendChild(line);
+  }
+  card.appendChild(params);
+
+  // Open positions
+  const open = Array.isArray(portfolio.open_positions) ? portfolio.open_positions : [];
+  card.appendChild(el('div', 'section-title', `Открытые позиции (${open.length})`));
+  if (!open.length) {
+    card.appendChild(el('div', 'muted', 'нет открытых позиций'));
+  } else {
+    const table = el('table');
+    const thead = el('thead');
+    const hr = el('tr');
+    for (const h of ['mint', 'вход $', 'метка $', 'PnL %', 'пик %', 'держ., с', 'статус']) hr.appendChild(el('th', '', h));
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    for (const pos of open) {
+      const tr = el('tr');
+      tr.appendChild(el('td', '', shortMint(pos.mint)));
+      tr.appendChild(el('td', '', num(pos.entry_price_usd, 9)));
+      tr.appendChild(el('td', '', num(pos.mark_price_usd ?? pos.last_price_usd, 9)));
+      tr.appendChild(el('td', pnlClass(pos.pnl_pct), pos.pnl_pct === undefined ? '—' : `${num(pos.pnl_pct)}%`));
+      tr.appendChild(el('td', '', pos.best_pnl_pct === undefined ? '—' : `${num(pos.best_pnl_pct)}%`));
+      tr.appendChild(el('td', '', num(pos.held_sec, 1)));
+      tr.appendChild(el('td', 'muted', pos.status || '—'));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    const wrap = el('div', 'scroll');
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
+  // Closed trades
+  const closed = Array.isArray(portfolio.closed_trades) ? portfolio.closed_trades : [];
+  card.appendChild(el('div', 'section-title', `Закрытые сделки (${portfolio.closed_trades_total ?? closed.length})`));
+  if (!closed.length) {
+    card.appendChild(el('div', 'muted', 'пока нет закрытых сделок'));
+  } else {
+    const table = el('table');
+    const thead = el('thead');
+    const hr = el('tr');
+    for (const h of ['mint', 'PnL %', 'PnL ₽', 'держ., с', 'причина']) hr.appendChild(el('th', '', h));
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    for (const trade of closed.slice().reverse()) {
+      const tr = el('tr');
+      tr.appendChild(el('td', '', shortMint(trade.mint)));
+      tr.appendChild(el('td', pnlClass(trade.pct), trade.pct === undefined ? '—' : `${num(trade.pct)}%`));
+      tr.appendChild(el('td', pnlClass(trade.pnl_rub), rub(trade.pnl_rub)));
+      tr.appendChild(el('td', '', num(trade.hold_sec, 1)));
+      tr.appendChild(el('td', 'wrap', trade.reason || '—'));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    const wrap = el('div', 'scroll');
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+  return card;
+}
+
+function barsFrom(counts, color) {
+  const box = el('div', 'bars');
+  const entries = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const max = Math.max(1, ...entries.map(([, value]) => value));
+  if (!entries.length) {
+    box.appendChild(el('div', 'muted', 'нет данных'));
+    return box;
+  }
+  for (const [label, value] of entries) {
+    const bar = el('div', 'bar');
+    bar.appendChild(el('div', 'lab', label));
+    const track = el('div', 'track');
+    const fill = el('div', 'fill');
+    fill.style.width = `${Math.max(2, Math.round((value / max) * 100))}%`;
+    if (color) fill.style.background = color;
+    track.appendChild(fill);
+    bar.appendChild(track);
+    bar.appendChild(el('div', 'num', String(value)));
+    box.appendChild(bar);
+  }
+  return box;
+}
+
+function renderCompare(snap) {
+  const box = $('compareBox');
+  box.textContent = '';
+  const funnel = snap.funnel || {};
+  if (!funnel.available) {
+    box.appendChild(el('div', 'card muted', 'телеметрия ещё не создана — воронка появится после первых кандидатов'));
+    return;
+  }
+  const stages = funnel.stages || {};
+  const cardA = el('div', 'card');
+  cardA.appendChild(el('h2', '', 'A · вход'));
+  cardA.appendChild(barsFrom(funnel.entry_reasons?.portfolio_a));
+  box.appendChild(cardA);
+
+  const cardB = el('div', 'card');
+  cardB.appendChild(el('h2', '', 'B · вход'));
+  cardB.appendChild(barsFrom(funnel.entry_reasons?.portfolio_b));
+  box.appendChild(cardB);
+
+  const guard = el('div', 'card');
+  guard.appendChild(el('h2', '', 'B · creator_gate'));
+  guard.appendChild(barsFrom(funnel.guard_reasons, '#a97bff'));
+  box.appendChild(guard);
+
+  const sums = el('div', 'card');
+  sums.appendChild(el('h2', '', 'этапы (все портфели)'));
+  const table = el('table');
+  for (const [stage, decisions] of Object.entries(stages).sort()) {
+    const tr = el('tr');
+    tr.appendChild(el('td', 'wrap', stage));
+    tr.appendChild(el('td', 'wrap', Object.entries(decisions).map(([k, v]) => `${k}: ${v}`).join(' · ')));
+    table.appendChild(tr);
+  }
+  sums.appendChild(table);
+  box.appendChild(sums);
+}
+
+function renderTradesGrid(snap) {
+  const grid = $('tradesGrid');
+  grid.textContent = '';
+  for (const portfolio of snap.portfolios || []) {
+    const card = el('div', 'card');
+    const arm = portfolio.name === 'portfolio_a' ? 'A' : 'B';
+    card.appendChild(el('h2', '', `Сводка · портфель ${arm}`));
+    const rows = [
+      ['кэш', rub(portfolio.cash_balance_rub)],
+      ['реализовано', rub(portfolio.realized_pnl_rub)],
+      ['оценка открытых', rub(portfolio.snapshot_pnl_rub)],
+      ['консервативный 100bps', rub(portfolio.conservative_100bps_pnl_rub)],
+      ['консервативные неполные', String(portfolio.conservative_100bps_incomplete_trades ?? '—')],
+      ['входов', String(portfolio.entry_count ?? '—')],
+      ['закрыто', String(portfolio.closed_trade_count ?? '—')],
+      ['ошибок опроса', String(portfolio.poll_errors ?? '—')],
+      ['сетевые комиссии', rub(portfolio.realized_network_fees_rub)],
+      ['обновлено', portfolio.updated_at_utc || '—'],
+    ];
+    for (const [label, value] of rows) {
+      const line = el('div', 'kv');
+      line.appendChild(el('span', '', label));
+      line.appendChild(el('b', '', value));
+      card.appendChild(line);
+    }
+    grid.appendChild(card);
+  }
+}
+
+function renderLogs(snap) {
+  state.logs = Array.isArray(snap.events) ? snap.events : [];
+  const filter = $('logFilter').value.trim().toLowerCase();
+  const lines = filter ? state.logs.filter((line) => line.toLowerCase().includes(filter)) : state.logs;
+  $('logCount').textContent = `${lines.length} / ${state.logs.length} строк`;
+  const box = $('logbox');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent = lines.join('\n') || '— лог пуст —';
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function render(snap) {
+  state.snapshot = snap;
+  renderHeader(snap);
+  if (state.view === 'portfolios') {
+    const grid = $('portfolioGrid');
+    grid.textContent = '';
+    for (const portfolio of snap.portfolios || []) grid.appendChild(renderPortfolio(portfolio));
+    renderCompare(snap);
+    renderTradesGrid(snap);
+  } else {
+    renderLogs(snap);
+  }
+}
+
+function setView(view) {
+  state.view = view;
+  for (const name of ['portfolios', 'logs']) {
+    $(`view-${name}`).hidden = name !== view;
+    $(`tab-${name}`).classList.toggle('active', name === view);
+  }
+  if (state.snapshot) render(state.snapshot);
+}
+
+async function poll() {
+  try {
+    // Same-origin when served by live_ab_dashboard.py, loopback when the file
+    // is opened directly from disk.
+    const statusUrl = API_BASE ? `${API_BASE}/api/status` : '/api/status';
+    const response = await fetch(statusUrl, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const snap = await response.json();
+    state.errors = 0;
+    $('footLeft').className = '';
+    $('footLeft').textContent = `read-only монитор · ${snap.run_id || 'run'}`;
+    render(snap);
+  } catch (error) {
+    state.errors += 1;
+    $('footLeft').className = 'offline';
+    $('footLeft').textContent = location.protocol === 'file:'
+      ? 'нет ответа от http://127.0.0.1:8767 — запусти START_MAC_LINUX.sh / START_WINDOWS.bat'
+      : `нет связи с монитором (${error.message})`;
+  }
+}
+
+$('tab-portfolios').addEventListener('click', () => setView('portfolios'));
+$('tab-logs').addEventListener('click', () => setView('logs'));
+$('logFilter').addEventListener('input', () => { if (state.snapshot) renderLogs(state.snapshot); });
+
+poll();
+setInterval(() => { if (!document.hidden) poll(); }, REFRESH_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+</script>
+</body>
+</html>
