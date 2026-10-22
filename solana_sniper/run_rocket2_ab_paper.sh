@@ -78,7 +78,7 @@ export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
 export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-50.0}"
 export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
-export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-12.0}"
+export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
 # --- creator guard: B-only treatment, in-memory wallet cache keeps RPS flat ---
 export CREATOR_GUARD_MIN_SIG="${CREATOR_GUARD_MIN_SIG:-25}"
 export CREATOR_BURST_WINDOW_SEC="${CREATOR_BURST_WINDOW_SEC:-3600}"
@@ -123,7 +123,9 @@ from dataclasses import asdict
 from config import load_settings
 from detector import PUMP_PROGRAM_ID, select_programs
 from main_ab import _observation_offsets
-from portfolio_ab import PROFILE_A, PROFILE_B, profiles_from_settings
+from portfolio_ab import (
+    PROFILE_A, PROFILE_B, entry_shadow_flags, profiles_from_settings,
+)
 from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA
 s = load_settings()
 assert s.api_key
@@ -149,15 +151,22 @@ assert PROFILE_A.no_progress_sec == 5.0 and PROFILE_A.no_progress_best_max_pct =
 # Entry v3: no dead delta==0 fills, no tight cap on real runners.
 ok, reason = PROFILE_A.entry_check(31.0, 31.0)
 assert not ok and reason == 'no_live_momentum'
-ok, _ = PROFILE_A.entry_check(33.95, 45.51)   # Turtle: previously rejected
+assert PROFILE_A.delta_max_sol == 2.5
+ok, reason = PROFILE_A.entry_check(33.95, 45.51)   # Turtle delta 11.56
+assert not ok and reason == 'momentum_too_late'
+ok, _ = PROFILE_A.entry_check(39.88, 40.41)        # PERFORMA delta 0.53
 assert ok
-ok, _ = PROFILE_A.entry_check(39.88, 40.41)   # PERFORMA: previously out of band
-assert ok
+assert entry_shadow_flags(PROFILE_A, 33.0, 36.0) == {
+    'pass_if_cap_1': False, 'pass_if_cap_2.5': False,
+    'pass_if_cap_4': True, 'pass_if_cap_12': True,
+}
 assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
 assert os.getenv('SHADOW_NOTIONAL_RUB') == '0'
 assert _observation_offsets() == (0, 5, 10, 15, 60, 120)
+assert s.entry_delta_max_sol == 2.5
+assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
 print('A/B preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
       'live-momentum entry; approved 4-mode exits; B creator guard only; '

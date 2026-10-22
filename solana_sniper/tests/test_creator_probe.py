@@ -272,3 +272,106 @@ class CreatorIdentityAndGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['censored'])
         self.assertFalse(result['creator_guard_passed'])
         self.assertEqual(result['creator_guard_reason'], 'creator_history_unavailable')
+
+
+class CreatorRepeatDeployTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fallback_also_applies_when_curve_read_failed(self) -> None:
+        class FlakySession(ScriptedFakeSession):
+            def post(self, _url, **kwargs):
+                payload = kwargs['json']
+                if payload['method'] == 'getSignaturesForAddress':
+                    if payload['params'][0] == CREATOR:
+                        raise RuntimeError('rpc_timeout_curve')
+                return super().post(_url, **kwargs)
+
+        session = FlakySession(
+            sigs={ACTOR: _old_sig_times(25)}, balances={ACTOR: '9000000000000'},
+        )
+        probe = CreatorOnchainProbe(session, 'https://rpc.example.invalid')
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={'pumpportal_event_actor': ACTOR}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        self.assertEqual(result['creator'], ACTOR)
+        self.assertTrue(result['creator_identity_resolved'])
+        self.assertIsNone(result['program_creator_sig_count'])
+        self.assertTrue(result['creator_guard_passed'])
+
+    async def test_repeat_deploy_in_session_uses_local_telemetry_only(self) -> None:
+        session = ScriptedFakeSession(
+            sigs={CREATOR: _old_sig_times(25)}, balances={CREATOR: '1000000000000'},
+        )
+
+        class FakeWatch:
+            def __init__(self, prior):
+                self.prior = prior
+                self.calls = []
+
+            def prior_tokens_10m(self, creator, as_of=None, current_mint=None):
+                self.calls.append((creator, current_mint))
+                return self.prior
+
+        watch = FakeWatch(prior=2)
+        rpc_before = len(session.calls)
+        probe = CreatorOnchainProbe(
+            session, 'https://rpc.example.invalid', creator_watch=watch,
+        )
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        self.assertFalse(result['creator_guard_passed'])
+        self.assertEqual(result['creator_guard_reason'], 'creator_repeat_deploy_in_session')
+        self.assertEqual(result['creator_prior_tokens_10m'], 2)
+        self.assertTrue(result['creator_repeat_deploy_in_session'])
+        self.assertFalse(result['creator_burst_activity'])
+        self.assertEqual(watch.calls, [(CREATOR, MINT)])
+        # The local signal must not add a single RPC request: exactly the
+        # signature page + one token-account read, nothing more.
+        self.assertEqual(len(session.calls) - rpc_before, 2)
+        self.assertEqual(
+            sorted(call['method'] for call in session.calls[rpc_before:]),
+            ['getSignaturesForAddress', 'getTokenAccountsByOwner'],
+        )
+
+    async def test_single_prior_launch_is_not_enough_to_reject(self) -> None:
+        session = ScriptedFakeSession(
+            sigs={CREATOR: _old_sig_times(25)}, balances={CREATOR: '1000000000000'},
+        )
+
+        class FakeWatch:
+            def prior_tokens_10m(self, *_args, **_kwargs):
+                return 1
+
+        probe = CreatorOnchainProbe(
+            session, 'https://rpc.example.invalid', creator_watch=FakeWatch(),
+        )
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        self.assertTrue(result['creator_guard_passed'])
+        self.assertEqual(result['creator_guard_reason'], 'creator_guard_met')
+
+    async def test_broken_watch_object_does_not_break_the_probe(self) -> None:
+        session = ScriptedFakeSession(
+            sigs={CREATOR: _old_sig_times(25)}, balances={CREATOR: '1000000000000'},
+        )
+
+        class BrokenWatch:
+            def prior_tokens_10m(self, *_args, **_kwargs):
+                raise RuntimeError('telemetry_corrupt')
+
+        probe = CreatorOnchainProbe(
+            session, 'https://rpc.example.invalid', creator_watch=BrokenWatch(),
+        )
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        self.assertEqual(result['creator_prior_tokens_10m'], 0)
+        self.assertTrue(result['creator_guard_passed'])

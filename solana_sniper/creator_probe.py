@@ -50,6 +50,7 @@ class CreatorOnchainProbe:
         *,
         guard_min_signatures: int = DEFAULT_GUARD_MIN_SIGNATURES,
         burst_window_sec: float = DEFAULT_BURST_WINDOW_SEC,
+        creator_watch: Any = None,
     ) -> None:
         self.session = session
         self.http_rpc_url = http_rpc_url
@@ -59,6 +60,9 @@ class CreatorOnchainProbe:
         self._sem = asyncio.Semaphore(max(2, int(concurrency)))
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
+        # Optional local telemetry index: gives a second serial-deploy signal
+        # (prior_tokens_10m) with zero extra RPC calls.
+        self.creator_watch = creator_watch
         self.wallet_cache_sec = max(0.0, float(signature_cache_sec))
         self.guard_min_signatures = max(0, int(guard_min_signatures))
         self.burst_window_sec = max(1.0, float(burst_window_sec))
@@ -233,6 +237,7 @@ class CreatorOnchainProbe:
         burst: bool,
         ata_exists: Optional[bool],
         balance_raw: Optional[str],
+        prior_tokens_10m: int = 0,
     ) -> tuple[bool, str]:
         try:
             positive_balance = int(balance_raw or 0) > 0
@@ -244,6 +249,10 @@ class CreatorOnchainProbe:
             return False, 'creator_history_too_short'
         if burst:
             return False, 'creator_burst_activity'
+        # Second, RPC-free serial-deploy signal from local telemetry: the same
+        # wallet already launched >= 2 other tokens inside the last 10 minutes.
+        if prior_tokens_10m >= 2:
+            return False, 'creator_repeat_deploy_in_session'
         if ata_exists is not True:
             return False, 'creator_token_ata_missing'
         if not positive_balance:
@@ -332,9 +341,11 @@ class CreatorOnchainProbe:
         # Stage 2: the curve creator is an empty fee wallet and the PumpPortal
         # actor is a real wallet -> treat the actor as the creator and read its
         # token account (one extra call, only in this situation).
+        # curve_count is None when that read failed; treat it like "no usable
+        # history" so a fresh fee-vault wallet does not hide the real deployer.
         if (
             actor_valid
-            and curve_count == 0
+            and curve_count in (0, None)
             and actor_count is not None and actor_count > 0
         ):
             identity = 'pumpportal_event_actor'
@@ -349,9 +360,20 @@ class CreatorOnchainProbe:
         balance_raw = token_data.get('balance_raw') if token_data else None
         observed_epoch = time.time()
         wallet_age_sec, burst = self._burst(sig_data, observed_epoch)
+        prior_tokens_10m = 0
+        if self.creator_watch is not None:
+            try:
+                lookup = getattr(self.creator_watch, 'prior_tokens_10m', None)
+                if callable(lookup):
+                    prior_tokens_10m = int(
+                        lookup(resolved, as_of=observed_epoch, current_mint=mint) or 0
+                    )
+            except Exception:
+                prior_tokens_10m = 0
         guard_passed, guard_reason = self._guard(
             signature_count=signature_count, burst=burst,
             ata_exists=ata_exists, balance_raw=balance_raw,
+            prior_tokens_10m=prior_tokens_10m,
         )
         # Historical key kept for dashboards/exports: same semantics as before.
         gate_passed = guard_passed
@@ -383,6 +405,7 @@ class CreatorOnchainProbe:
             'signature_count': signature_count,
             'creator_signature_count_0_25': signature_count,
             'program_creator_sig_count': curve_count,
+            'program_creator_sig_error': curve_sig_error,
             'pumpportal_event_actor_sig_count': actor_count,
             'oldest_block_time': sig_data.get('oldest_block_time') if sig_data else None,
             'creator_signature_oldest_block_time': sig_data.get('oldest_block_time') if sig_data else None,
@@ -391,6 +414,8 @@ class CreatorOnchainProbe:
             'creator_wallet_age_sec': round(wallet_age_sec, 3) if wallet_age_sec is not None else None,
             'creator_burst_activity': burst,
             'creator_burst_window_sec': self.burst_window_sec,
+            'creator_prior_tokens_10m': prior_tokens_10m,
+            'creator_repeat_deploy_in_session': prior_tokens_10m >= 2,
             'ata_exists': ata_exists,
             'creator_token_ata_exists': ata_exists,
             'creator_token_ata': token_data.get('ata') if token_data else None,

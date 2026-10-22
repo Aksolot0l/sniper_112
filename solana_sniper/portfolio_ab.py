@@ -73,7 +73,12 @@ class ABProfile:
     v_sol_birth_min: float = 30.5
     v_sol_birth_max: float = 50.0
     delta_min_sol: float = 0.10
-    delta_max_sol: float = 12.0
+    # 2.5, not 12: across 66 archived entry_state rows joined with observations,
+    # delta >= 2.5 SOL gave a median -19.8% drawdown from the entry point and
+    # 10 of 15 such entries ended in the stop loss; Turtle (11.56 SOL) went
+    # -18.7% within 15 s of its own entry. The 12 SOL ceiling fitted the filter
+    # to a single observation.
+    delta_max_sol: float = 2.5
     # --- exit ladder (approved 4-mode logic) ---
     no_progress_pct: float = 1.5
     stop_loss_pct: float = 10.0
@@ -96,15 +101,53 @@ class ABProfile:
     position_size_rub: float = 500.0
     max_slots: int = 3
 
-    def entry_check(self, v_sol_birth: float, v_sol_now: float) -> tuple[bool, str]:
+    def entry_check(
+        self,
+        v_sol_birth: float,
+        v_sol_now: float,
+        delta_max_override: Optional[float] = None,
+    ) -> tuple[bool, str]:
         delta = v_sol_now - v_sol_birth
+        cap = self.delta_max_sol if delta_max_override is None else float(delta_max_override)
         if not (self.v_sol_birth_min <= v_sol_birth <= self.v_sol_birth_max):
             return False, 'birth_out_of_band'
         if delta < self.delta_min_sol:
             return False, 'no_live_momentum'
-        if delta > self.delta_max_sol:
+        if delta > cap:
             return False, 'momentum_too_late'
         return True, 'live_momentum_entry'
+
+
+DELTA_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    # label, lower bound (inclusive), upper bound (exclusive)
+    ('0', float('-inf'), 0.0000001),
+    ('0.1-1', 0.0000001, 1.0),
+    ('1-2.5', 1.0, 2.5),
+    ('2.5-4', 2.5, 4.0),
+    ('4-12', 4.0, 12.0),
+    ('>12', 12.0, float('inf')),
+)
+SHADOW_DELTA_CAPS: tuple[float, ...] = (1.0, 2.5, 4.0, 12.0)
+
+
+def delta_bucket(delta_sol: float) -> str:
+    """Coarse label for telemetry; pure arithmetic, no RPC."""
+    for label, lower, upper in DELTA_BUCKETS:
+        if lower <= delta_sol < upper:
+            return label
+    return '>12'
+
+
+def entry_shadow_flags(
+    profile: 'ABProfile', v_sol_birth: float, v_sol_now: float,
+) -> dict[str, bool]:
+    """Counterfactual pass/fail for alternative delta caps (telemetry only)."""
+    return {
+        f'pass_if_cap_{cap:g}': profile.entry_check(
+            v_sol_birth, v_sol_now, delta_max_override=cap,
+        )[0]
+        for cap in SHADOW_DELTA_CAPS
+    }
 
 
 PROFILE_A = ABProfile(name='portfolio_a', require_creator_gate=False)
@@ -566,21 +609,9 @@ class ABPaperSimulator:
         # The common timestamp and immutable snapshot keep control/treatment
         # decisions aligned; only the B creator gate may differ.
         decision_epoch = time.time()
-        if collector is not None:
-            collector.record_decision(
-                coin.mint, coin.source, 'entry_state', 'fresh_state_ok', [],
-                {'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
-                 'delta_sol': round(current_v_sol - birth_v_sol, 6),
-                 'curve_complete': snapshot.curve.complete,
-                 'is_mayhem_mode': snapshot.curve.is_mayhem_mode,
-                 'curve_context_slot': snapshot.context_slot,
-                 'fee_context_observed_at_epoch': snapshot.fee_context.observed_at_epoch,
-                 'fee_tiers': snapshot.fee_context.manifest()['fee_tiers'],
-                 'decision_at_epoch': decision_epoch,
-                 'first_seen_to_decision_ms': round(max(0.0, (decision_epoch - coin.found_at) * 1000), 2),
-                 'creator_probe': coin.creator_probe_result,
-                 'shared_entry_snapshot': True},
-            )
+        self.record_entry_state(
+            coin, snapshot, birth_v_sol, current_v_sol, decision_epoch,
+        )
         await asyncio.gather(*(
             self._consider_entry(
                 book, coin, snapshot, birth_v_sol, current_v_sol,
@@ -588,6 +619,48 @@ class ABPaperSimulator:
             )
             for book in self.books.values()
         ))
+
+    def record_entry_state(
+        self,
+        coin: NewCoin,
+        snapshot: 'EntrySnapshot',
+        birth_v_sol: float,
+        current_v_sol: float,
+        decision_epoch: float,
+        *,
+        filter_metrics: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """One shared `entry_state` row per candidate: delta bucket + shadow caps.
+
+        Pure arithmetic on already-fetched values; no RPC. Also reused by the
+        offline smoke test so its funnel matches production semantics.
+        """
+        collector = self._collector()
+        if collector is None:
+            return
+        base_profile = next(iter(self.books.values())).profile
+        delta_sol = current_v_sol - birth_v_sol
+        collector.record_decision(
+            coin.mint, coin.source, 'entry_state', 'fresh_state_ok', [],
+            {'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
+             'delta_sol': round(delta_sol, 6),
+             'delta_bucket': delta_bucket(delta_sol),
+             'delta_cap_used_sol': base_profile.delta_max_sol,
+             **entry_shadow_flags(base_profile, birth_v_sol, current_v_sol),
+             'curve_complete': snapshot.curve.complete,
+             'is_mayhem_mode': snapshot.curve.is_mayhem_mode,
+             'curve_context_slot': snapshot.context_slot,
+             'fee_context_observed_at_epoch': snapshot.fee_context.observed_at_epoch,
+             'fee_tiers': snapshot.fee_context.manifest()['fee_tiers'],
+             'decision_at_epoch': decision_epoch,
+             'first_seen_to_decision_ms': round(
+                 max(0.0, (decision_epoch - coin.found_at) * 1000.0), 2,
+             ),
+             'creator_probe': coin.creator_probe_result,
+             'shared_entry_snapshot': True,
+             **(filter_metrics or {}),
+            },
+        )
 
     def _record_candidate_fail(self, coin: NewCoin, reason: str) -> None:
         collector = self._collector()
@@ -656,6 +729,8 @@ class ABPaperSimulator:
                      'signature_count_0_25': probe.get('signature_count'),
                      'creator_wallet_age_sec': probe.get('creator_wallet_age_sec'),
                      'creator_burst_activity': probe.get('creator_burst_activity'),
+                     'creator_prior_tokens_10m': probe.get('creator_prior_tokens_10m'),
+                     'creator_repeat_deploy_in_session': probe.get('creator_repeat_deploy_in_session'),
                      'ata_exists': probe.get('ata_exists'),
                      'token_balance_raw': probe.get('token_balance_raw'),
                      'probe_status': probe.get('status'),
@@ -1130,7 +1205,7 @@ class ABPaperSimulator:
             floor_pnl_pct = profile.profit_retain_ratio * pos.best_pnl_pct
             if pnl_pct <= floor_pnl_pct:
                 return (
-                    f'Peak retain exit (peak={pos.best_pnl_pct:+.1f}%, '
+                    f'SL/trail (peak={pos.best_pnl_pct:+.1f}%, '
                     f'floor={floor_pnl_pct:+.1f}%)',
                     pos.remaining_tokens_raw,
                 )

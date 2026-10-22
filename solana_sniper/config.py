@@ -64,7 +64,7 @@ class Settings:
     entry_birth_min_sol: float  # нижняя граница виртуальных SOL на рождении кривой
     entry_birth_max_sol: float  # верхняя граница (было 38 — резало реальные ракеты)
     entry_delta_min_sol: float  # минимум притока SOL после создания (0.0 = мёртвая приманка)
-    entry_delta_max_sol: float  # верхний предохранитель от позднего входа
+    entry_delta_max_sol: float  # верхний предохранитель: дельта, при которой вход ещё жив
     # --- creator guard (только портфель B) ---
     creator_guard_min_sig: int      # минимум транзакций в истории кошелька дева
     creator_burst_window_sec: float # окно: 25+ транзакций за это время = раг-ферма
@@ -161,7 +161,12 @@ def load_settings() -> Settings:
         entry_birth_min_sol=float(os.getenv('ENTRY_BIRTH_MIN_SOL', '30.5')),
         entry_birth_max_sol=float(os.getenv('ENTRY_BIRTH_MAX_SOL', '50.0')),
         entry_delta_min_sol=float(os.getenv('ENTRY_DELTA_MIN_SOL', '0.10')),
-        entry_delta_max_sol=float(os.getenv('ENTRY_DELTA_MAX_SOL', '12.0')),
+        # 2.5, а не 12: пересчёт 66 архивных entry_state x observations показал,
+        # что при delta >= 2.5 SOL медианная просадка от точки входа -19.8% и
+        # 10 из 15 таких входов уходили в SL; Turtle (11.56 SOL) от собственной
+        # точки входа шёл -18.7% за 15 секунд. Потолок 12 подгонял фильтр под
+        # одно наблюдение.
+        entry_delta_max_sol=float(os.getenv('ENTRY_DELTA_MAX_SOL', '2.5')),
         creator_guard_min_sig=int(os.getenv('CREATOR_GUARD_MIN_SIG', '25')),
         creator_burst_window_sec=float(os.getenv('CREATOR_BURST_WINDOW_SEC', '3600')),
         creator_cache_ttl_sec=float(os.getenv('CREATOR_CACHE_TTL_SEC', '300')),

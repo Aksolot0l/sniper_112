@@ -84,7 +84,7 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'ENTRY_BIRTH_MIN_SOL': env.get('ENTRY_BIRTH_MIN_SOL', '30.5'),
         'ENTRY_BIRTH_MAX_SOL': env.get('ENTRY_BIRTH_MAX_SOL', '50.0'),
         'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.10'),
-        'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '12.0'),
+        'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '2.5'),
         'CREATOR_GUARD_MIN_SIG': env.get('CREATOR_GUARD_MIN_SIG', '25'),
         'CREATOR_BURST_WINDOW_SEC': env.get('CREATOR_BURST_WINDOW_SEC', '3600'),
         'CREATOR_CACHE_TTL_SEC': env.get('CREATOR_CACHE_TTL_SEC', '300'),

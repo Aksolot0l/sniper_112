@@ -39,23 +39,32 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 Entry v3 — live momentum, shared by both arms:
 
 ```
-30.5 <= v_sol_birth <= 50.0   and   0.10 <= (v_sol_now - v_sol_birth) <= 12.0
+30.5 <= v_sol_birth <= 50.0   and   0.10 <= (v_sol_now - v_sol_birth) <= 2.5
 ```
+
+Cap 2.5 (not 12): across the 66 archived `entry_state` rows joined with
+`observations`, `delta >= 2.5 SOL` gave a median -19.8% drawdown from the entry
+point and 10 of 15 such entries went to the stop; Turtle (11.56 SOL) ran -18.7%
+within 15 s of its own entry. The 12 SOL ceiling fitted the filter to a single
+observation.
 
 The previous `v_sol_now <= v_sol_birth + 0.8` cap was an anti-filter: it rejected
 every real runner seen in the Solscan/Jupiter reconciliation (Turtle 33.95→45.51,
 Shigure 33.16→38.59, CAVELON, PERFORMA, SKILLSPECTOR) while buying dead
 `delta == 0` decoys (8 of 9 such fills lost money).
 
-Exits — approved 4-mode ladder, 1:1: SL −10% before TP1/rocket; no-progress
+Exits — approved 4-mode ladder, 1:1 (unchanged this run; next experiment): SL −10% before TP1/rocket; no-progress
 (5 s, peak < +4%, PnL < +1.5%); positive stagnation (4.5 s, PnL ≥ +1.5%);
 TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`; rocket bypass at +50%
 keeps 100%. Timeouts 35 s / 90 s remain as slot-safety nets.
 
 Treatment (B only) — creator guard v2: identity resolved to
 `pumpportal_event_actor` when the curve creator is an empty fee wallet,
-`creator_burst_activity` rejects 25+ signatures inside one hour, token ATA must
-exist with a positive balance. `getSignaturesForAddress` answers are memoised
+`creator_burst_activity` rejects 25+ signatures inside one hour,
+`creator_repeat_deploy_in_session` rejects a wallet already launching 2+ other
+tokens in the last 10 minutes (pure local telemetry, zero RPC), token ATA must
+exist with a positive balance. The peak-retain exit is labelled `SL/trail
+(peak=…)`, not a take-profit, so trailing losses are not read as wins. `getSignaturesForAddress` answers are memoised
 per wallet for 300 s, so repeat launchers cost no extra RPC.
 
 ## Dependencies

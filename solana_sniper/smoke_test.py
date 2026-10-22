@@ -104,9 +104,12 @@ SCENARIOS = [
     # Live early momentum: the new entry rule.
     Scenario('live_small', 31.0, 0.35),
     Scenario('live_medium', 32.4, 2.10),
-    # Real rockets that the old cap rejected.
+    # Big-delta launches are now late chases (cap 2.5 SOL) and must be skipped.
     Scenario('rocket_turtle', 33.95, 6.60),
     Scenario('rocket_performa', 39.88, 0.53),
+    # Live momentum just under the cap, and the cap boundary itself.
+    Scenario('live_edge', 32.0, 2.49),
+    Scenario('late_chase_boundary', 32.0, 2.51),
     # Out of band.
     Scenario('too_late_birth', 55.0, 1.0),
     Scenario('late_chase', 31.5, 15.0),
@@ -118,6 +121,8 @@ PRICE_PATHS = {
     'live_medium': [(0, 0.0), (2, -0.05), (4, -0.12), (6, -0.14)],
     'rocket_turtle': [(0, 0.0), (2, 0.18), (4, 0.42), (6, 0.61), (8, 0.55), (10, 0.70)],
     'rocket_performa': [(0, 0.0), (2, 0.02), (4, 0.01), (8, 0.03), (15, 0.02)],
+    'live_edge': [(0, 0.0), (2, 0.08), (4, 0.15), (6, 0.34), (8, 0.62), (10, 0.55)],
+    'late_chase_boundary': [(0, 0.0), (4, -0.04), (10, -0.06)],
 }
 
 
@@ -232,6 +237,9 @@ async def run(seconds: float) -> int:
             coin = _coin(mint, scenario, fees)
             v_now = scenario.birth + scenario.delta
             snapshot = EntrySnapshot(_curve(v_now), fees, 12, time.time())
+            simulator.record_entry_state(
+                coin, snapshot, scenario.birth, v_now, time.time(),
+            )
             before_a = len(simulator.books['portfolio_a'].positions)
             before_b = len(simulator.books['portfolio_b'].positions)
             await asyncio.gather(*(
@@ -340,10 +348,55 @@ async def run(seconds: float) -> int:
     funnel = snapshot_view.get('funnel', {})
     print('  A вход:', funnel.get('entry_reasons', {}).get('portfolio_a'))
     print('  B guard:', funnel.get('guard_reasons'))
+    for line in _bucket_report(run_dir / 'telemetry.sqlite'):
+        print(line)
     print(f'  run_dir: {run_dir}')
     print(f'  dashboard freshness: {snapshot_view["freshness"]}')
     print('\nSMOKE OK' if counters['entries_a'] else '\nSMOKE WARNING: no entries happened')
     return 0 if counters['entries_a'] else 2
+
+
+def _bucket_report(db_path: Path) -> list[str]:
+    """Funnel by delta bucket and counterfactual cap, straight from telemetry."""
+    import sqlite3
+    if not db_path.exists():
+        return ['  бакеты delta: телеметрия недоступна']
+    buckets: dict[str, list[int]] = {}
+    caps = ('pass_if_cap_1', 'pass_if_cap_2.5', 'pass_if_cap_4', 'pass_if_cap_12')
+    cap_hits = {cap: 0 for cap in caps}
+    total = 0
+    try:
+        with sqlite3.connect(f'file:{db_path}?mode=ro', uri=True) as db:
+            rows = db.execute(
+                "SELECT values_json FROM decisions WHERE stage='entry_state'"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        return [f'  бакеты delta: ошибка чтения ({type(exc).__name__})']
+    for (raw,) in rows:
+        try:
+            values = json.loads(raw or '{}')
+        except ValueError:
+            continue
+        bucket = str(values.get('delta_bucket') or '?')
+        # "прошли бы" = то же правило входа при текущем потолке 2.5 SOL
+        entered = bool(values.get('pass_if_cap_2.5'))
+        slot = buckets.setdefault(bucket, [0, 0])
+        slot[0] += 1
+        slot[1] += int(entered)
+        total += 1
+        for cap in caps:
+            if values.get(cap):
+                cap_hits[cap] += 1
+    order = ['0', '0.1-1', '1-2.5', '2.5-4', '4-12', '>12']
+    lines = [f'  бакеты delta (всего entry_state: {total}):']
+    for label in order + sorted(set(buckets) - set(order)):
+        if label not in buckets:
+            continue
+        seen, passed = buckets[label]
+        lines.append(f'    {label:>7}: {seen:>4} кандидатов, прошли бы вход: {passed}')
+    lines.append('  shadow-потолки (сколько кандидатов прошли бы): '
+                 + ', '.join(f'{cap}={cap_hits[cap]}' for cap in caps))
+    return lines
 
 
 def main() -> int:

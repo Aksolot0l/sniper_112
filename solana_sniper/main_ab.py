@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import signal
@@ -62,15 +63,34 @@ def _observation_offsets() -> tuple[int, ...]:
         return (0, 5, 10, 15, 60, 120)
 
 
+def _strategy_metadata() -> dict[str, Any]:
+    """Declared up front so a run can never be compared against an older one."""
+    return {
+        'strategy_version': 'entry_v3+guard_v2+delta_cap_2.5',
+        'comparison_policy': 'не смешивать с сессиями до 2026-10-22',
+        'timeouts_35_90': 'slot safety net, not part of 4-mode ladder',
+        'known_hole': (
+            'no_progress is one-shot at 5s; corridor -9.9%..+1.4% '
+            'exits only by timeout'
+        ),
+        'entry': (
+            '30.5 <= v_sol_birth <= 50.0 and '
+            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5'
+        ),
+        'entry_note': (
+            'delta cap 2.5: 66 archived entry_state x observations give median '
+            '-19.8% drawdown and 10/15 stop-outs for delta >= 2.5 SOL; '
+            'the 12 SOL ceiling fitted the filter to one observation'
+        ),
+    }
+
+
 def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
+    strategy_meta = _strategy_metadata()
     common = {
         'initial_balance_rub': 1500,
         'position_size_rub': 500,
         'max_slots': 3,
-        'entry': (
-            '30.5 <= v_sol_birth <= 50.0 and '
-            '0.10 <= (v_sol_now - v_sol_birth) <= 12.0'
-        ),
         'entry_note': (
             'live-momentum band replaces the 2026-10 anti-filter '
             '(v_sol_now <= v_sol_birth + 0.8 rejected every real runner '
@@ -79,7 +99,10 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'stop_loss': 'before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%',
         'tp1': 'when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable',
         'rocket_bypass': 'at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half',
-        'trailing': 'once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct',
+        'trailing': (
+            'once best_pnl_pct >= +10.0: sell remaining at '
+            'pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)'
+        ),
         'shelf_stagnation': 'sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s',
         'no_progress': 'once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once',
         'peak_timestamp_update': 'update only when pnl_pct >= best_pnl_pct + 0.4 percentage points',
@@ -88,6 +111,7 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
     }
     return {
         'run_id': run_id,
+        **strategy_meta,
         'status': 'starting',
         'early_stop_reason': None,
         'created_at_utc': _utc_now(),
@@ -97,8 +121,18 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'submitted_transactions': 0,
         'portfolio_scope': ['portfolio_a', 'portfolio_b'],
         'strategies': {
-            'portfolio_a': {**common, 'creator_probe': 'telemetry_only; no entry gate'},
-            'portfolio_b': {**common, 'creator_gate': 'signature_count_0_25 == 25 AND ata_exists AND token_balance_raw > 0'},
+            'portfolio_a': {
+                **common, **strategy_meta,
+                'creator_probe': 'telemetry_only; no entry gate',
+            },
+            'portfolio_b': {
+                **common, **strategy_meta,
+                'creator_gate': (
+                    'signature_count_0_25 >= 25 AND NOT burst (25+ sigs inside '
+                    '1h) AND NOT repeat_deploy (>=2 tokens in 10m) AND '
+                    'ata_exists AND token_balance_raw > 0'
+                ),
+            },
         },
         'rpc': {
             'provider': 'Helius',
@@ -199,6 +233,18 @@ async def main() -> None:
         raise SystemExit('HTTP shadow/honeypot quote checks must be disabled for this run.')
     if os.getenv('PAPER_ONLY', '1').strip() != '1':
         raise SystemExit('PAPER_ONLY must remain enabled.')
+    # Network fee model must be the real Solana cost. config.py defaults are
+    # 0.001 / 0.0001 SOL for legacy callers, which would inflate fees 12.5x on a
+    # direct `python main_ab.py`; refuse to run with anything but the paper model.
+    if (
+        not math.isclose(settings.entry_fee_sol, 0.00008, rel_tol=0, abs_tol=1e-12)
+        or not math.isclose(settings.exit_fee_sol, 0.00005, rel_tol=0, abs_tol=1e-12)
+    ):
+        raise RuntimeError(
+            'network fee model must be 0.00008 / 0.00005 SOL '
+            f'(got {settings.entry_fee_sol} / {settings.exit_fee_sol}); '
+            'use run_rocket2_ab_paper.sh or run_local_session.py'
+        )
 
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = _safe_manifest(settings, run_id, run_dir)
@@ -289,6 +335,7 @@ async def main() -> None:
             signature_cache_sec=settings.creator_cache_ttl_sec,
             guard_min_signatures=settings.creator_guard_min_sig,
             burst_window_sec=settings.creator_burst_window_sec,
+            creator_watch=creator_watch,
         )
         simulator = ABPaperSimulator(
             session, settings, run_id, run_dir, trades_queue,

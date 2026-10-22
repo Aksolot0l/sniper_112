@@ -37,6 +37,10 @@ if [[ -z "${HELIUS_API_KEY:-}" ]]; then
     export HELIUS_API_KEY
 fi
 
+# Потолок входа по притоку SOL: 2.5 (см. config.py; 12 подгоняло фильтр под
+# одно наблюдение и пускало Turtle-подобные заходы в SL).
+export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
+
 # --smoke 150 → короткая проверка; без аргументов → полные 9000 секунд.
 exec "$VENV_PY" run_local_session.py \
     --duration "${DURATION:-9000}" \

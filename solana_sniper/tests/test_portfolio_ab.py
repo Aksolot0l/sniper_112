@@ -19,6 +19,8 @@ from portfolio_ab import (
     PROFILE_B,
     PortfolioBook,
     SimPosition,
+    delta_bucket,
+    entry_shadow_flags,
     profiles_from_settings,
 )
 from pump_curve_quote import (
@@ -98,7 +100,7 @@ def make_settings():
         entry_birth_min_sol=30.5,
         entry_birth_max_sol=50.0,
         entry_delta_min_sol=0.10,
-        entry_delta_max_sol=12.0,
+        entry_delta_max_sol=2.5,
         creator_guard_min_sig=25,
         creator_burst_window_sec=3600.0,
         creator_cache_ttl_sec=300.0,
@@ -125,18 +127,47 @@ class ABProfileTests(unittest.TestCase):
             ok, reason = profile.entry_check(30.5, 31.3)
             self.assertTrue(ok)
             self.assertEqual(reason, 'live_momentum_entry')
-            # Real rockets previously rejected by `now <= birth + 0.8`.
-            self.assertTrue(profile.entry_check(33.95, 45.51)[0])   # Turtle
-            self.assertTrue(profile.entry_check(33.16, 38.59)[0])   # Shigure Ui
-            self.assertTrue(profile.entry_check(36.0, 40.43)[0])    # CAVELON
-            self.assertTrue(profile.entry_check(39.88, 40.41)[0])   # PERFORMA
-            self.assertTrue(profile.entry_check(35.0, 39.0)[0])     # SKILLSPECTOR
+            # Small live deltas still pass (the entry rule that replaced the cap).
+            self.assertTrue(profile.entry_check(31.0, 31.5)[0])
+            self.assertTrue(profile.entry_check(30.5, 31.4)[0])
+            self.assertTrue(profile.entry_check(39.88, 40.41)[0])   # PERFORMA (+0.53)
+            # delta cap is 2.5: the "big rocket" deltas are now late chases.
+            self.assertEqual(profile.delta_max_sol, 2.5)
+            for birth, now in ((33.95, 45.51), (33.16, 38.59),    # Turtle, Shigure
+                               (36.0, 40.43), (35.0, 39.0)):       # CAVELON, SKILLSPECTOR
+                ok, reason = profile.entry_check(birth, now)
+                self.assertFalse(ok)
+                self.assertEqual(reason, 'momentum_too_late')
+            # Boundary of the cap itself.
+            self.assertTrue(profile.entry_check(32.0, 34.5)[0])
+            self.assertFalse(profile.entry_check(32.0, 34.5001)[0])
             # Birth band still guards supply-shape outliers.
             self.assertFalse(profile.entry_check(30.49, 31.3)[0])
             self.assertFalse(profile.entry_check(50.01, 50.5)[0])
-            # Late chase guard.
-            _, reason = profile.entry_check(31.0, 31.0 + profile.delta_max_sol + 0.01)
-            self.assertEqual(reason, 'momentum_too_late')
+
+    def test_delta_buckets_and_shadow_caps_are_pure_arithmetic(self) -> None:
+        self.assertEqual(delta_bucket(-0.4), '0')
+        self.assertEqual(delta_bucket(0.0), '0')
+        self.assertEqual(delta_bucket(0.35), '0.1-1')
+        self.assertEqual(delta_bucket(1.0), '1-2.5')
+        self.assertEqual(delta_bucket(2.49), '1-2.5')
+        self.assertEqual(delta_bucket(2.5), '2.5-4')
+        self.assertEqual(delta_bucket(4.0), '4-12')
+        self.assertEqual(delta_bucket(12.0), '>12')
+
+        flags = entry_shadow_flags(PROFILE_A, 33.0, 33.0 + 3.0)
+        self.assertEqual(
+            sorted(flags), ['pass_if_cap_1', 'pass_if_cap_12', 'pass_if_cap_2.5', 'pass_if_cap_4'],
+        )
+        self.assertFalse(flags['pass_if_cap_1'])
+        self.assertFalse(flags['pass_if_cap_2.5'])
+        self.assertTrue(flags['pass_if_cap_4'])
+        self.assertTrue(flags['pass_if_cap_12'])
+
+        dead = entry_shadow_flags(PROFILE_A, 31.0, 31.0)
+        self.assertFalse(any(dead.values()), 'a dead delta==0 launch never passes any cap')
+        out_of_band = entry_shadow_flags(PROFILE_A, 20.0, 20.5)
+        self.assertFalse(any(out_of_band.values()), 'birth band applies to every cap')
 
     def test_entry_thresholds_come_from_settings(self) -> None:
         base = make_settings()
@@ -506,7 +537,7 @@ class ABExitRuleTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNotNone(trigger)
             assert trigger is not None
-            self.assertIn('Peak retain', trigger[0])
+            self.assertIn('SL/trail', trigger[0])
             self.assertEqual(trigger[1], pos.initial_tokens_raw // 2)
 
     def test_rocket_bypass_holds_through_100_then_exits_at_85_percent_of_peak(self) -> None:
@@ -531,7 +562,7 @@ class ABExitRuleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(trigger)
         assert trigger is not None
-        self.assertIn('Peak retain', trigger[0])
+        self.assertIn('SL/trail', trigger[0])
         self.assertEqual(trigger[1], pos.initial_tokens_raw)
 
     def test_new_high_timestamp_uses_plus_0_4_pp_and_rising_marks_refresh_every_2_5s(self) -> None:

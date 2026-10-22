@@ -426,6 +426,35 @@ class CreatorWatch:
             if token.creator and not token.identity_conflict:
                 self._by_creator.setdefault((token.identity_type, token.creator), set()).add(mint)
 
+    def prior_tokens_10m(
+        self,
+        creator: Optional[str],
+        as_of: Optional[float] = None,
+        current_mint: Optional[str] = None,
+    ) -> int:
+        """Lookahead-safe count of this wallet's other launches in the last 10 min.
+
+        Runs purely on locally loaded telemetry: zero RPC, zero new state.
+        Used by the B guard as a second serial-deploy signal.
+        """
+        if not creator or as_of is None:
+            return 0
+        count = 0
+        for token in self._tokens.values():
+            if token.identity_conflict or token.creator != creator:
+                continue
+            if current_mint and token.mint == current_mint:
+                continue
+            created = token.created_epoch
+            if created is None or created >= as_of:
+                continue
+            observed = token.identity_observed_epoch
+            if observed is not None and observed > as_of:
+                continue
+            if 0.0 <= as_of - float(created) <= BURST_WINDOW_SEC:
+                count += 1
+        return count
+
     def register_candidate(
         self,
         coin: Any,
