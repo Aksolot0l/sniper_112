@@ -156,8 +156,12 @@ assert not ok and reason == 'no_live_momentum'
 assert PROFILE_A.delta_max_sol == 2.5
 ok, reason = PROFILE_A.entry_check(33.95, 45.51)   # Turtle delta 11.56
 assert not ok and reason == 'momentum_too_late'
-ok, _ = PROFILE_A.entry_check(39.88, 40.41)        # PERFORMA delta 0.53
+ok, _ = PROFILE_A.entry_check(33.50, 34.00)        # live momentum inside the band
 assert ok
+# PERFORMA (born 39.88) is now rejected by the 34.5 birth ceiling, not by the
+# old anti-filter: v_sol_birth = 29.96 + dev_buy_SOL (fix #7).
+ok, reason = PROFILE_A.entry_check(39.88, 40.41)
+assert not ok and reason == 'birth_out_of_band'
 assert entry_shadow_flags(PROFILE_A, 33.0, 36.0) == {
     'pass_if_cap_1': False, 'pass_if_cap_2.5': False,
     'pass_if_cap_4': True, 'pass_if_cap_12': True,

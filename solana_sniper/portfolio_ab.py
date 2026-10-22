@@ -60,12 +60,16 @@ class ABProfile:
 
     Entry (v3, 2026-10-22): the old rule paired a narrow birth band with
     ``v_sol_now <= v_sol_birth + 0.8``. Solscan/Jupiter reconciliation showed
-    that cap was an anti-filter: every real rocket (Turtle 33.95 -> 45.51,
-    KCHAD, Shigure 33.16 -> 38.59, CAVELON 36.0 -> 40.43, PERFORMA 39.88)
-    was rejected while dead launches with ``delta == 0.0`` were bought (8 of 9
-    such fills were losing decoys). The replacement requires *live momentum*:
-    a real inflow of curve reserves inside the first observation window, and
-    no upper cap tight enough to reject early organic runners.
+    that delta cap was an anti-filter: Turtle (33.95 -> 45.51) and Shigure
+    (33.16 -> 38.59) were rejected while dead launches with ``delta == 0.0``
+    were bought (8 of 9 such fills were losing decoys). The replacement
+    requires *live momentum*: a real inflow of curve reserves inside the first
+    observation window.
+
+    Note on the others: CAVELON (36.0) and PERFORMA (39.88) are *not* evidence
+    against the anti-filter any more - with the 34.5 birth ceiling from fix #7
+    they are rejected as ``birth_out_of_band``, because ``v_sol_birth`` is the
+    dev's own buy (29.96 + dev_buy_SOL, corr 0.99988).
     """
 
     name: str

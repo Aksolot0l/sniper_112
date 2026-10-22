@@ -4,6 +4,7 @@ import asyncio
 import os
 import sqlite3
 import tempfile
+import uuid
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -126,6 +127,113 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected.issubset({p.name for p in (root / 'exports').iterdir()}))
             raw_jsonl = (root / 'exports' / 'raw_events.jsonl').read_text()
             self.assertNotIn('must-not-export', raw_jsonl)
+
+    async def test_probe_error_detail_list_is_written_through_the_database(self) -> None:
+        """Regression: a list[dict] in a TEXT column silently dropped the row.
+
+        The old test called probe.probe() with no collector, so it passed while
+        the live writer raised ProgrammingError and lost the whole probe row.
+        This one goes through start() -> record -> close() -> SELECT.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = CandidateCollector(
+                str(root / 'telemetry.sqlite'), str(root / 'exports'),
+                observation_offsets_sec=(),
+            )
+            await collector.start()
+            collector.record_creator_probe(
+                mint='MintDetail', source='Pump.fun',
+                program_creator='ProgramCreator', tx_payer=None,
+                status='partial',
+                values={
+                    'status': 'partial',
+                    'observed_at_utc': '2023-11-14T22:13:20Z',
+                    'error_detail': [
+                        {'method': 'getSignaturesForAddress', 'label': 'rpc_http_429',
+                         'http_status': 429, 'message': 'rate limited'},
+                    ],
+                },
+                signature_count=None, oldest_block_time=None, ata_exists=None,
+                token_balance_raw=None, token_balance_ui=None,
+                latency_ms=83.0, observed_at_utc='2023-11-14T22:13:20Z',
+                error_type='RuntimeError',
+                # The caller passes the raw list; the column is TEXT.
+                error_detail=[{'method': 'getSignaturesForAddress',
+                               'label': 'rpc_http_429', 'http_status': 429,
+                               'message': 'rate limited'}],
+            )
+            await collector.close()
+            self.assertEqual(collector.stats()['write_errors'], 0)
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                rows = db.execute(
+                    'SELECT status,error_detail,values_json FROM creator_probes'
+                ).fetchall()
+                meta = dict(db.execute(
+                    "SELECT key,value FROM collector_meta WHERE key IN "
+                    "('writer_errors','dropped_events')"
+                ).fetchall())
+        self.assertEqual(len(rows), 1, 'the probe row must survive')
+        status, detail, values_json = rows[0]
+        self.assertEqual(status, 'partial')
+        self.assertIsInstance(detail, str)
+        self.assertIn('429', detail)
+        self.assertIn('getSignaturesForAddress', detail)
+        # Nothing is lost: the raw payload stays in values_json.
+        self.assertIn('rpc_http_429', values_json)
+        self.assertEqual(meta.get('writer_errors'), '0')
+        self.assertIn('dropped_events', meta)
+
+    async def test_writer_errors_are_durable_after_queue_drain(self) -> None:
+        """close() must persist counters *after* join(), not before it."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = CandidateCollector(
+                str(root / 'telemetry.sqlite'), str(root / 'exports'),
+                observation_offsets_sec=(),
+            )
+            await collector.start()
+            # A value sqlite3 cannot bind (the exact shape of bug 2): the
+            # writer fails that row, counts it, and the queue lives on.
+            collector._put('decision', (
+                uuid.uuid4().hex, 'cid', 'MintBroken', 'Pump.fun', 'stage', 'pass',
+                '[]', {'not': 'json'}, '2023-11-14T22:13:20Z',
+            ))
+            await collector.close()
+            self.assertEqual(collector.stats()['write_errors'], 1)
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                meta = dict(db.execute(
+                    'SELECT key,value FROM collector_meta '
+                    "WHERE key IN ('writer_errors','writer_error_type')"
+                ).fetchall())
+        # Before the fix this artifact said 0 while the log said 1.
+        self.assertEqual(meta.get('writer_errors'), '1')
+        self.assertEqual(meta.get('writer_error_type'), 'ProgrammingError')
+
+    async def test_probe_error_detail_accepts_a_string_and_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = CandidateCollector(
+                str(root / 'telemetry.sqlite'), str(root / 'exports'),
+                observation_offsets_sec=(),
+            )
+            await collector.start()
+            for mint, detail in (('MintStr', 'rpc_http_500 body'), ('MintNone', None)):
+                collector.record_creator_probe(
+                    mint=mint, source='Pump.fun', program_creator=None, tx_payer=None,
+                    status='unavailable', values={'status': 'unavailable'},
+                    signature_count=None, oldest_block_time=None, ata_exists=None,
+                    token_balance_raw=None, token_balance_ui=None, latency_ms=None,
+                    observed_at_utc='2023-11-14T22:13:20Z', error_detail=detail,
+                )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                got = dict(db.execute(
+                    'SELECT mint,error_detail FROM creator_probes'
+                ).fetchall())
+        self.assertEqual(got['MintStr'], 'rpc_http_500 body')
+        self.assertIsNone(got['MintNone'])
+        self.assertEqual(collector.stats()['write_errors'], 0)
 
     async def test_legacy_candidates_table_gets_dev_buy_columns_added(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

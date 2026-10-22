@@ -130,6 +130,15 @@ def _summary_markdown(
         f"(план {manifest.get('planned_duration_sec')} c)")
     add(f"- paper-only: {manifest.get('paper_only')}; подписано транзакций: "
         f"{manifest.get('signed_transactions')}")
+    stats = manifest.get('telemetry') or {}
+    if stats:
+        add(f"- телеметрия: dropped={stats.get('dropped_events')}, "
+            f"write_errors={stats.get('write_errors')}, "
+            f"writer={stats.get('writer_error') or 'ok'}")
+        if stats.get('write_errors'):
+            add('')
+            add('> ⚠️ Часть строк телеметрии не записалась: воронка и гейт ниже '
+                'построены по усечённым данным.')
     add('')
     add('## A / B')
     add('')
@@ -523,6 +532,7 @@ async def main() -> None:
     simulator: ABPaperSimulator | None = None
     batcher: ReadOnlyRpcBatcher | None = None
     run_error: Optional[str] = None
+    telemetry_stats: dict[str, Any] = {}
     external_stop_reason: Optional[str] = None
     actual_start_epoch = time.time()
 
@@ -692,6 +702,7 @@ async def main() -> None:
             collector.record_meta('run_error_type', run_error or 'none')
             collector.record_meta('run_ended_at_utc', _utc_now())
             await collector.close()
+            telemetry_stats = collector.stats()
             set_collector(None)
             set_rpc_batcher(None)
             if batcher is not None:
@@ -712,6 +723,9 @@ async def main() -> None:
                 'portfolio_summary_file': str(run_dir / 'ab_summary.json'),
                 'signed_transactions': 0,
                 'submitted_transactions': 0,
+                # Lost telemetry rows were previously visible only as one yellow
+                # log line; now they reach the manifest and SUMMARY.md.
+                'telemetry': telemetry_stats,
             })
             # Funnel + gate split, computed from the finished telemetry DB
             # (read-only, no RPC). A blind spot in the probe must stay visible

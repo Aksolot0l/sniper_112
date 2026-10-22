@@ -56,9 +56,10 @@ within 15 s of its own entry. The 12 SOL ceiling fitted the filter to a single
 observation.
 
 The previous `v_sol_now <= v_sol_birth + 0.8` cap was an anti-filter: it rejected
-every real runner seen in the Solscan/Jupiter reconciliation (Turtle 33.95→45.51,
-Shigure 33.16→38.59, CAVELON, PERFORMA, SKILLSPECTOR) while buying dead
-`delta == 0` decoys (8 of 9 such fills lost money).
+real runners seen in the Solscan/Jupiter reconciliation (Turtle 33.95→45.51,
+Shigure 33.16→38.59) while buying dead `delta == 0` decoys (8 of 9 such fills
+lost money). CAVELON (36.0) and PERFORMA (39.88) are **not** affected by that
+anti-filter any more: the 34.5 birth ceiling rejects them as `birth_out_of_band`.
 
 Exits — approved 4-mode ladder, 1:1 (unchanged this run; next experiment): SL −10% before TP1/rocket; no-progress
 (5 s, peak < +4%, PnL < +1.5%); positive stagnation (4.5 s, PnL ≥ +1.5%);

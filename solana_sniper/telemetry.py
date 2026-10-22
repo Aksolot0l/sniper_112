@@ -225,6 +225,9 @@ def _summarize_error_detail(details: Any) -> Optional[str]:
             continue
         label = str(item.get('label') or item.get('method') or 'error')
         bits = [label]
+        method = str(item.get('method') or '').strip()
+        if method and method not in label:
+            bits.append(method)
         for key in ('http_status', 'code'):
             if item.get(key) is not None:
                 bits.append(f'{key}={item[key]}')
@@ -459,12 +462,19 @@ class CandidateCollector:
         latency_ms: Optional[float],
         observed_at_utc: str,
         error_type: Optional[str] = None,
-        error_detail: Optional[str] = None,
+        error_detail: Any = None,
     ) -> None:
         event_id = uuid.uuid4().hex
         requested_at = str(values.get('probe_started_at_utc') or utc_now())
-        if error_detail is None:
-            error_detail = _summarize_error_detail(values.get('error_detail'))
+        # This is a public API and the column is TEXT: normalize here, not only
+        # in the caller. Run #1 lost a whole probe row because a list[dict] went
+        # straight into the TEXT parameter (sqlite3 ProgrammingError); the raw
+        # payload is still preserved in values_json below.
+        if not isinstance(error_detail, str):
+            error_detail = _summarize_error_detail(
+                error_detail if error_detail is not None
+                else values.get('error_detail')
+            )
         self._put('creator_probe', (
             event_id, candidate_id_for(mint), mint, source,
             program_creator, tx_payer, status, requested_at, observed_at_utc,
@@ -734,7 +744,6 @@ class CandidateCollector:
         if self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
         self._put('meta', ('dropped_events', str(self._dropped), utc_now()))
-        self._put('meta', ('writer_errors', str(self._write_errors), utc_now()))
         if self._writer_task and not self._writer_task.done() and not self._failed:
             self._accepting = False
             try:
@@ -747,6 +756,10 @@ class CandidateCollector:
                 await asyncio.gather(self._writer_task, return_exceptions=True)
         else:
             self._accepting = False
+        # Written after the queue drained: a counter queued before join() would
+        # freeze the number at 0 in the artifact (run #1: log said 1, DB said 0)
+        # and the only durable trace of lost rows would be one yellow log line.
+        self._write_final_counters()
         if not self._failed:
             try:
                 await asyncio.to_thread(self.export)
@@ -757,6 +770,33 @@ class CandidateCollector:
                 f'⚠️ Телеметрия: dropped={self._dropped}, write_errors={self._write_errors}, '
                 f'writer={self._writer_error or "ok"}', Color.YELLOW,
             )
+
+    def stats(self) -> dict[str, Any]:
+        """Durable telemetry health for the manifest / SUMMARY."""
+        return {
+            'dropped_events': int(self._dropped),
+            'write_errors': int(self._write_errors),
+            'writer_error': self._writer_error or None,
+            'failed': bool(self._failed),
+        }
+
+    def _write_final_counters(self) -> None:
+        """Persist counters straight into the DB after the writer stopped."""
+        try:
+            with sqlite3.connect(self.db_path) as db:
+                for key, value in (
+                    ('dropped_events', str(self._dropped)),
+                    ('writer_errors', str(self._write_errors)),
+                    ('writer_error_type', self._writer_error or 'ok'),
+                ):
+                    db.execute(
+                        'INSERT OR REPLACE INTO collector_meta(key,value,recorded_at_utc) '
+                        'VALUES (?,?,?)',
+                        (key, value, utc_now()),
+                    )
+                db.commit()
+        except sqlite3.Error as exc:
+            log(f'⚠️ Не удалось записать счётчики телеметрии ({type(exc).__name__})', Color.YELLOW)
 
     def export(self) -> None:
         self.export_dir.mkdir(parents=True, exist_ok=True)

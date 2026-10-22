@@ -293,6 +293,38 @@ class FunnelReportTests(unittest.TestCase):
                 # The count must be separated from the reason by whitespace.
                 self.assertEqual(line[-2], ' ', f'glued reason/count: {line!r}')
 
+    def test_summary_surfaces_lost_telemetry_rows(self) -> None:
+        """A dropped row used to be one yellow log line and nothing else."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            _build_db(db_path)
+            funnel = funnel_from_db(db_path)
+        settings = SimpleNamespace(
+            http_rpc_url='https://rpc.example.invalid', wss_url='wss://rpc.example.invalid',
+            entry_fee_sol=0.00008, exit_fee_sol=0.00005, usd_rub_rate=90.0,
+        )
+        with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
+            manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
+        manifest['telemetry'] = {
+            'dropped_events': 0, 'write_errors': 1, 'writer_error': 'ProgrammingError',
+        }
+        text = _summary_markdown(manifest, funnel, {
+            'portfolio_a': {'entry_count': 1, 'realized_pnl_rub': -41.5},
+            'portfolio_b': {'entry_count': 1, 'realized_pnl_rub': 12.0},
+        })
+        self.assertIn('write_errors=1', text)
+        self.assertIn('ProgrammingError', text)
+        self.assertIn('не записалась', text)
+
+        # Clean run: counters are still reported, without the warning.
+        manifest['telemetry'] = {'dropped_events': 0, 'write_errors': 0, 'writer_error': None}
+        text = _summary_markdown(manifest, funnel, {
+            'portfolio_a': {'entry_count': 1, 'realized_pnl_rub': -41.5},
+            'portfolio_b': {'entry_count': 1, 'realized_pnl_rub': 12.0},
+        })
+        self.assertIn('write_errors=0', text)
+        self.assertNotIn('не записалась', text)
+
     def test_manifest_declares_fix_7_and_keeps_cap_and_ladder(self) -> None:
         settings = SimpleNamespace(
             http_rpc_url='https://rpc.example.invalid', wss_url='wss://rpc.example.invalid',
