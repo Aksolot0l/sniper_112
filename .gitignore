@@ -5,3 +5,4 @@ workspace-*.zip
 *.venv/
 __pycache__/
 Прогон 1/telemetry_rebuilt.sqlite
+run2_raw/
