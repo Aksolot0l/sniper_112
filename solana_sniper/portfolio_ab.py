@@ -165,7 +165,7 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
         'v_sol_birth_min': float(getattr(settings, 'entry_birth_min_sol', 30.5)),
         'v_sol_birth_max': float(getattr(settings, 'entry_birth_max_sol', 50.0)),
         'delta_min_sol': float(getattr(settings, 'entry_delta_min_sol', 0.10)),
-        'delta_max_sol': float(getattr(settings, 'entry_delta_max_sol', 12.0)),
+        'delta_max_sol': float(getattr(settings, 'entry_delta_max_sol', 2.5)),
     }
     a = replace(PROFILE_A, **shared)
     b = replace(PROFILE_B, **shared,

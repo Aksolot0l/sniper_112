@@ -361,15 +361,28 @@ class CreatorOnchainProbe:
         observed_epoch = time.time()
         wallet_age_sec, burst = self._burst(sig_data, observed_epoch)
         prior_tokens_10m = 0
+        actor_prior_tokens_10m: Optional[int] = None
         if self.creator_watch is not None:
-            try:
-                lookup = getattr(self.creator_watch, 'prior_tokens_10m', None)
-                if callable(lookup):
+            lookup = getattr(self.creator_watch, 'prior_tokens_10m', None)
+            if callable(lookup):
+                try:
                     prior_tokens_10m = int(
                         lookup(resolved, as_of=observed_epoch, current_mint=mint) or 0
                     )
-            except Exception:
-                prior_tokens_10m = 0
+                except Exception:
+                    prior_tokens_10m = 0
+                # Diagnostic only: the local index is keyed by program_creator,
+                # so this number is usually 0 when the real deployer sits in
+                # pumpportal_event_actor. Recorded (never used for gating) so a
+                # post-run review can tell "no signal" from "signal is blind".
+                if actor_valid:
+                    try:
+                        actor_prior_tokens_10m = int(
+                            lookup(str(event_actor), as_of=observed_epoch,
+                                   current_mint=mint) or 0
+                        )
+                    except Exception:
+                        actor_prior_tokens_10m = None
         guard_passed, guard_reason = self._guard(
             signature_count=signature_count, burst=burst,
             ata_exists=ata_exists, balance_raw=balance_raw,
@@ -416,6 +429,11 @@ class CreatorOnchainProbe:
             'creator_burst_window_sec': self.burst_window_sec,
             'creator_prior_tokens_10m': prior_tokens_10m,
             'creator_repeat_deploy_in_session': prior_tokens_10m >= 2,
+            # log-only diagnostic; deliberately NOT passed to _guard this run
+            'creator_prior_tokens_10m_actor': actor_prior_tokens_10m,
+            'creator_prior_tokens_10m_actor_path': (
+                'log_only' if actor_prior_tokens_10m is not None else 'not_applicable'
+            ),
             'ata_exists': ata_exists,
             'creator_token_ata_exists': ata_exists,
             'creator_token_ata': token_data.get('ata') if token_data else None,

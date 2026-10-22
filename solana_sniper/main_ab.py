@@ -73,6 +73,20 @@ def _strategy_metadata() -> dict[str, Any]:
             'no_progress is one-shot at 5s; corridor -9.9%..+1.4% '
             'exits only by timeout'
         ),
+        'known_gap': (
+            'repeat_deploy indexed by program_creator only; event_actor path '
+            'is log-only this run (creator_prior_tokens_10m_actor)'
+        ),
+        'edge_status': (
+            'no proven edge; cap 2.5 chosen for drawdown/slot hygiene '
+            '(archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 '
+            'observed stop-outs; keeps 0 of the 2 rockets cut)'
+        ),
+        'expected_flow': (
+            '~17% of entry_state pass at cap 2.5 (11/66 archived); '
+            'archive density 8.5 entry_state/min -> ~40 A entries per 30 min, '
+            '~15% guard pass -> order of 6 B entries per 30 min'
+        ),
         'entry': (
             '30.5 <= v_sol_birth <= 50.0 and '
             '0.10 <= (v_sol_now - v_sol_birth) <= 2.5'

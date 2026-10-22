@@ -299,6 +299,9 @@ def main() -> None:
     parser.add_argument('--latest', action='store_true',
                         help='monitor the newest run under runs/ (default when --run-dir is omitted)')
     parser.add_argument('--port', type=int, default=8767)
+    # Loopback by default: the page is served to this machine only.
+    # Use --host 0.0.0.0 explicitly if a remote browser must reach it.
+    parser.add_argument('--host', default='127.0.0.1')
     args = parser.parse_args()
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()
@@ -314,9 +317,9 @@ def main() -> None:
     if not run_dir.is_dir():
         raise SystemExit('run directory does not exist')
     Handler.run_dir = run_dir
-    server = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
-    print(f'Read-only A/B monitor listening on 0.0.0.0:{args.port}; run_id={read_json(run_dir / "manifest.json").get("run_id", run_dir.name)}', flush=True)
+    print(f'Read-only A/B monitor listening on {args.host}:{args.port}; run_id={read_json(run_dir / "manifest.json").get("run_id", run_dir.name)}', flush=True)
     server.serve_forever()
 
 

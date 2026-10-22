@@ -23,7 +23,10 @@ RAPID_COLLAPSE_DROP_PCT = 50.0
 RAPID_COLLAPSE_HORIZON_SEC = 120
 MIN_EXIT_ROUTE_FAILURES = 3
 MIN_EXIT_ROUTE_FAILURE_SPAN_SEC = 20.0
-BURST_WINDOW_SEC = 10 * 60
+# Window for counting a wallet's own repeat launches (used by
+# CreatorWatch.prior_tokens_10m). Distinct from creator_probe's
+# creator_burst_window_sec = 3600, which measures signature-page density.
+REPEAT_DEPLOY_WINDOW_SEC = 10 * 60
 BURST_PRIOR_TOKENS = 2
 MIN_PRIOR_ADVERSE_TOKENS_TO_FLAG = 2
 
@@ -451,7 +454,7 @@ class CreatorWatch:
             observed = token.identity_observed_epoch
             if observed is not None and observed > as_of:
                 continue
-            if 0.0 <= as_of - float(created) <= BURST_WINDOW_SEC:
+            if 0.0 <= as_of - float(created) <= REPEAT_DEPLOY_WINDOW_SEC:
                 count += 1
         return count
 
@@ -541,7 +544,7 @@ class CreatorWatch:
             prior.sort(key=lambda token: (token.created_epoch or 0.0, token.mint))
             recent = [
                 token for token in prior
-                if 0 <= as_of - float(token.created_epoch or 0.0) <= BURST_WINDOW_SEC
+                if 0 <= as_of - float(token.created_epoch or 0.0) <= REPEAT_DEPLOY_WINDOW_SEC
             ]
 
             adverse_mints: list[str] = []

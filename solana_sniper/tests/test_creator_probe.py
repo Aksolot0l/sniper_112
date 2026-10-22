@@ -375,3 +375,56 @@ class CreatorRepeatDeployTests(unittest.IsolatedAsyncioTestCase):
         result = await probe.probe(coin)
         self.assertEqual(result['creator_prior_tokens_10m'], 0)
         self.assertTrue(result['creator_guard_passed'])
+
+
+class CreatorActorDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actor_prior_tokens_recorded_but_never_gating(self) -> None:
+        session = ScriptedFakeSession(
+            sigs={CREATOR: [], ACTOR: _old_sig_times(25)},
+            balances={ACTOR: '9000000000000'},
+        )
+
+        class FakeWatch:
+            def __init__(self):
+                self.seen = []
+
+            def prior_tokens_10m(self, creator, as_of=None, current_mint=None):
+                self.seen.append(creator)
+                # Real deployer in the actor path: 3 launches in 10 minutes.
+                return 3 if creator == ACTOR else 0
+
+        watch = FakeWatch()
+        probe = CreatorOnchainProbe(
+            session, 'https://rpc.example.invalid', creator_watch=watch,
+        )
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={'pumpportal_event_actor': ACTOR}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        # Identity resolved to the actor, so the gating count itself is the actor's.
+        self.assertEqual(result['creator'], ACTOR)
+        self.assertEqual(result['creator_prior_tokens_10m'], 3)
+        self.assertEqual(result['creator_prior_tokens_10m_actor'], 3)
+        self.assertIn(ACTOR, watch.seen)
+
+    async def test_actor_field_is_none_when_curve_creator_is_the_real_wallet(self) -> None:
+        session = ScriptedFakeSession(
+            sigs={CREATOR: _old_sig_times(25)}, balances={CREATOR: '1000000000000'},
+        )
+
+        class FakeWatch:
+            def prior_tokens_10m(self, *_args, **_kwargs):
+                return 0
+
+        probe = CreatorOnchainProbe(
+            session, 'https://rpc.example.invalid', creator_watch=FakeWatch(),
+        )
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None, source='Pump.fun',
+            packet={}, signature='sig',
+        )
+        result = await probe.probe(coin)
+        self.assertIsNone(result['creator_prior_tokens_10m_actor'])
+        self.assertEqual(result['creator_prior_tokens_10m_actor_path'], 'not_applicable')
+        self.assertTrue(result['creator_guard_passed'])
