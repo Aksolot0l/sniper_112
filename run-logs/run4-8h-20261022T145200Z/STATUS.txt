@@ -1,0 +1,18 @@
+run_id: run4-8h-20261022T145200Z
+snapshot_utc: 2026-10-22T14:52:20Z
+mode: light
+run_dir_size: 1.7M
+opens: 10
+closes: 4
+[14:51:43] 🛑 J86Y…YKXV — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[14:51:43] ✅ [portfolio_a] CLOSE H3Y4…pump | SL (−10.0%) | PnL=-51.37 ₽ (-10.3%) | cash=448.63 ₽
+[14:51:43] ✅ [portfolio_b] CLOSE H3Y4…pump | SL (−10.0%) | PnL=-51.37 ₽ (-10.3%) | cash=448.63 ₽
+[14:51:43] ✅ [shadow_gate] CLOSE H3Y4…pump | SL (−10.0%) | PnL=-51.37 ₽ (-10.3%) | cash=1448.63 ₽
+[14:51:43] ✅ [shadow_exit25] CLOSE H3Y4…pump | SL (−10.0%) | PnL=-51.37 ₽ (-10.3%) | cash=448.63 ₽
+[14:51:44] 👁️ Новая монета: 7inbMEbdGjdSh5YqYUyRHUyvZiP1c2aym3U3R82EFLjH (Pump.fun | NEMO)
+[14:51:44] 🛑 7inb…FLjH — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[14:51:45] 👁️ Новая монета: 9jVW6LFYVNAZ7bCDkRW7cFd4RvdSfAUkAtwPuKbwpump (Pump.fun | Elon III)
+[14:51:45] ⏹ Stop-list fired: rpc_error_rate (failed=2/148 = 1.35% over 600s > 1%)
+[14:51:45] ⏹ Early stop: rpc_error_rate (failed=2/148 = 1.35% over 600s > 1%); finalizing this RUN_ID.
+[14:51:45] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run4-8h-20261022T145200Z/SUMMARY.md
+[14:51:45] ⏹ A/B run finalized: run4-8h-20261022T145200Z; open and pending positions remain separately recorded.

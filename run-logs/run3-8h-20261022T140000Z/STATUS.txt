@@ -1,0 +1,18 @@
+run_id: run3-8h-20261022T140000Z
+snapshot_utc: 2026-10-22T14:49:49Z
+mode: full
+run_dir_size: 42M
+opens: 108
+closes: 106
+[14:49:15] 👁️ Новая монета: HbP9dEjshaJ4NqJLWLMLcLjJvtQTmXSD2oonJvMbpump (Pump.fun | Baboon)
+[14:49:16] 👁️ Новая монета: AdqR8Me8kiiJxJSddXFMQQ89jEtrtPi7N9qZW2n3pump (Pump.fun | KYA)
+[14:49:16] 👁️ Новая монета: DJ9SVkak9W8imFRLPidLNvKUN8U2hdrEkcJKbsGp5viL (Pump.fun | KYA)
+[14:49:16] 🛑 DJ9S…5viL — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[14:49:16] 👁️ Новая монета: 9vCuoZa4gTjQVnHC3JD6w2xh5aYVscYoRG3aBWyPpump (Pump.fun | Baboon)
+[14:49:16] 👁️ Новая монета: AP7HazwoZsyRsh4mwAwswLNi9t54QFAeuipwGHSFpump (Pump.fun | Baboon)
+[14:49:18] 👁️ Новая монета: DrpuRD1PGaR1ircdpPY5xwv12mTi9nw6dkWiGUtGpump (Pump.fun | Baboon)
+[14:49:18] 👁️ Новая монета: 26bJz7x9kwXE7ejpL6gSKUTpTLv64o2s11chUnbCpump (Pump.fun | Baboon)
+[14:49:23] ⏹ Stop-list fired: rpc_error_rate (failed=16/1408 = 1.14% over 600s > 1%)
+[14:49:23] ⏹ Early stop: rpc_error_rate (failed=16/1408 = 1.14% over 600s > 1%); finalizing this RUN_ID.
+[14:49:24] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/SUMMARY.md
+[14:49:24] ⏹ A/B run finalized: run3-8h-20261022T140000Z; open and pending positions remain separately recorded.
