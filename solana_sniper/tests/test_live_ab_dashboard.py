@@ -10,10 +10,16 @@ from live_ab_dashboard import HTML, make_snapshot
 
 
 class LiveABDashboardTests(unittest.TestCase):
-    def test_page_has_only_logs_and_portfolio_tabs_with_live_config_fields(self) -> None:
+    def test_page_has_separate_tabs_per_portfolio_plus_compare_and_logs(self) -> None:
         self.assertIn('/api/status', HTML)
+        self.assertIn('data-view="portfolio_a"', HTML)
+        self.assertIn('data-view="portfolio_b"', HTML)
+        self.assertIn('data-view="compare"', HTML)
         self.assertIn('data-view="logs"', HTML)
-        self.assertIn('data-view="portfolios"', HTML)
+        self.assertIn('id="view-portfolio_a"', HTML)
+        self.assertIn('id="view-portfolio_b"', HTML)
+        # Each portfolio lives in its own section: no shared stacked grid.
+        self.assertNotIn('id="portfolioGrid"', HTML)
         self.assertNotIn('data-view="overview"', HTML)
         self.assertNotIn('data-view="positions"', HTML)
         self.assertIn('max_slots', HTML)

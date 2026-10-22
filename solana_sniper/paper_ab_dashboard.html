@@ -36,6 +36,13 @@
   .cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
          gap:16px;align-items:start}
   @media (max-width:1100px){ .cols2{grid-template-columns:1fr} }
+  /* Одна вкладка = один портфель во всю ширину. */
+  .single{max-width:1180px}
+  .single .money{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .single .slot{min-width:150px}
+  @media (max-width:900px){
+    .single .money{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
   .cardArmA{border-left:3px solid #2b4b74}
   .cardArmB{border-left:3px solid #4a2f7a}
@@ -95,15 +102,22 @@
 </header>
 <div class="notice" id="notice" hidden></div>
 <nav>
-  <button id="tab-portfolios" data-view="portfolios" class="active">Портфели</button>
+  <button id="tab-portfolio_a" data-view="portfolio_a" class="active">Портфель A</button>
+  <button id="tab-portfolio_b" data-view="portfolio_b">Портфель B</button>
+  <button id="tab-compare" data-view="compare">A/B сравнение</button>
   <button id="tab-logs" data-view="logs">Логи</button>
 </nav>
 <main>
-  <section id="view-portfolios">
-    <div class="cols2" id="portfolioGrid"></div>
+  <section id="view-portfolio_a">
+    <div class="single" id="portfolioA"></div>
+  </section>
+  <section id="view-portfolio_b" hidden>
+    <div class="single" id="portfolioB"></div>
+  </section>
+  <section id="view-compare" hidden>
     <div class="section-title">A/B воронка решений</div>
     <div class="compare" id="compareBox"></div>
-    <div class="section-title">Сделки</div>
+    <div class="section-title">Сводка и сделки</div>
     <div class="cols2" id="tradesGrid"></div>
   </section>
   <section id="view-logs" hidden>
@@ -125,7 +139,8 @@
 // to be running locally on the default port.
 const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8767' : '';
 const REFRESH_MS = 3000;
-const state = { snapshot: null, view: 'portfolios', logs: [], errors: 0 };
+const VIEWS = ['portfolio_a', 'portfolio_b', 'compare', 'logs'];
+const state = { snapshot: null, view: 'portfolio_a', logs: [], errors: 0 };
 
 const $ = (id) => document.getElementById(id);
 const num = (value, digits = 2) => {
@@ -441,13 +456,32 @@ function renderLogs(snap) {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
+function portfolioByName(snap, name) {
+  return (snap.portfolios || []).find((portfolio) => portfolio.name === name) || null;
+}
+
+function renderSingle(snap, view) {
+  const box = $(view === 'portfolio_a' ? 'portfolioA' : 'portfolioB');
+  box.textContent = '';
+  const portfolio = portfolioByName(snap, view);
+  if (!portfolio) {
+    box.appendChild(el('div', 'card muted', `портфель ${view} отсутствует в этом прогоне`));
+    return;
+  }
+  box.appendChild(renderPortfolio(portfolio));
+  // Keep the tab label informative: which arm and how it is doing.
+  const label = view === 'portfolio_a' ? 'Портфель A' : 'Портфель B';
+  const pnl = portfolio.realized_pnl_rub;
+  const suffix = pnl === null || pnl === undefined ? '' : ` · ${rub(pnl)}`;
+  $(`tab-${view}`).textContent = `${label}${suffix}`;
+}
+
 function render(snap) {
   state.snapshot = snap;
   renderHeader(snap);
-  if (state.view === 'portfolios') {
-    const grid = $('portfolioGrid');
-    grid.textContent = '';
-    for (const portfolio of snap.portfolios || []) grid.appendChild(renderPortfolio(portfolio));
+  if (state.view === 'portfolio_a' || state.view === 'portfolio_b') {
+    renderSingle(snap, state.view);
+  } else if (state.view === 'compare') {
     renderCompare(snap);
     renderTradesGrid(snap);
   } else {
@@ -456,11 +490,15 @@ function render(snap) {
 }
 
 function setView(view) {
+  if (!VIEWS.includes(view)) view = 'portfolio_a';
   state.view = view;
-  for (const name of ['portfolios', 'logs']) {
-    $(`view-${name}`).hidden = name !== view;
-    $(`tab-${name}`).classList.toggle('active', name === view);
+  for (const name of VIEWS) {
+    const section = $(`view-${name}`);
+    if (section) section.hidden = name !== view;
+    const tab = $(`tab-${name}`);
+    if (tab) tab.classList.toggle('active', name === view);
   }
+  try { history.replaceState(null, '', `#${view}`); } catch (error) { /* file:// may refuse */ }
   if (state.snapshot) render(state.snapshot);
 }
 
@@ -485,10 +523,19 @@ async function poll() {
   }
 }
 
-$('tab-portfolios').addEventListener('click', () => setView('portfolios'));
-$('tab-logs').addEventListener('click', () => setView('logs'));
+for (const name of VIEWS) {
+  const tab = $(`tab-${name}`);
+  if (tab) tab.addEventListener('click', () => setView(name));
+}
+document.addEventListener('keydown', (event) => {
+  const map = { '1': 'portfolio_a', '2': 'portfolio_b', '3': 'compare', '4': 'logs' };
+  if (event.target && ['INPUT', 'TEXTAREA'].includes(event.target.tagName)) return;
+  if (map[event.key]) setView(map[event.key]);
+});
 $('logFilter').addEventListener('input', () => { if (state.snapshot) renderLogs(state.snapshot); });
 
+const initialView = (location.hash || '').replace('#', '');
+if (VIEWS.includes(initialView)) setView(initialView);
 poll();
 setInterval(() => { if (!document.hidden) poll(); }, REFRESH_MS);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
