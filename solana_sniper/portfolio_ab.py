@@ -94,6 +94,21 @@ class ABProfile:
     # -18.7% within 15 s of its own entry. The 12 SOL ceiling fitted the filter
     # to a single observation.
     delta_max_sol: float = 2.5
+    # Run #4 (arm B): the cap is derived from the birth ceiling itself, so the
+    # delta window cannot block an entry that happens at the moment of
+    # detection. With 30.5 <= v_sol_birth <= 34.5 the cap is between 0 and
+    # 4 SOL, i.e. it only rejects what a live t0 entry cannot produce anyway.
+    delta_max_from_birth_ceiling: bool = False
+    # --- entry latency model (run #4) ---
+    # The fill price always comes from the real on-chain curve read, never from
+    # the WSS packet. `entry_latency_ms` is the modelled execution delay between
+    # detection and the fill; the measured delay of every trade is written as
+    # `entry_lag_ms`, and a read that arrives earlier than the model is counted
+    # as a floor violation instead of being silently priced at t0.
+    entry_latency_ms: float = 150.0
+    # True for arms that enter on the first curve read after detection (no
+    # momentum wait): arm B and the shadow_t0_5s book.
+    entry_at_detection: bool = False
     # --- exit ladder (approved 4-mode logic) ---
     no_progress_pct: float = 1.5
     stop_loss_pct: float = 10.0
@@ -120,6 +135,9 @@ class ABProfile:
     # shadow_exit25: sell 100% on the first tick at >= this PnL; TP1/trailing/
     # shelf/no-progress are disabled, SL and the 35 s timeout stay.
     single_exit_pct: Optional[float] = None
+    # shadow_t0_5s: hold exactly this long and sell 100% at market — no SL,
+    # TP, shelf or timeout. It measures the drift alone, with no exit rule.
+    single_exit_sec: Optional[float] = None
     initial_balance_rub: float = 1_500.0
     position_size_rub: float = 500.0
     max_slots: int = 3
@@ -128,6 +146,12 @@ class ABProfile:
     # Accounting only: no entry/exit decision reads the injected capital.
     auto_top_up: bool = True
 
+    def delta_cap(self, v_sol_birth: float) -> float:
+        """Upper bound on delta for this candidate."""
+        if self.delta_max_from_birth_ceiling:
+            return max(0.0, self.v_sol_birth_max - v_sol_birth)
+        return self.delta_max_sol
+
     def entry_check(
         self,
         v_sol_birth: float,
@@ -135,14 +159,14 @@ class ABProfile:
         delta_max_override: Optional[float] = None,
     ) -> tuple[bool, str]:
         delta = v_sol_now - v_sol_birth
-        cap = self.delta_max_sol if delta_max_override is None else float(delta_max_override)
+        cap = self.delta_cap(v_sol_birth) if delta_max_override is None else float(delta_max_override)
         if not (self.v_sol_birth_min <= v_sol_birth <= self.v_sol_birth_max):
             return False, 'birth_out_of_band'
         if delta < self.delta_min_sol:
-            return False, 'no_live_momentum'
+            return False, 'entry_below_delta_min' if self.delta_min_sol <= 0 else 'no_live_momentum'
         if delta > cap:
             return False, 'momentum_too_late'
-        return True, 'live_momentum_entry'
+        return True, 'first_read_entry' if self.entry_at_detection else 'live_momentum_entry'
 
 
 DELTA_BUCKETS: tuple[tuple[str, float, float], ...] = (
@@ -228,8 +252,18 @@ def gate_status(
     return 'fail_risk'
 
 
+# Run #4: A is the run #3 reference (unchanged); B drops the momentum wait.
+# The single behavioural difference is `delta_min_sol` (0.10 vs 0). B's delta
+# cap is derived from the birth ceiling (34.5 - v_sol_birth) so that the cap
+# cannot reject a t0 entry — that is a consequence of delta_min = 0, not a
+# second experiment.
 PROFILE_A = ABProfile(name='portfolio_a', delta_max_sol=2.5)
-PROFILE_B = ABProfile(name='portfolio_b', delta_max_sol=3.0)
+PROFILE_B = ABProfile(
+    name='portfolio_b',
+    delta_min_sol=0.0,
+    delta_max_from_birth_ceiling=True,
+    entry_at_detection=True,
+)
 
 # Virtual books: same 1 500 RUB / 500 RUB / 3 slots accounting, 0 RUB of real
 # capital, never fed into ab_summary's live arms.
@@ -241,15 +275,26 @@ SHADOW_EXIT25 = ABProfile(
     name='shadow_exit25', delta_max_sol=2.5, is_shadow=True, capital_rub=0.0,
     mirror_of='portfolio_a', single_exit_pct=25.0,
 )
-SHADOW_PROFILES = (SHADOW_GATE, SHADOW_EXIT25)
+# shadow_t0_5s: entries exactly like B (t0 + entry_latency_ms), but the position
+# is closed 5 s after it opens, at market, with no SL/TP/shelf/timeout. It
+# measures the drift alone — the +1.44 % leg of the run #3 decomposition.
+SHADOW_T0_5S = ABProfile(
+    name='shadow_t0_5s',
+    delta_min_sol=0.0, delta_max_from_birth_ceiling=True,
+    entry_at_detection=True,
+    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_b',
+    single_exit_sec=5.0,
+)
+SHADOW_PROFILES = (SHADOW_GATE, SHADOW_EXIT25, SHADOW_T0_5S)
 
 
 def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
     """Build both live arms and both shadows from environment-driven settings.
 
-    Run #3 invariant: the arms differ in exactly ONE number, ``delta_max_sol``
-    (A 2.5, B 3.0). Both creator gates are off, so a difference in the result
-    can only be attributed to the cap. The gate lives on as ``shadow_gate``.
+    Run #4 invariant: the arms differ in exactly ONE thing, ``delta_min_sol``
+    (A 0.10 waits for momentum, B 0 enters on the first curve read). B's cap
+    follows from the birth ceiling so it can never block a t0 entry. Both
+    creator gates are off; the gate lives on as ``shadow_gate``.
     """
     shared = {
         'v_sol_birth_min': float(getattr(settings, 'entry_birth_min_sol', 30.5)),
@@ -261,15 +306,28 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
         PROFILE_A, **shared,
         delta_max_sol=float(getattr(settings, 'entry_delta_max_sol', 2.5)),
     )
+    # B keeps its own delta_min: the arm is defined by "no momentum wait", so
+    # the shared env value must not leak into it.
     b = replace(
-        PROFILE_B, **shared,
-        delta_max_sol=float(getattr(settings, 'entry_delta_max_sol_b', 3.0)),
+        PROFILE_B,
+        v_sol_birth_min=shared['v_sol_birth_min'],
+        v_sol_birth_max=shared['v_sol_birth_max'],
+        entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)),
     )
+    a = replace(a, entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)))
     shadow_gate = replace(SHADOW_GATE, **shared, guard_min_signatures=guard_min_sig)
     shadow_exit25 = replace(SHADOW_EXIT25, **shared)
+    # shadow_t0_5s IS the B entry rule; the env delta_min must not leak in.
+    shadow_t0 = replace(
+        SHADOW_T0_5S,
+        v_sol_birth_min=shared['v_sol_birth_min'],
+        v_sol_birth_max=shared['v_sol_birth_max'],
+        entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)),
+    )
     return {
         a.name: a, b.name: b,
         shadow_gate.name: shadow_gate, shadow_exit25.name: shadow_exit25,
+        shadow_t0.name: shadow_t0,
     }
 
 
@@ -340,7 +398,16 @@ class SimPosition:
     status: str = 'open'
     # --- run #3 instrumentation (own mark stream, not observations.csv) ---
     entry_lag_sec: float = 0.0
+    # Run #4: premium paid for waiting for momentum — mid price at the entry
+    # snapshot vs the price at the coin's creation (t0). A ~ +2.1 %, B ~ 0.
     entry_premium_pct: Optional[float] = None
+    # Fees + price impact inside the same snapshot (the -2.5 %/trade line).
+    entry_fill_premium_pct: Optional[float] = None
+    t0_price_usd: Optional[float] = None
+    # Detection -> the on-chain read used for the fill, milliseconds.
+    entry_lag_ms: Optional[float] = None
+    entry_latency_ms: float = 0.0
+    entry_latency_floor_met: Optional[bool] = None
     mfe_pct: float = 0.0
     mae_pct: float = 0.0
     exit_trigger_pnl_pct: Optional[float] = None
@@ -536,7 +603,10 @@ class ExecutableQuote:
 
 
 # --- run #3 addendum: early-stop policy thresholds (checked every cycle) ---
-STOP_RPC_ERROR_RATE = 0.01          # > 1 % failed requests over the window
+# Run #4: the stop-list judges UNRECOVERED errors only. Run #3 died after 49
+# minutes on 16/1408 = 1.14 % "failures" that were plain Helius 429 bursts;
+# a 429 that a retry recovers is back-pressure, not a telemetry failure.
+STOP_RPC_ERROR_RATE = 0.02          # > 2 % unrecovered requests over the window
 STOP_RPC_WINDOW_SEC = 600.0         # ... last 10 minutes
 STOP_RPC_MIN_REQUESTS = 20          # never judge a rate on 3 calls
 STOP_RPC_LATENCY_MS = 1_000.0       # p95 above this ...
@@ -605,6 +675,25 @@ def trade_stats(pnls: list[float], *, iterations: int = BOOTSTRAP_ITERATIONS) ->
         'sum_without_top2': round(sum(ordered[:max(0, n - 2)]), 4),
         'sum_without_worst2': round(sum(ordered[2:]) if n > 2 else 0.0, 4),
     }
+
+
+def median(values: list[float]) -> Optional[float]:
+    """Plain median; None for an empty sample (never a fake 0)."""
+    data = sorted(float(v) for v in values)
+    if not data:
+        return None
+    middle = len(data) // 2
+    if len(data) % 2:
+        return data[middle]
+    return (data[middle - 1] + data[middle]) / 2.0
+
+
+def percentile(values: list[float], p: float) -> Optional[float]:
+    data = sorted(float(v) for v in values)
+    if not data:
+        return None
+    index = max(0, min(len(data) - 1, math.ceil(p * len(data)) - 1))
+    return data[index]
 
 
 def mean_difference_ci(
@@ -682,13 +771,18 @@ class ABPaperSimulator:
         self.ticks: list[dict[str, Any]] = []
         # --- run #3 addendum: early-stop bookkeeping (no new RPC) ---
         self._entry_state_total = 0
+        # Run #4: entry-latency accounting (acceptance #4).
+        self.entry_latency_floor_violations = 0
+        self.last_entry_latency_wait_sec = 0.0
+        self.entry_lag_ms_by_profile: dict[str, list[float]] = {}
         self._book_last_entry_epoch: dict[str, float] = {
             name: self.started_at_epoch for name in self.books
         }
         self._entry_state_at_last_entry: dict[str, int] = {
             name: 0 for name in self.books
         }
-        self._rpc_samples: list[tuple[float, int, int, Optional[float]]] = []
+        # (monotonic, requests, failed attempts, p95, unrecovered reads)
+        self._rpc_samples: list[tuple[float, int, int, Optional[float], int]] = []
         self._rpc_latency_high_since: Optional[float] = None
         self.stop_policy_state: dict[str, Any] = {
             'reason': None, 'telemetry': {}, 'rpc': {}, 'stall': {}, 'resources': {},
@@ -818,6 +912,40 @@ class ABPaperSimulator:
             return None
         return EntrySnapshot(curve, fee_context, slot, observed_at)
 
+    def _entry_latency_floor_sec(self) -> float:
+        """The longest modelled execution delay across the books.
+
+        All live arms and `shadow_t0_5s` use the same 150 ms, so the gate costs
+        nothing; taking the max keeps the guard correct if one arm is ever
+        given a different value."""
+        values = [
+            float(book.profile.entry_latency_ms) for book in self.books.values()
+            if not book.profile.is_shadow or book.profile.mirror_of is not None
+        ]
+        return max(values) / 1000.0 if values else 0.0
+
+    async def _await_entry_latency_floor(self, coin: NewCoin) -> float:
+        """Hold the decision until `found_at + entry_latency_ms`.
+
+        Run #4 prices fills from the on-chain curve read, so the earliest
+        moment a position can exist is detection + execution delay. Waiting
+        here costs no RPC and no state; it only stops the simulator from
+        booking an entry that a real bot could not have sent. Returns the
+        seconds actually spent waiting (0.0 when the filter stage was already
+        slower than the floor, which is the normal case).
+        """
+        floor = self._entry_latency_floor_sec()
+        if floor <= 0:
+            return 0.0
+        wait = (coin.found_at + floor) - time.time()
+        if wait <= 0:
+            return 0.0
+        # A candidate older than a second is a different problem; never block
+        # the loop for long, the flag on the trade records the violation.
+        wait = min(wait, 1.0)
+        await asyncio.sleep(wait)
+        return wait
+
     async def handle_candidate(self, coin: NewCoin) -> None:
         if coin.source != 'Pump.fun':
             collector = self._collector()
@@ -881,6 +1009,11 @@ class ABPaperSimulator:
         if not coin.curve:
             self._record_candidate_fail(coin, 'missing_curve_after_security_filters')
             return
+
+        # Run #4: no fill may be booked before detection + entry_latency_ms.
+        # This is a sleep, not a read: the RPC budget is untouched.
+        latency_wait_sec = await self._await_entry_latency_floor(coin)
+        self.last_entry_latency_wait_sec = latency_wait_sec
 
         # The filter preflight already read mint + curve + Global + FeeConfig
         # in one getMultipleAccounts context. Do not issue a second entry read.
@@ -984,6 +1117,14 @@ class ABPaperSimulator:
              'delta_bucket': delta_bucket(delta_sol),
              'delta_cap_used_sol': base_profile.delta_max_sol,
              **entry_shadow_flags(base_profile, birth_v_sol, current_v_sol),
+             'entry_latency_ms': base_profile.entry_latency_ms,
+             'entry_latency_wait_ms': round(
+                 float(getattr(self, 'last_entry_latency_wait_sec', 0.0)) * 1000.0, 2,
+             ),
+             'first_read_age_ms': round(
+                 max(0.0, float(snapshot.observed_at_epoch or decision_epoch)
+                     - coin.found_at) * 1000.0, 2,
+             ),
              'curve_complete': snapshot.curve.complete,
              'is_mayhem_mode': snapshot.curve.is_mayhem_mode,
              'curve_context_slot': snapshot.context_slot,
@@ -1212,20 +1353,42 @@ class ABPaperSimulator:
                 actual_cost_rub / fx / (received_tokens / TOKEN_SCALE)
                 if fx > 0 else 0.0
             )
-            # Premium paid over the curve mid at the same snapshot: entry price
-            # is always worse than observations t0, which is half of the
-            # "zero movement becomes -6..-8%" effect. Pure arithmetic, no RPC.
+            # --- run #4: two different premiums, never mixed -------------
+            # (1) entry_premium_pct = the price paid for WAITING. Mid price at
+            #     the entry snapshot against the price at the coin's creation.
+            #     Along the bonding curve price = v_sol^2 / k, so the ratio is
+            #     exactly (v_now / v_birth)^2: no RPC, no interpolation, and no
+            #     dependence on the stale WSS packet price. This is the -2.12 %
+            #     line of the run #3 decomposition.
+            # (2) entry_fill_premium_pct = fees + price impact inside the same
+            #     snapshot (fill vs mid). Kept separate so the fee line is
+            #     never read as "the cost of waiting".
             try:
                 v_tokens_ui = snapshot.curve.virtual_token_reserves / TOKEN_SCALE
+                invariant = current_v_sol * v_tokens_ui
                 mid_price_usd = (
                     current_v_sol / v_tokens_ui * sol_usd if v_tokens_ui > 0 else 0.0
                 )
+                t0_price_usd = (
+                    birth_v_sol ** 2 / invariant * sol_usd if invariant > 0 else 0.0
+                )
             except (AttributeError, TypeError, ZeroDivisionError):
                 mid_price_usd = 0.0
+                t0_price_usd = 0.0
             entry_premium_pct = (
+                (mid_price_usd / t0_price_usd - 1.0) * 100.0
+                if mid_price_usd > 0 and t0_price_usd > 0 else None
+            )
+            entry_fill_premium_pct = (
                 (entry_price_usd / mid_price_usd - 1.0) * 100.0
                 if mid_price_usd > 0 and entry_price_usd > 0 else None
             )
+            # Measured, not modelled: the age of the on-chain read that was
+            # actually priced, and the modelled execution delay next to it.
+            read_epoch = float(snapshot.observed_at_epoch or decision_epoch)
+            entry_lag_ms = max(0.0, (read_epoch - coin.found_at) * 1000.0)
+            entry_latency_ms = float(profile.entry_latency_ms)
+            latency_floor_met = entry_lag_ms >= entry_latency_ms
             pos = SimPosition(
                 portfolio=profile.name, mint=coin.mint, source=coin.source,
                 curve=coin.curve or '', opened_at_epoch=decision_epoch,
@@ -1256,6 +1419,14 @@ class ABPaperSimulator:
                 entry_premium_pct=(
                     round(entry_premium_pct, 4) if entry_premium_pct is not None else None
                 ),
+                entry_fill_premium_pct=(
+                    round(entry_fill_premium_pct, 4)
+                    if entry_fill_premium_pct is not None else None
+                ),
+                t0_price_usd=round(t0_price_usd, 16) if t0_price_usd else None,
+                entry_lag_ms=round(entry_lag_ms, 3),
+                entry_latency_ms=entry_latency_ms,
+                entry_latency_floor_met=latency_floor_met,
             )
             book.cash_balance_rub -= actual_cost_rub
             book.fees_paid_rub += entry_fee_rub
@@ -1263,6 +1434,9 @@ class ABPaperSimulator:
             book.entry_count += 1
             book.positions[coin.mint] = pos
             self._book_last_entry_epoch[book.profile.name] = decision_epoch
+            self.entry_lag_ms_by_profile.setdefault(book.profile.name, []).append(entry_lag_ms)
+            if not latency_floor_met:
+                self.entry_latency_floor_violations += 1
             self._entry_state_at_last_entry[book.profile.name] = self._entry_state_total
             # t=0 of this position's own tick stream.
             self._record_tick(book, pos, 0.0, decision_epoch, entry_price_usd * fx, sol_usd, event='entry')
@@ -1289,6 +1463,25 @@ class ABPaperSimulator:
                 'curve_context_slot': snapshot.context_slot,
                 'decision_at_epoch': decision_epoch,
                 'first_seen_to_entry_ms': round(max(0.0, (decision_epoch - coin.found_at) * 1000.0), 2),
+                # --- run #4 instrumentation (acceptance #1, #2, #4) ---
+                'entry_premium_pct': (
+                    round(entry_premium_pct, 4) if entry_premium_pct is not None else None
+                ),
+                'entry_fill_premium_pct': (
+                    round(entry_fill_premium_pct, 4)
+                    if entry_fill_premium_pct is not None else None
+                ),
+                'entry_mid_price_usd': round(mid_price_usd, 16) if mid_price_usd else None,
+                't0_price_usd': round(t0_price_usd, 16) if t0_price_usd else None,
+                'entry_price_usd': round(entry_price_usd, 16),
+                'entry_lag_ms': round(entry_lag_ms, 3),
+                'entry_latency_ms': entry_latency_ms,
+                'entry_latency_floor_met': latency_floor_met,
+                'entry_price_source': 'first_onchain_curve_read_after_detection',
+                'entry_at_detection': profile.entry_at_detection,
+                'delta_min_sol': profile.delta_min_sol,
+                'delta_cap_sol': round(profile.delta_cap(birth_v_sol), 6),
+                'wss_packet_price_used': False,
                 **filter_metrics,
                 'portfolio_balance_rub_after_entry': round(book.cash_balance_rub, 6),
                 'max_slots': profile.max_slots,
@@ -1337,7 +1530,7 @@ class ABPaperSimulator:
         return max(0.0, min(100.0, value)) if math.isfinite(value) else None
 
     def _rpc_error_rate_reason(self, now: float) -> Optional[str]:
-        """> 1 % failed RPC requests over the last 10 minutes."""
+        """> 2 % UNRECOVERED RPC requests over the last 10 minutes."""
         self._rpc_samples = [
             sample for sample in self._rpc_samples
             if now - sample[0] <= STOP_RPC_WINDOW_SEC
@@ -1346,17 +1539,22 @@ class ABPaperSimulator:
             return None
         first, last = self._rpc_samples[0], self._rpc_samples[-1]
         delta_requests = last[1] - first[1]
+        # index 2 = raw failed attempts, index 4 = unrecovered logical reads
         delta_failed = last[2] - first[2]
+        delta_unrecovered = last[4] - first[4]
         if delta_requests < STOP_RPC_MIN_REQUESTS:
             return None
-        rate = delta_failed / delta_requests
+        rate = delta_unrecovered / delta_requests
         self.stop_policy_state['rpc'].update({
-            'window_requests': delta_requests, 'window_failed': delta_failed,
-            'error_rate': round(rate, 6),
+            'window_requests': delta_requests,
+            'window_failed_attempts': delta_failed,
+            'window_unrecovered': delta_unrecovered,
+            'unrecovered_rate': round(rate, 6),
+            'raw_error_rate': round(delta_failed / delta_requests, 6),
         })
         if rate > STOP_RPC_ERROR_RATE:
             return (
-                f'rpc_error_rate (failed={delta_failed}/{delta_requests} '
+                f'rpc_unrecovered_rate (unrecovered={delta_unrecovered}/{delta_requests} '
                 f'= {rate:.2%} over {int(STOP_RPC_WINDOW_SEC)}s > '
                 f'{STOP_RPC_ERROR_RATE:.0%})'
             )
@@ -1466,6 +1664,7 @@ class ABPaperSimulator:
                 now, int(metrics.get('requests') or 0),
                 int(metrics.get('failed_requests') or 0),
                 metrics.get('latency_ms_p95'),
+                int(metrics.get('unrecovered_failures') or 0),
             ))
             if len(self._rpc_samples) > 4_000:
                 self._rpc_samples = self._rpc_samples[-4_000:]
@@ -1817,6 +2016,17 @@ class ABPaperSimulator:
         now = time.time() if now is None else float(now)
         held = max(0.0, now - pos.opened_at_epoch)
         if pos.remaining_tokens_raw <= 0:
+            return None
+
+        # shadow_t0_5s: hold exactly N seconds, then sell 100% at market.
+        # No SL, no TP, no trailing, no shelf, no no-progress and no timeout:
+        # the only thing this book measures is the drift of the coin itself.
+        if profile.single_exit_sec is not None:
+            if held >= profile.single_exit_sec:
+                return (
+                    f'Fixed {profile.single_exit_sec:.0f}s exit (pnl={pnl_pct:+.1f}%)',
+                    pos.remaining_tokens_raw,
+                )
             return None
 
         # shadow_exit25: 100% on the first tick at or above the threshold.
@@ -2229,7 +2439,11 @@ class ABPaperSimulator:
                 'entry_min_out_raw': pos.entry_min_out_raw,
                 # Run #3 instrumentation, all from the position's own marks.
                 'entry_lag_sec': pos.entry_lag_sec,
+                'entry_lag_ms': pos.entry_lag_ms,
+                'entry_latency_ms': pos.entry_latency_ms,
+                'entry_latency_floor_met': pos.entry_latency_floor_met,
                 'entry_premium_pct': pos.entry_premium_pct,
+                'entry_fill_premium_pct': pos.entry_fill_premium_pct,
                 'mfe_pct': round(pos.mfe_pct, 6),
                 'mae_pct': round(pos.mae_pct, 6),
                 'trigger_pct': pos.exit_trigger_pnl_pct,
@@ -2366,6 +2580,52 @@ class ABPaperSimulator:
         os.replace(tmp, summary_path)
         return summary
 
+    def _entry_quality(self, book: PortfolioBook) -> dict[str, Any]:
+        """Premium paid for waiting and the age of the read that was priced."""
+        trades = list(book.closed_trades)
+        open_positions = [p for p in book.positions.values()]
+        premiums = [
+            float(t['entry_premium_pct']) for t in trades
+            if isinstance(t.get('entry_premium_pct'), (int, float))
+        ]
+        fill_premiums = [
+            float(t['entry_fill_premium_pct']) for t in trades
+            if isinstance(t.get('entry_fill_premium_pct'), (int, float))
+        ]
+        lags = [
+            float(t['entry_lag_ms']) for t in trades
+            if isinstance(t.get('entry_lag_ms'), (int, float))
+        ] + [
+            float(p.entry_lag_ms) for p in open_positions
+            if isinstance(p.entry_lag_ms, (int, float))
+        ]
+        return {
+            'n': len(premiums),
+            'entry_premium_pct_median': (
+                round(median(premiums), 4) if premiums else None
+            ),
+            'entry_premium_pct_mean': (
+                round(sum(premiums) / len(premiums), 4) if premiums else None
+            ),
+            'entry_premium_pct_p90': (
+                round(percentile(premiums, 0.90), 4) if premiums else None
+            ),
+            'entry_fill_premium_pct_median': (
+                round(median(fill_premiums), 4) if fill_premiums else None
+            ),
+            'entry_lag_ms_median': round(median(lags), 2) if lags else None,
+            'entry_lag_ms_p95': round(percentile(lags, 0.95), 2) if lags else None,
+            'entry_lag_ms_max': round(max(lags), 2) if lags else None,
+            'entry_lag_ms_over_1000': sum(1 for lag in lags if lag > 1_000.0),
+            'entry_latency_ms_model': float(book.profile.entry_latency_ms),
+            'entry_latency_floor_violations': sum(
+                1 for t in trades if t.get('entry_latency_floor_met') is False
+            ) + sum(
+                1 for p in open_positions if p.entry_latency_floor_met is False
+            ),
+            'entry_at_detection': book.profile.entry_at_detection,
+        }
+
     def summary(self) -> dict[str, Any]:
         portfolios: dict[str, Any] = {}
         for name, book in self.books.items():
@@ -2426,6 +2686,8 @@ class ABPaperSimulator:
                 'bust_equity_rub': book.bust_equity_rub,
                 'top_up_events': book.top_up_events,
                 'stats': trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades]),
+                # --- run #4: the number the run is about (acceptance #1, #4) ---
+                'entry_quality': self._entry_quality(book),
             }
         return {
             'run_id': self.run_id,
@@ -2455,11 +2717,18 @@ class ABPaperSimulator:
             'profiles': {name: {
                 'delta_max_sol': book.profile.delta_max_sol,
                 'delta_min_sol': book.profile.delta_min_sol,
+                'delta_max_from_birth_ceiling': book.profile.delta_max_from_birth_ceiling,
+                'entry_at_detection': book.profile.entry_at_detection,
+                'entry_latency_ms': book.profile.entry_latency_ms,
+                'v_sol_birth_min': book.profile.v_sol_birth_min,
+                'v_sol_birth_max': book.profile.v_sol_birth_max,
                 'require_creator_gate': book.profile.require_creator_gate,
                 'is_shadow': book.profile.is_shadow,
                 'mirror_of': book.profile.mirror_of,
                 'single_exit_pct': book.profile.single_exit_pct,
+                'single_exit_sec': book.profile.single_exit_sec,
                 'capital_rub': book.profile.capital_rub,
+                'entry_quality': portfolios[name].get('entry_quality'),
             } for name, book in self.books.items()},
             'fee_model': 'official @pump-fun/pump-sdk 4.1.0 exact integer curve quote; out_amount_raw is the snapshot fill; min_out_raw is the 100 bps conservative shadow; on-chain Global + FeeConfig + per-curve creator_fee_bps; fail-closed when unsupported',
             'jupiter_policy': 'GET ExactIn fallback only after on-chain complete=true; no active-curve entry/exit Jupiter quotes',
@@ -2469,16 +2738,30 @@ class ABPaperSimulator:
             **{name: book for name, book in portfolios.items()
                if name not in ('portfolio_a', 'portfolio_b')},
             'ab_test': {
-                'single_difference': 'delta_max_sol',
-                'portfolio_a': {'delta_max_sol': 2.5, 'require_creator_gate': False},
-                'portfolio_b': {'delta_max_sol': 3.0, 'require_creator_gate': False},
+                # Run #4: the ONLY declared difference is the entry threshold.
+                'single_difference': 'delta_min',
+                'portfolio_a': {'delta_min_sol': 0.10, 'require_creator_gate': False},
+                'portfolio_b': {'delta_min_sol': 0.0, 'require_creator_gate': False},
+                'entry_latency_ms': 150.0,
                 'decision_rule': (
-                    'B beats A iff mean(B) - mean(A) >= +10 RUB '
+                    'B beats A iff mean(B) - mean(A) >= +8 RUB '
                     'and the 95% CI of the difference excludes 0'
                 ),
                 'difference': mean_difference_ci(
                     [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_a']['closed_trades']],
                     [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_b']['closed_trades']],
+                ),
+                'shadow_t0_5s': {
+                    'stats': portfolios.get('shadow_t0_5s', {}).get('stats'),
+                    'entry_quality': portfolios.get('shadow_t0_5s', {}).get('entry_quality'),
+                },
+                'entry_latency_floor_violations': self.entry_latency_floor_violations,
+                'expectation': (
+                    'B is expected to stay NEGATIVE: removing the 2.12 %/trade '
+                    'momentum-wait premium leaves ~ -1.06 %/trade (~ -5.3 RUB), '
+                    'which is the round-trip fee plus adverse drift. This run '
+                    'measures how much of the loss the wait costs; it does not '
+                    'look for profit'
                 ),
             },
             # B-arm gate funnel: a blind spot must never be counted as a risk

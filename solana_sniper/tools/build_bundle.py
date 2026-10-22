@@ -26,7 +26,7 @@ INCLUDE_FILES = [
     'run_rocket2_ab_paper.sh', 'run_overnight_ab_paper.sh',
     'START_MAC_LINUX.sh', 'START_WINDOWS.bat', '.gitignore', 'README.md',
 ]
-INCLUDE_GLOBS = ['tests/test_*.py']
+INCLUDE_GLOBS = ['tests/test_*.py', 'tools/preflight_budget.py']
 EXCLUDE_DIRS = {'.venv', 'runs', '__pycache__', 'log_exports', '.git', 'dist', 'exports'}
 
 READ_ME_FIRST = """\
@@ -36,8 +36,10 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
 ЧТО ЭТО
   Бумажный (paper-only) двойной портфель A/B на Pump.fun.
   Ни одна транзакция не подписывается и не отправляется. RPC — только чтение.
-  Портфель A: вход по живому импульсу.
-  Портфель B: тот же вход + creator-guard (идентификация дева, отсев раг-ферм).
+  Портфель A: вход по живому импульсу (ждёт Δv_sol >= 0.10 SOL).
+  Портфель B: вход на первом чтении кривой (Δv_sol >= 0.00), без ожидания.
+  Всё остальное у A и B одинаково: полоса рождения 30.5-34.5, лестница
+  выходов, 3 слота по 500 ₽. Creator-guard живёт только в тени shadow_gate.
 
 ЗАПУСК
   Windows:      двойной клик по START_WINDOWS.bat
@@ -59,7 +61,8 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
   на 127.0.0.1:8767).
   Данные прогона: runs/rocket2-ab-paper-<RUN_ID>/
       wallet_portfolio_a.json / wallet_portfolio_b.json  — состояние портфелей
-      wallet_shadow_gate.json / wallet_shadow_exit25.json — тени (капитал 0 ₽)
+      wallet_shadow_gate.json / wallet_shadow_exit25.json /
+      wallet_shadow_t0_5s.json — тени (капитал 0 ₽)
       exports/ticks.csv          — своя лента тиков каждой позиции
       exports/shadow_fills.csv   — закрытые сделки теней
       ab_summary.json                                    — итоги
@@ -67,10 +70,22 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
       sniper.db                                          — закрытые сделки
       run.log                                            — лог
 
+ПРОГОН №4 (в чём эксперимент)
+  A и B различаются РОВНО одним числом — delta_min: A 0.10, B 0.00.
+  B входит на первом чтении кривой после детекта, поэтому не платит премию
+  за ожидание момента (~2.1 %/сделку в прогоне №3). Цена входа берётся из
+  этого чтения, никогда из WSS-пакета; entry_latency_ms (150 мс) записан в
+  манифест, а измеренная задержка чтения — в каждую сделку (entry_lag_ms).
+  Тень shadow_t0_5s входит как B и продаёт всё ровно через 5 с по рынку,
+  без SL/TP/полки/таймаута. Честное ожидание: ОБА плеча убыточны; в лучшем
+  случае у B остаётся ~ -1.06 %/сделку. Прогон измеряет цену ожидания, а не
+  ищет прибыль — «стало прибыльно» здесь сказать нельзя.
+
 ЧТО ПРОВЕРИТЬ ПОСЛЕ ПРОГОНА
   1) В telemetry.sqlite (таблица decisions) стадии portfolio_a_signal и
-     portfolio_b_signal: сколько раз сработало live_momentum_entry против
-     no_live_momentum / birth_out_of_band / momentum_too_late.
+     portfolio_b_signal: сколько раз сработало live_momentum_entry / first_read_entry
+     против entry_below_delta_min / no_live_momentum / birth_out_of_band /
+     momentum_too_late.
   2) <portfolio>_creator_gate (прогон №3 — это shadow_gate_creator_gate):
      pass / fail_history / fail_risk / unavailable и причины
      (creator_burst_activity = раг-ферма, creator_history_too_short и т.д.).

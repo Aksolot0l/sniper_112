@@ -20,6 +20,7 @@ from portfolio_ab import (
     PortfolioBook,
     SHADOW_GATE,
     SHADOW_EXIT25,
+    SHADOW_T0_5S,
     SimPosition,
     delta_bucket,
     entry_shadow_flags,
@@ -118,59 +119,92 @@ def make_simulator(root: str | Path, *, trades_queue=None, profiles=None):
 
 
 class ABProfileTests(unittest.TestCase):
+    def test_run4_arm_b_enters_at_t0_and_arm_a_waits_for_momentum(self) -> None:
+        # The one behavioural difference of run #4.
+        self.assertEqual(PROFILE_A.delta_min_sol, 0.10)
+        self.assertEqual(PROFILE_B.delta_min_sol, 0.0)
+        self.assertFalse(PROFILE_A.entry_at_detection)
+        self.assertTrue(PROFILE_B.entry_at_detection)
+        # delta == 0 (entry at the moment of detection): A rejects, B takes it.
+        self.assertEqual(PROFILE_A.entry_check(32.0, 32.0), (False, 'no_live_momentum'))
+        self.assertEqual(PROFILE_B.entry_check(32.0, 32.0), (True, 'first_read_entry'))
+        self.assertEqual(PROFILE_B.entry_check(32.0, 32.05), (True, 'first_read_entry'))
+        # A's own rule is untouched: any live momentum in the band passes.
+        self.assertEqual(PROFILE_A.entry_check(32.0, 32.10), (True, 'live_momentum_entry'))
+        # B's cap comes from the birth ceiling, so it never blocks a t0 entry.
+        self.assertTrue(PROFILE_B.delta_max_from_birth_ceiling)
+        self.assertEqual(PROFILE_B.delta_cap(30.5), 4.0)
+        self.assertEqual(PROFILE_B.delta_cap(34.5), 0.0)
+        self.assertEqual(PROFILE_B.entry_check(34.5, 34.5)[0], True)
+        self.assertEqual(PROFILE_B.entry_check(34.5, 34.6)[1], 'momentum_too_late')
+        # The birth band is shared and unchanged.
+        for profile in (PROFILE_A, PROFILE_B):
+            self.assertEqual(profile.entry_check(29.96, 30.2)[1], 'birth_out_of_band')
+            self.assertEqual(profile.entry_check(39.88, 40.41)[1], 'birth_out_of_band')
+
     def test_shared_entry_rule_requires_live_momentum(self) -> None:
         for profile in (PROFILE_A, PROFILE_B):
-            # Dead launch: no buys after the creator -> never entered.
+            # Dead launch: no buys after the creator. A waits for momentum and
+            # rejects; B enters at t0 — that is exactly what run #4 measures.
             ok, reason = profile.entry_check(31.0, 31.0)
-            self.assertFalse(ok)
-            self.assertEqual(reason, 'no_live_momentum')
-            # Dust delta below the floor is still a dead launch.
-            self.assertFalse(profile.entry_check(31.0, 31.05)[0])
-            # Live early momentum passes.
+            if profile is PROFILE_A:
+                self.assertFalse(ok)
+                self.assertEqual(reason, 'no_live_momentum')
+            else:
+                self.assertTrue(ok)
+                self.assertEqual(reason, 'first_read_entry')
+            # Dust delta below the floor: A treats it as a dead launch, B
+            # enters it — that is the whole run #4 experiment.
+            self.assertEqual(
+                profile.entry_check(31.0, 31.05)[0], profile is PROFILE_B,
+            )
+            # Live early momentum passes in both arms.
             ok, reason = profile.entry_check(30.5, 31.3)
             self.assertTrue(ok)
-            self.assertEqual(reason, 'live_momentum_entry')
+            self.assertEqual(
+                reason,
+                'first_read_entry' if profile is PROFILE_B else 'live_momentum_entry',
+            )
             # Small live deltas still pass (the entry rule that replaced the cap).
             self.assertTrue(profile.entry_check(31.0, 31.5)[0])
             self.assertTrue(profile.entry_check(30.5, 31.4)[0])
             # PERFORMA was born at 39.88 — inside the old 50 SOL band, outside
             # the 34.5 one: the new ceiling is a dev-buy filter, not a delta one.
             self.assertEqual(profile.entry_check(39.88, 40.41)[1], 'birth_out_of_band')
-            # Run #3: the arms differ ONLY in the delta cap (A 2.5, B 3.0).
-            self.assertEqual(profile.delta_max_sol, 2.5 if profile is PROFILE_A else 3.0)
-            for birth, now in ((33.95, 45.51), (33.16, 38.59)):   # Turtle, Shigure
+            self.assertEqual(profile.delta_min_sol, 0.10 if profile is PROFILE_A else 0.0)
+            # Turtle / Shigure style late chases stay out of both arms.
+            for birth, now in ((33.95, 45.51), (33.16, 38.59)):
                 ok, reason = profile.entry_check(birth, now)
                 self.assertFalse(ok)
                 self.assertEqual(reason, 'momentum_too_late')
-            # Boundary of each arm's own cap.
-            cap = profile.delta_max_sol
-            self.assertTrue(profile.entry_check(32.0, 32.0 + cap)[0])
-            self.assertFalse(profile.entry_check(32.0, 32.0 + cap + 0.0001)[0])
             # Birth band still guards supply-shape outliers.
             self.assertFalse(profile.entry_check(30.49, 31.3)[0])
             self.assertFalse(profile.entry_check(35.01, 35.5)[0])
 
-    def test_birth_max_boundary_is_34_5_and_delta_band_is_untouched(self) -> None:
+    def test_birth_max_boundary_is_34_5_for_both_arms(self) -> None:
         for profile in (PROFILE_A, PROFILE_B):
             self.assertEqual(profile.v_sol_birth_max, 34.5)
-            self.assertEqual(profile.delta_min_sol, 0.10)
-            self.assertEqual(profile.delta_max_sol, 2.5 if profile is PROFILE_A else 3.0)
-            # Inclusive upper bound: 34.5 is admitted, 34.51 is not.
-            self.assertEqual(profile.entry_check(34.49, 34.8), (True, 'live_momentum_entry'))
-            self.assertEqual(profile.entry_check(34.5, 34.8), (True, 'live_momentum_entry'))
+            # Inclusive upper bound: 34.5 is admitted, 34.51 is not. Each arm
+            # is probed with a delta it is willing to take: A needs >= 0.10
+            # (fixed 2.5 cap), B enters at exactly 0 there (cap = 34.5 - 34.5).
+            probe = (34.5, 34.7) if profile is PROFILE_A else (34.5, 34.5)
+            self.assertTrue(profile.entry_check(*probe)[0])
             self.assertEqual(profile.entry_check(34.51, 34.8), (False, 'birth_out_of_band'))
             # The measured mechanism: v_sol_birth = 29.96 + dev_buy_SOL.
             self.assertEqual(profile.entry_check(29.96, 30.2), (False, 'birth_out_of_band'))
-            self.assertEqual(profile.entry_check(29.96 + 4.5, 34.7), (True, 'live_momentum_entry'))
             self.assertEqual(profile.entry_check(29.96 + 4.55, 34.8), (False, 'birth_out_of_band'))
-            # Both bounds of the delta window are unchanged by fix #7.
-            self.assertEqual(profile.entry_check(33.0, 33.09)[1], 'no_live_momentum')
-            self.assertEqual(profile.entry_check(33.0, 33.10), (True, 'live_momentum_entry'))
-            cap = profile.delta_max_sol
-            self.assertEqual(profile.entry_check(33.0, 33.0 + cap), (True, 'live_momentum_entry'))
-            self.assertEqual(
-                profile.entry_check(33.0, 33.0 + cap + 0.01)[1], 'momentum_too_late',
-            )
+        # A near the ceiling: A's fixed 2.5 cap admits a +0.31 move, B's derived
+        # cap (34.5 - 34.49 = 0.01) does not — that is the price of delta_min=0.
+        self.assertTrue(PROFILE_A.entry_check(29.96 + 4.5, 34.7)[0])
+        self.assertEqual(PROFILE_B.entry_check(29.96 + 4.5, 34.7)[1], 'momentum_too_late')
+        self.assertTrue(PROFILE_B.entry_check(29.96 + 4.5, 34.46)[0])   # t0, delta 0
+        self.assertTrue(PROFILE_A.entry_check(34.49, 34.8)[0])
+        self.assertEqual(PROFILE_B.entry_check(34.49, 34.8)[1], 'momentum_too_late')
+        # A keeps the 0.10 momentum floor and the 2.5 cap.
+        self.assertEqual(PROFILE_A.entry_check(33.0, 33.09)[1], 'no_live_momentum')
+        self.assertEqual(PROFILE_A.entry_check(33.0, 33.10), (True, 'live_momentum_entry'))
+        self.assertEqual(PROFILE_A.entry_check(33.0, 35.5), (True, 'live_momentum_entry'))
+        self.assertEqual(PROFILE_A.entry_check(33.0, 35.51)[1], 'momentum_too_late')
 
     def test_gate_status_separates_blind_spot_from_risk(self) -> None:
         from portfolio_ab import gate_status
@@ -292,9 +326,11 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(profiles['portfolio_a'].v_sol_birth_max, 44.0)
         self.assertEqual(profiles['portfolio_a'].delta_min_sol, 0.5)
         self.assertEqual(profiles['portfolio_a'].delta_max_sol, 6.0)
-        # The cap override applies to A only; B keeps the fixed +0.5 gap that
-        # makes it the single-difference arm, unless its own knob is set.
-        self.assertEqual(profiles['portfolio_b'].delta_max_sol, 3.0)
+        # Run #4: B is defined by "no momentum wait", so the shared env value
+        # must NOT leak into it — otherwise the single difference disappears.
+        self.assertEqual(profiles['portfolio_b'].delta_min_sol, 0.0)
+        self.assertTrue(profiles['portfolio_b'].delta_max_from_birth_ceiling)
+        self.assertEqual(profiles['portfolio_b'].v_sol_birth_max, 44.0)
         self.assertFalse(profiles['portfolio_a'].require_creator_gate)
         self.assertFalse(profiles['portfolio_b'].require_creator_gate)
         # The gate now lives on the shadow only.
@@ -303,22 +339,38 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(profiles['shadow_gate'].capital_rub, 0.0)
         self.assertEqual(profiles['shadow_gate'].mirror_of, 'portfolio_a')
         self.assertEqual(profiles['shadow_exit25'].single_exit_pct, 25.0)
-        for shadow in (profiles['shadow_gate'], profiles['shadow_exit25']):
-            self.assertTrue(shadow.is_shadow)
-            self.assertEqual(shadow.initial_balance_rub, 1500.0)
-        # B's own cap knob exists but shares everything else with A.
-        b_settings = SimpleNamespace(**{**vars(base), 'entry_delta_max_sol_b': 4.0})
+        # shadow_t0_5s mirrors B and exits on a fixed timer (run #4).
+        self.assertEqual(profiles['shadow_t0_5s'].single_exit_sec, 5.0)
+        self.assertEqual(profiles['shadow_t0_5s'].mirror_of, 'portfolio_b')
+        self.assertEqual(profiles['shadow_t0_5s'].delta_min_sol, 0.0)
+        for shadow in ('shadow_gate', 'shadow_exit25', 'shadow_t0_5s'):
+            self.assertTrue(profiles[shadow].is_shadow)
+            self.assertEqual(profiles[shadow].capital_rub, 0.0)
+            self.assertEqual(profiles[shadow].initial_balance_rub, 1500.0)
+        # The latency model is configurable and lands in every profile.
+        latency_settings = SimpleNamespace(**{**vars(base), 'entry_latency_ms': 250.0})
         self.assertEqual(
-            profiles_from_settings(b_settings)['portfolio_b'].delta_max_sol, 4.0,
+            profiles_from_settings(latency_settings)['portfolio_b'].entry_latency_ms, 250.0,
         )
+        self.assertEqual(PROFILE_B.entry_latency_ms, 150.0)
 
-    def test_arms_differ_only_in_delta_cap(self) -> None:
+    def test_arms_differ_only_in_delta_min_and_its_derived_cap(self) -> None:
         a, b = asdict(PROFILE_A), asdict(PROFILE_B)
+        # The declared single difference...
+        self.assertEqual(a.pop('delta_min_sol'), 0.10)
+        self.assertEqual(b.pop('delta_min_sol'), 0.0)
+        # ...its two consequences: entering on the first read, and a cap that
+        # follows the birth ceiling instead of a fixed 2.5 SOL. Everything else
+        # must be byte-identical.
+        self.assertFalse(a.pop('entry_at_detection'))
+        self.assertTrue(b.pop('entry_at_detection'))
+        self.assertFalse(a.pop('delta_max_from_birth_ceiling'))
+        self.assertTrue(b.pop('delta_max_from_birth_ceiling'))
+        # B never uses the fixed cap (it derives it), so both sides drop it.
         self.assertEqual(a.pop('delta_max_sol'), 2.5)
-        self.assertEqual(b.pop('delta_max_sol'), 3.0)
+        self.assertEqual(b.pop('delta_max_sol'), 2.5)
         a.pop('name')
         b.pop('name')
-        # One difference, nothing else: no gate flag, no guard threshold.
         self.assertEqual(a, b)
         self.assertFalse(PROFILE_A.require_creator_gate)
         self.assertFalse(PROFILE_B.require_creator_gate)
@@ -328,6 +380,9 @@ class ABProfileTests(unittest.TestCase):
         # Exits stay identical between the live arms.
         self.assertIsNone(PROFILE_A.single_exit_pct)
         self.assertIsNone(PROFILE_B.single_exit_pct)
+        self.assertIsNone(PROFILE_A.single_exit_sec)
+        self.assertIsNone(PROFILE_B.single_exit_sec)
+        self.assertEqual(PROFILE_A.entry_latency_ms, PROFILE_B.entry_latency_ms)
 
     def test_books_use_isolated_wallet_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,16 +426,23 @@ class RunThreeShadowTests(unittest.IsolatedAsyncioTestCase):
                     )
         return coin
 
-    async def test_per_profile_delta_cap_splits_the_2_5_to_3_band(self) -> None:
+    async def test_run4_delta_min_is_the_only_thing_that_splits_the_arms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             simulator = make_simulator(tmp)
-            await self._open(simulator, 'mint-cap-split', 2.9, time.time())
-            self.assertNotIn('mint-cap-split', simulator.books['portfolio_a'].positions)
-            self.assertIn('mint-cap-split', simulator.books['portfolio_b'].positions)
-            # Inside A's own cap both arms trade the same coin.
-            await self._open(simulator, 'mint-cap-inside', 2.4, time.time())
-            self.assertIn('mint-cap-inside', simulator.books['portfolio_a'].positions)
-            self.assertIn('mint-cap-inside', simulator.books['portfolio_b'].positions)
+            # delta = 0.05: below A's 0.10 momentum floor, so A never enters;
+            # B enters on the first read. This is the run #4 experiment.
+            await self._open(simulator, 'mint-no-momentum', 0.05, time.time())
+            self.assertNotIn('mint-no-momentum', simulator.books['portfolio_a'].positions)
+            self.assertIn('mint-no-momentum', simulator.books['portfolio_b'].positions)
+            self.assertIn('mint-no-momentum', simulator.books['shadow_t0_5s'].positions)
+            # Ordinary momentum: both live arms take the same coin.
+            await self._open(simulator, 'mint-momentum', 1.2, time.time())
+            self.assertIn('mint-momentum', simulator.books['portfolio_a'].positions)
+            self.assertIn('mint-momentum', simulator.books['portfolio_b'].positions)
+            # Late chase: neither arm.
+            await self._open(simulator, 'mint-too-late', 3.0, time.time())
+            self.assertNotIn('mint-too-late', simulator.books['portfolio_a'].positions)
+            self.assertNotIn('mint-too-late', simulator.books['portfolio_b'].positions)
 
     async def test_shadow_exit25_sells_everything_on_the_first_tick_at_25(self) -> None:
         simulator = make_simulator(tempfile.mkdtemp())
@@ -629,21 +691,35 @@ class RunThreeBankAndStopListTests(unittest.IsolatedAsyncioTestCase):
 
     def test_stop_list_rpc_stall_and_resource_reasons(self) -> None:
         simulator = make_simulator(tempfile.mkdtemp())
-        base = {'requests': 0, 'failed_requests': 0, 'latency_ms_p95': 100.0}
+        base = {'requests': 0, 'failed_requests': 0, 'latency_ms_p95': 100.0,
+                'unrecovered_failures': 0}
         self.assertIsNone(simulator._evaluate_stop_reason(
             now=100.0, telemetry={}, rpc=dict(base), disk_free_bytes=10 ** 12,
             quota_pct=50.0,
         ))
-        # 2 % failures over the 10-minute window.
+        # Run #4: a 429 burst that the retry layer recovers is back-pressure,
+        # not a telemetry failure — raw failures must not stop the run.
         self.assertIsNone(simulator._evaluate_stop_reason(
-            now=200.0, telemetry={}, rpc={**base, 'requests': 100}, disk_free_bytes=10 ** 12,
-        ))
-        reason = simulator._evaluate_stop_reason(
             now=700.0, telemetry={},
-            rpc={'requests': 2_000, 'failed_requests': 40, 'latency_ms_p95': 100.0},
+            rpc={'requests': 2_000, 'failed_requests': 400,
+                 'latency_ms_p95': 100.0, 'unrecovered_failures': 0},
+            disk_free_bytes=10 ** 12,
+        ))
+        # 3 % UNRECOVERED reads is above the 2 % threshold.
+        reason = simulator._evaluate_stop_reason(
+            now=1_300.0, telemetry={},
+            rpc={'requests': 4_000, 'failed_requests': 900,
+                 'latency_ms_p95': 100.0, 'unrecovered_failures': 60},
             disk_free_bytes=10 ** 12,
         )
-        self.assertTrue(reason.startswith('rpc_error_rate'), reason)
+        self.assertTrue(reason.startswith('rpc_unrecovered_rate'), reason)
+        # 1.5 % unrecovered stays below it.
+        self.assertIsNone(simulator._evaluate_stop_reason(
+            now=1_900.0, telemetry={},
+            rpc={'requests': 6_000, 'failed_requests': 1_500,
+                 'latency_ms_p95': 100.0, 'unrecovered_failures': 90},
+            disk_free_bytes=10 ** 12,
+        ))
         # Latency must hold for five minutes, not one sample.
         slow = make_simulator(tempfile.mkdtemp())
         self.assertIsNone(slow._evaluate_stop_reason(
@@ -1188,3 +1264,128 @@ class ABQuoteRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RunFourEntryQualityTests(unittest.IsolatedAsyncioTestCase):
+    """Run #4 acceptance items 1-4: the premium, the latency, the 5-second book."""
+
+    async def _open(self, simulator, mint, birth, now_v_sol, decision_epoch):
+        coin = NewCoin(
+            mint=mint, source='Pump.fun', signature=f'sig-{mint}',
+            curve='curve-test', packet={'v_sol': birth},
+        )
+        coin.creator_probe_result = {
+            'signature_count': 25, 'ata_exists': True, 'token_balance_raw': '1',
+            'creator_guard_passed': True, 'creator_guard_reason': 'creator_guard_met',
+            'censored': False, 'status': 'ok',
+        }
+        snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+        with patch('portfolio_ab.get_collector', return_value=None):
+            for book in simulator.books.values():
+                await simulator._consider_entry(
+                    book, coin, snapshot, birth, now_v_sol,
+                    200.0, {}, decision_epoch,
+                )
+        return coin
+
+    async def test_entry_premium_is_measured_against_t0_not_the_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(tmp)
+            # Along the curve price = v_sol^2 / k, so paying 2 % more than the
+            # coin's t0 price means v_sol grew by sqrt(1.02) - 1 = 0.995 %.
+            await self._open(simulator, 'mint-premium', 32.0, 32.32, time.time())
+            book = simulator.books['portfolio_a']
+            pos = book.positions['mint-premium']
+            expected = ((32.32 / 32.0) ** 2 - 1.0) * 100.0
+            self.assertAlmostEqual(pos.entry_premium_pct, expected, places=3)
+            # The wait premium is NOT the fee: the same-snapshot number stays
+            # small and is reported separately.
+            self.assertIsNotNone(pos.entry_fill_premium_pct)
+            self.assertLess(abs(pos.entry_fill_premium_pct), 6.0)
+            # A t0 entry (delta 0, arm B) pays no wait premium at all.
+            await self._open(simulator, 'mint-t0', 32.0, 32.0, time.time())
+            b_pos = simulator.books['portfolio_b'].positions['mint-t0']
+            self.assertAlmostEqual(b_pos.entry_premium_pct, 0.0, places=6)
+            self.assertTrue(simulator.books['portfolio_b'].profile.entry_at_detection)
+
+    async def test_entry_lag_and_latency_are_recorded_per_trade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(tmp)
+            decision = time.time()
+            snapshot_observed = decision - 0.4      # read 400 ms before deciding
+            coin = NewCoin(
+                mint='mint-lag', source='Pump.fun', signature='sig-lag',
+                curve='curve-test', packet={'v_sol': 32.0},
+            )
+            coin.creator_probe_result = {
+                'signature_count': 25, 'ata_exists': True, 'token_balance_raw': '1',
+                'creator_guard_passed': True, 'creator_guard_reason': 'creator_guard_met',
+                'censored': False, 'status': 'ok',
+            }
+            coin.found_at = decision - 0.95
+            snapshot = EntrySnapshot(
+                make_curve(), make_fee_context_for_test(), 12, snapshot_observed,
+            )
+            with patch('portfolio_ab.get_collector', return_value=None):
+                for book in simulator.books.values():
+                    await simulator._consider_entry(
+                        book, coin, snapshot, 32.0, 32.32, 200.0, {}, decision,
+                    )
+            pos = simulator.books['portfolio_a'].positions['mint-lag']
+            # Measured from the curve read, not from the decision timestamp.
+            self.assertAlmostEqual(pos.entry_lag_ms, 550.0, delta=5.0)
+            self.assertEqual(pos.entry_latency_ms, 150.0)
+            self.assertTrue(pos.entry_latency_floor_met)
+            self.assertLess(pos.entry_lag_ms, 1000.0)
+            quality = simulator._entry_quality(simulator.books['portfolio_a'])
+            self.assertEqual(quality['entry_lag_ms_over_1000'], 0)
+            self.assertEqual(quality['entry_latency_ms_model'], 150.0)
+            self.assertEqual(simulator.entry_latency_floor_violations, 0)
+
+    async def test_entry_latency_floor_delays_the_decision_without_an_rpc(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        coin = SimpleNamespace(found_at=time.time())
+        started = time.monotonic()
+        waited = await simulator._await_entry_latency_floor(coin)
+        elapsed = time.monotonic() - started
+        self.assertGreater(waited, 0.10)
+        self.assertGreater(elapsed, 0.10)
+        self.assertLess(elapsed, 0.60)
+        # An old candidate is never delayed.
+        coin.found_at = time.time() - 5.0
+        self.assertEqual(await simulator._await_entry_latency_floor(coin), 0.0)
+
+    def test_shadow_t0_5s_exits_at_five_seconds_and_ignores_its_pnl(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        now = time.time()
+        pos = SimpleNamespace(remaining_tokens_raw=1_000, opened_at_epoch=now - 4.9)
+        # No stop-loss at -80 %, no take-profit at +200 %: only the clock counts.
+        self.assertIsNone(simulator._exit_trigger(SHADOW_T0_5S, pos, -80.0, now))
+        self.assertIsNone(simulator._exit_trigger(SHADOW_T0_5S, pos, 200.0, now))
+        pos.opened_at_epoch = now - 5.0
+        for pnl in (-80.0, 0.0, 200.0):
+            trigger = simulator._exit_trigger(SHADOW_T0_5S, pos, pnl, now)
+            self.assertIsNotNone(trigger, pnl)
+            self.assertTrue(trigger[0].startswith('Fixed 5s'))
+            self.assertEqual(trigger[1], 1_000)      # 100 %, not a partial
+        # The live arms keep the full ladder: no fixed-time exit there.
+        live = make_position(opened_ago=30.0, best_pnl=-50.0)
+        trigger = simulator._exit_trigger(PROFILE_A, live, -20.0, now)
+        self.assertFalse((trigger or ('',))[0].startswith('Fixed'))
+        self.assertIsNone(PROFILE_A.single_exit_sec)
+
+    def test_shadow_t0_5s_is_registered_and_capital_free(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        self.assertIn('shadow_t0_5s', simulator.books)
+        book = simulator.books['shadow_t0_5s']
+        self.assertTrue(book.profile.is_shadow)
+        self.assertEqual(book.profile.capital_rub, 0.0)
+        self.assertEqual(book.profile.mirror_of, 'portfolio_b')
+        self.assertEqual(book.profile.single_exit_sec, 5.0)
+        self.assertEqual(book.profile.delta_min_sol, 0.0)
+        summary = simulator.summary()
+        self.assertIn('shadow_t0_5s', summary)
+        self.assertEqual(
+            summary['ab_test']['single_difference'], 'delta_min',
+        )
+        self.assertIn('shadow_t0_5s', summary['ab_test'])

@@ -231,32 +231,85 @@ def _summary_markdown(
     add('')
     ab = summary.get('ab_test') or {}
     diff = (ab.get('difference') or {})
-    add('## Предрегистрированный критерий (прогон №3)')
+    add('## Предрегистрированный критерий: прогон №4 — премия за ожидание момента')
+    add('')
+    add('Разложение прогона №3 по A (−16.41 ₽/сделку = −3.28 %): дрейф рынка '
+        'за 0→5 с **+1.44 %** (+7.2 ₽), премия за ожидание момента **−2.12 %** '
+        '(−10.6 ₽), комиссии туда-обратно −2.50 % (−12.5 ₽), остаток ≈ 0. '
+        'B убирает ровно ожидание (`delta_min` 0.10 → 0.00) и ничего больше, '
+        'поэтому разница A/B **и есть** эта премия. Выходы, полоса рождения, '
+        '3 слота и ставка 500 ₽ заморожены.')
     add('')
     add(f"- решение: {ab.get('decision_rule')}")
     add(f"- единственное различие плеч: `{ab.get('single_difference')}` "
-        f"A={((ab.get('portfolio_a') or {}).get('delta_max_sol'))} / "
-        f"B={((ab.get('portfolio_b') or {}).get('delta_max_sol'))}")
+        f"A={((ab.get('portfolio_a') or {}).get('delta_min_sol'))} / "
+        f"B={((ab.get('portfolio_b') or {}).get('delta_min_sol'))}")
+    add(f"- модель задержки входа: `entry_latency_ms = {ab.get('entry_latency_ms')}` "
+        '(цена входа — первое чтение кривой после детекта, не WSS-пакет)')
+    add('')
+    # --- acceptance #1: what was actually paid for waiting ----------------
+    add('### Премия входа: цена ожидания против t0')
+    add('')
+    add('`entry_premium_pct` — цена входа относительно цены на t0 (первое чтение '
+        'кривой): ожидание ≤0.3 % у B и ≈2.1 % у A. Вторая колонка — комиссия и '
+        'проскальзывание внутри того же снимка (их нельзя путать с ожиданием).')
+    add('')
+    add('| портфель | n | премия ожидания, медиана % | p90 % | комиссия снимка, медиана % | '
+        'задержка чтения, медиана мс | p95 мс | max мс | >1000 мс | нарушений пола |')
+    add('|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|')
+    for name in stat_names:
+        eq = (summary.get(name) or {}).get('entry_quality') or {}
+        add(f"| {name} | {eq.get('n')} | {_money(eq.get('entry_premium_pct_median'))} | "
+            f"{_money(eq.get('entry_premium_pct_p90'))} | "
+            f"{_money(eq.get('entry_fill_premium_pct_median'))} | "
+            f"{_money(eq.get('entry_lag_ms_median'))} | "
+            f"{_money(eq.get('entry_lag_ms_p95'))} | {_money(eq.get('entry_lag_ms_max'))} | "
+            f"{eq.get('entry_lag_ms_over_1000', 0)} | "
+            f"{eq.get('entry_latency_floor_violations', 0)} |")
+    add('')
+    t0_stats = ((ab.get('shadow_t0_5s') or {}).get('stats') or {})
+    t0_ci = t0_stats.get('ci95_mean')
+    t0_ci_text = f'[{t0_ci[0]:.2f}, {t0_ci[1]:.2f}]' if t0_ci else '—'
+    add('- `shadow_t0_5s` (вход как у B, выход ровно через 5 с по рынку, без '
+        'SL/TP/полки/таймаута): '
+        f"n={t0_stats.get('n')}, ₽/сделку {_money(t0_stats.get('mean'))}, "
+        f'CI95 {t0_ci_text}')
+    if ab.get('entry_latency_floor_violations'):
+        add(f"- ⚠️ входов раньше `found_at + entry_latency_ms`: "
+            f"{ab.get('entry_latency_floor_violations')}")
+    add('')
     mean_diff = diff.get('mean_diff')
     ci_diff = diff.get('ci95')
     if mean_diff is None:
-        add('- вердикт: **нет данных** (нет закрытых сделок в одном из плеч)')
+        add('- вердикт: **нет данных** (в одном из плеч нет закрытых сделок)')
     else:
         ci_lo = ci_diff[0] if ci_diff else None
-        beat = mean_diff >= 10.0 and ci_lo is not None and ci_lo > 0
+        beat = mean_diff >= 8.0 and ci_lo is not None and ci_lo > 0
         add(f"- фактически: mean(B) − mean(A) = {mean_diff:+.2f} ₽/сделку, "
             f"CI95 {ci_diff}")
         if beat:
-            add('- вердикт: **B лучше A по критерию** → в прогоне №4 `delta_cap 3.0` '
-                'становится конфигом A.')
+            add('- вердикт: **B лучше A по критерию** → премия за ожидание '
+                'снимается, `delta_min = 0` становится конфигом A.')
         else:
-            add('- вердикт: **критерий не выполнен** → следующий кандидат '
-                '`delta_min 0.6`, иначе честно фиксируем, что 5-секундный '
-                'скальп мёртв (без заявлений о прибыльности).')
+            add('- вердикт: **критерий не выполнен**: премию за ожидание '
+                'убрать не удалось. Честный вывод: 5-секундный скальп '
+                'сохраняет дефицит ≈1.06 %/сделку (комиссии + неблагоприятный '
+                'дрейф), и порогами его не закрыть.')
     add('')
-    add('Исправлено в этом прогоне: (1) одна разница между плечами — `delta_cap`; '
-        'гейт креатора вынесен в тень `shadow_gate`; (2) тайминг наблюдений '
-        '(P0-1) считается от абсолютной цели, а не от старта сборщика.')
+    add('> ⚠️ Честное предупреждение. Даже в лучшем случае B остаётся '
+        'убыточным по ожиданию: после снятия премии остаётся ≈ −1.06 %/сделку '
+        '(≈ −5 ₽), то есть комиссии и неблагоприятный дрейф. Этот прогон '
+        'измеряет цену ожидания, а не ищет прибыль: ни одна цифра ниже не '
+        'должна читаться как улучшение PnL.')
+    add('')
+    add('- ожидание до прогона: A −15…−17 ₽/сделку (базлайн воспроизводится), '
+        'B −4…−8 ₽, `shadow_t0_5s` −4…−7 ₽')
+    add('')
+    add('Исправлено в этом прогоне: (1) одна разница между плечами — `delta_min`; '
+        '(2) цена входа берётся из первого чтения кривой после детекта, '
+        '`entry_latency_ms` и измеренный `entry_lag_ms` пишутся в каждую сделку; '
+        '(3) RPC-слой повторяет 429/5xx с backoff, стоп-лист считает только '
+        'неисправленные ошибки (>2 % за 10 мин).')
     add('')
     add('## Воронка')
     add('')
@@ -304,10 +357,10 @@ def _summary_markdown(
     add('2. `admitted_by_current_cap` против `pass_if_cap_*` отвечает, режет ли '
         'поток потолок delta, или событий просто было меньше.')
     add('3. PnL A против B не доказывает эджа: решение принимается только по '
-        'предрегистрированному критерию выше (mean(B) − mean(A) ≥ +10 ₽ и CI95 '
-        'разницы не включает 0).')
-    add('4. Тени не торгуют: `capital_rub = 0`, входы зеркалят A, деньги '
-        'виртуальные.')
+        'предрегистрированному критерию выше (mean(B) − mean(A) ≥ +8 ₽ и CI95 '
+        'разницы не включает 0). Отрицательный знак у обоих плеч ожидаем.')
+    add('4. Тени не торгуют: `capital_rub = 0`, деньги виртуальные. '
+        '`shadow_gate` и `shadow_exit25` зеркалят A, `shadow_t0_5s` — B.')
     add('')
     return '\n'.join(lines)
 
@@ -320,7 +373,35 @@ def _strategy_metadata() -> dict[str, Any]:
             'run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, '
             'B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics'
         ),
-        'strategy_version': 'run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0',
+        'strategy_version': 'run4: entry_v3+birth_max_34.5+delta_min_A0.10_B0.00+latency150ms',
+        # --- run #4: the one declared difference and what it must show ------
+        'run4_single_difference': 'delta_min',
+        'entry_latency_ms': 150.0,
+        'entry_fill_price': (
+            'the first on-chain curve read after detection (getMultipleAccounts '
+            'context that already passed the security filters). The WSS packet '
+            'price is never used for a fill; entry_lag_ms records how old the '
+            'read actually was and entry_premium_pct compares the entry mid '
+            'with the t0 mid of the same read'
+        ),
+        'run4_decision_rule': (
+            'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% bootstrap '
+            'CI of the difference excludes 0 (20 000 resamples)'
+        ),
+        'run4_why': (
+            'run #3 decomposition of A (-16.41 RUB/trade = -3.28 %): market '
+            'drift 0->5 s +1.44 % (+7.2 RUB); momentum-wait premium -2.12 % '
+            '(-10.6 RUB); round-trip fees -2.50 % (-12.5 RUB); remainder ~0. '
+            'B removes exactly the wait (delta_min 0.10 -> 0.00) and nothing '
+            'else, so the difference IS the premium'
+        ),
+        'run4_expectation': (
+            'A: -15..-17 RUB/trade (baseline reproduced). B: -4..-8 RUB. '
+            'shadow_t0_5s: -4..-7 RUB. B is expected to STAY NEGATIVE: even '
+            'in the best case ~ -1.06 %/trade remains, which is the '
+            'round-trip fee plus adverse drift. This run does not look for '
+            'profit; it measures how much of the loss the 5-second wait costs'
+        ),
         'fix_7': (
             'v_sol_birth_max 50.0 -> 34.5. Measured on run #1: '
             'v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the '
@@ -377,14 +458,19 @@ def _strategy_metadata() -> dict[str, Any]:
         ),
         'entry': (
             '30.5 <= v_sol_birth <= 34.5 and '
-            '0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0'
+            'A: 0.10 <= (v_sol_now - v_sol_birth) <= 2.5 ; '
+            'B: 0.00 <= (v_sol_now - v_sol_birth) <= 34.5 - v_sol_birth'
         ),
         'entry_note': (
-            'run #3 keeps every entry/exit constant and moves exactly one '
-            'number: the delta cap (A 2.5, B 3.0). The creator gate is no '
-            'longer part of any live arm.'
+            'run #4 keeps every exit, the birth band, the slot count and the '
+            '500 RUB stake constant and moves exactly one number: delta_min '
+            '(A 0.10, B 0.00). B therefore enters on the first curve read '
+            'after detection; its delta cap is the birth ceiling minus birth, '
+            'which is the same 2.5 SOL at the 32 SOL mid-band and cannot admit '
+            'a coin that the band would have rejected anyway.'
         ),
-        'run3_single_difference': 'delta_max_sol',
+        'run3_single_difference': 'delta_max_sol (closed by run #3: -4.76 RUB, '
+                                  'CI [-35.04, 24.44] — criterion not met)',
         'run3_decision_rule': (
             'B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap '
             'CI of the difference excludes 0 (20 000 resamples)'
@@ -406,18 +492,25 @@ def _strategy_metadata() -> dict[str, Any]:
         ),
         'stop_list': (
             'прогон останавливается только по четырём причинам: telemetry '
-            'dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или '
+            'dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC '
+            '(после 3 попыток с backoff 0.25/0.75 c) > 2% за 10 мин или '
             'p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при '
             'растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. '
             'PnL не является причиной остановки'
         ),
         'profiles': {
-            'portfolio_a': {'delta_cap': 2.5, 'creator_gate': False},
-            'portfolio_b': {'delta_cap': 3.0, 'creator_gate': False},
+            'portfolio_a': {'delta_min': 0.10, 'delta_cap': 2.5,
+                            'creator_gate': False, 'entry_at_detection': False},
+            'portfolio_b': {'delta_min': 0.00, 'delta_cap': 'birth_ceiling - birth',
+                            'creator_gate': False, 'entry_at_detection': True},
             'shadow_gate': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                            'delta_cap': 2.5, 'creator_gate': True},
+                            'delta_min': 0.10, 'delta_cap': 2.5, 'creator_gate': True},
             'shadow_exit25': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                              'delta_cap': 2.5, 'single_exit_pct': 25.0},
+                              'delta_min': 0.10, 'delta_cap': 2.5,
+                              'single_exit_pct': 25.0},
+            'shadow_t0_5s': {'capital_rub': 0.0, 'mirror_of': 'portfolio_b',
+                             'delta_min': 0.00, 'single_exit_sec': 5.0,
+                             'no_sl_tp_shelf_timeout': True},
         },
     }
 
@@ -451,6 +544,18 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
     return {
         'run_id': run_id,
         **strategy_meta,
+        # Acceptance #2: the latency model and the declared difference must be
+        # readable from the manifest alone, without opening a trade row.
+        'entry_latency_ms': 150.0,
+        'ab_test': {
+            'single_difference': 'delta_min',
+            'portfolio_a': {'delta_min_sol': 0.10, 'delta_max_sol': 2.5},
+            'portfolio_b': {'delta_min_sol': 0.0,
+                            'delta_max_from_birth_ceiling': True},
+            'entry_latency_ms': 150.0,
+            'decision_rule': strategy_meta['run4_decision_rule'],
+            'expected_sign': 'negative for both arms; B less negative',
+        },
         'status': 'starting',
         'early_stop_reason': None,
         'created_at_utc': _utc_now(),
@@ -467,7 +572,9 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             'portfolio_b': {
                 **common, **strategy_meta,
                 'creator_gate': False,
-                'delta_max_sol': 3.0,
+                'delta_min_sol': 0.0,
+                'delta_max_from_birth_ceiling': True,
+                'entry_at_detection': True,
             },
             # Virtual books: 0 RUB of capital, entries mirrored from A.
             'shadow_gate': {
@@ -483,6 +590,23 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
                 **common, **strategy_meta,
                 'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
                 'single_exit_pct': 25.0, 'creator_gate': False,
+            },
+            # Run #4: what the 5-second hold is worth on its own. Enters like B
+            # and leaves after exactly 5 s at market — no SL, no TP, no
+            # trailing, no shelf and no timeout, so the ladder cannot hide the
+            # drift it is supposed to measure.
+            'shadow_t0_5s': {
+                **{k: v for k, v in common.items() if k not in (
+                    'stop_loss', 'tp1', 'rocket_bypass', 'trailing',
+                    'shelf_stagnation', 'no_progress', 'peak_timestamp_update',
+                    'timeout_before_trailing_sec', 'timeout_after_trailing_sec',
+                )},
+                **strategy_meta,
+                'capital_rub': 0.0, 'mirror_of': 'portfolio_b',
+                'delta_min_sol': 0.0, 'single_exit_sec': 5.0,
+                'exits': 'sell 100% at market on the first tick at held >= 5.0 s',
+                'no_stop_loss': True, 'no_take_profit': True,
+                'no_trailing': True, 'no_shelf': True, 'no_timeout': True,
             },
         },
         'rpc': {
@@ -534,6 +658,7 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             str(run_dir / 'wallet_portfolio_b.json'),
             str(run_dir / 'wallet_shadow_gate.json'),
             str(run_dir / 'wallet_shadow_exit25.json'),
+            str(run_dir / 'wallet_shadow_t0_5s.json'),
         ],
         'data_files': {
             'sniper_db': str(run_dir / 'sniper.db'),

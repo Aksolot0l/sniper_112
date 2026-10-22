@@ -347,7 +347,18 @@ async def run(seconds: float) -> int:
     (run_dir / 'manifest.json').write_text(json.dumps({
         'run_id': run_id, 'status': 'completed', 'smoke': True, 'paper_only': True,
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
-        'entry': '30.5 <= v_sol_birth <= 34.5 and 0.10 <= delta <= A 2.5 / B 3.0',
+        'entry': (
+            '30.5 <= v_sol_birth <= 34.5 and '
+            'A: 0.10 <= delta <= 2.5 ; B: 0.00 <= delta <= 34.5 - v_sol_birth'
+        ),
+        'entry_latency_ms': 150.0,
+        'ab_test': {
+            'single_difference': 'delta_min',
+            'decision_rule': (
+                'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% CI '
+                'of the difference excludes 0'
+            ),
+        },
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},
     }, ensure_ascii=False, indent=2), encoding='utf-8')
 

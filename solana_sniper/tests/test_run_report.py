@@ -275,15 +275,20 @@ class FunnelReportTests(unittest.TestCase):
             'portfolio_b': {'stats': {'n': 10, 'mean': -18.0, 'median': -18.0,
                                       'sd': 30.0, 'ci95_mean': [-38.0, 2.0],
                                       'sum': -180.0}},
-            'ab_test': {'single_difference': 'delta_max_sol',
-                        'portfolio_a': {'delta_max_sol': 2.5},
-                        'portfolio_b': {'delta_max_sol': 3.0},
+            'ab_test': {'single_difference': 'delta_min',
+                        'entry_latency_ms': 150.0,
+                        'portfolio_a': {'delta_min_sol': 0.10},
+                        'portfolio_b': {'delta_min_sol': 0.0},
                         'difference': {'mean_diff': 2.0, 'ci95': [-9.0, 13.0]}},
         }
         text = _summary_markdown(manifest, {}, summary)
         self.assertIn('критерий не выполнен', text)
         self.assertIn('5-секундный', text)
         self.assertNotIn('стало прибыльно', text.lower())
+        # The run must never be sold as an improvement.
+        self.assertIn('остаётся убыточным по ожиданию', text)
+        self.assertIn('entry_latency_ms = 150.0', text)
+        self.assertIn('| portfolio_a | None |', text)
 
     def test_missing_db_is_reported_not_raised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -449,14 +454,25 @@ class FunnelReportTests(unittest.TestCase):
         )
         with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
             manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
-        # Run #3: the band is per arm, one difference only.
-        self.assertEqual(manifest['entry'], '30.5 <= v_sol_birth <= 34.5 and '
-                                           '0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0')
+        # Run #4: one difference — delta_min — and an explicit latency model.
+        self.assertEqual(
+            manifest['entry'],
+            '30.5 <= v_sol_birth <= 34.5 and '
+            'A: 0.10 <= (v_sol_now - v_sol_birth) <= 2.5 ; '
+            'B: 0.00 <= (v_sol_now - v_sol_birth) <= 34.5 - v_sol_birth',
+        )
         self.assertEqual(manifest['profiles']['portfolio_a'],
-                         {'delta_cap': 2.5, 'creator_gate': False})
+                         {'delta_min': 0.10, 'delta_cap': 2.5,
+                          'creator_gate': False, 'entry_at_detection': False})
         self.assertEqual(manifest['profiles']['portfolio_b'],
-                         {'delta_cap': 3.0, 'creator_gate': False})
-        self.assertEqual(manifest['run3_single_difference'], 'delta_max_sol')
+                         {'delta_min': 0.00, 'delta_cap': 'birth_ceiling - birth',
+                          'creator_gate': False, 'entry_at_detection': True})
+        self.assertEqual(manifest['run4_single_difference'], 'delta_min')
+        self.assertEqual(manifest['entry_latency_ms'], 150.0)
+        self.assertEqual(manifest['profiles']['shadow_t0_5s']['single_exit_sec'], 5.0)
+        self.assertEqual(manifest['profiles']['shadow_t0_5s']['mirror_of'], 'portfolio_b')
+        # Run #3's declaration stays in the manifest as a closed result.
+        self.assertTrue(manifest['run3_single_difference'].startswith('delta_max_sol'))
         self.assertFalse(manifest['strategies']['portfolio_b']['creator_gate'])
         self.assertTrue(manifest['strategies']['shadow_gate']['creator_gate'])
         self.assertIn('does NOT create profit', manifest['fix_7'])

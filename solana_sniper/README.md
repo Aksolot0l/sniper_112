@@ -32,7 +32,7 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 - A/B portfolio, entry rule, exit ladder: `portfolio_ab.py`, `pump_curve_quote.py`, `price.py`
 - Creator identity / guard / wallet cache: `creator_probe.py`
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
-- Tests: `tests/` (119 tests). Bundle builder: `tools/build_bundle.py`
+- Tests: `tests/` (165 tests). Bundle builder: `tools/build_bundle.py`
 
 ## Strategy state (2026-10-22)
 
@@ -66,7 +66,38 @@ Exits — approved 4-mode ladder, 1:1 (unchanged this run; next experiment): SL 
 TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`; rocket bypass at +50%
 keeps 100%. Timeouts 35 s / 90 s remain as slot-safety nets.
 
-**Run #3 arms.** The live arms differ in exactly one number, `delta_max_sol`:
+**Run #4 arms (active).** The live arms again differ in exactly one number,
+but this time it is `delta_min`: `portfolio_a = 0.10`, `portfolio_b = 0.00`.
+B therefore enters on the first on-chain curve read after detection and pays
+no premium for waiting for momentum; A is the unchanged run-#3 config. Because
+B never waits, its delta cap is derived from the same birth ceiling
+(`34.5 − v_sol_birth`, i.e. 2.5 SOL at the 32 SOL mid-band) so that the band
+can never be the second difference. Exits, birth band, 3 slots and the 500 ₽
+stake are frozen.
+
+`entry_latency_ms = 150` is a declared parameter (manifest + every trade): no
+fill may be booked earlier than `found_at + 150 ms`, and the fill price always
+comes from the first curve read, never from the WSS packet. Each trade records
+the measured `entry_lag_ms`, whether the floor was met, and two separate
+premiums: `entry_premium_pct` (entry mid vs the coin's t0 mid — the price of
+waiting, expected ≤ 0.3 % for B and ≈ 2.1 % for A) and
+`entry_fill_premium_pct` (fees + impact inside the same snapshot), so the fee
+line is never read as the cost of waiting. The shadow `shadow_t0_5s` mirrors B
+with zero capital and sells 100 % at market exactly 5 s after entry — no SL, no
+TP, no shelf, no timeout — to price the drift on its own.
+
+The pre-registered rule is: B beats A iff `mean(B) − mean(A) >= +8 ₽` per trade
+and the 95 % bootstrap CI excludes 0. **Honest expectation:** even in the best
+case B stays negative (≈ −1.06 %/trade, i.e. round-trip fees plus adverse
+drift). Run #4 measures what the 5-second wait costs; it does not look for
+profit, and no number from it may be described as "being profitable now".
+
+Pre-launch gate for the 10-minute check:
+`python tools/preflight_budget.py runs/<RUN_DIR>` — RPC requests ≤ 1.5 ×
+(security-passing coins × 6), and either `http_429_count = 0` or zero
+unrecovered failures with a non-empty retry counter.
+
+**Run #3 arms (closed).** The live arms differ in exactly one number, `delta_max_sol`:
 `portfolio_a = 2.5`, `portfolio_b = 3.0`; both have the creator gate switched
 off. Everything else (birth band 30.5–34.5, `delta_min 0.10`, the 4-mode exit
 ladder, 3 × 500 ₽, 1500 ₽) is identical. The creator guard (below) now lives on
@@ -76,11 +107,11 @@ tick with `pnl_pct >= +25 %` (TP1, trailing, shelf and no-progress disabled; SL
 and the 35 s timeout kept). Shadows never touch real capital and are reported
 separately in `ab_summary.json`, `exports/shadow_fills.csv` and `SUMMARY.md`.
 
-The pre-registered decision rule for run #3 is: B beats A iff
-`mean(B) − mean(A) >= +10 ₽` per trade **and** the 95 % bootstrap CI of the
-difference excludes 0 (20 000 resamples). Otherwise the next candidate is
-`delta_min 0.6`, and if that fails too the honest conclusion is that the 5-second
-scalp is dead — not that it "became profitable".
+The run #3 rule was: B beats A iff `mean(B) − mean(A) >= +10 ₽` per trade
+**and** the 95 % bootstrap CI excludes 0. Result: −4.76 ₽, CI [−35.04, 24.44] —
+criterion not met. The decomposition of A (−16.41 ₽/trade) gave market drift
+0→5 s +1.44 %, the momentum-wait premium −2.12 % and round-trip fees −2.50 %,
+which is exactly what run #4 attacks.
 
 **Bank (addendum to run #3).** Every book keeps its own cash. If cash is below
 one 500 ₽ slot at the moment a trade would open, the book is topped back up to
@@ -95,10 +126,13 @@ roughly two injections.
 
 **Stop-list (addendum to run #3).** The run may stop early for exactly four
 reasons, checked every cycle: telemetry loss (`dropped_events`/`write_errors`
-> 0); RPC error rate above 1 % over 10 minutes or p95 above 1000 ms for five
+> 0); unrecovered RPC error rate above 2 % over 10 minutes or p95 above 1000 ms for five
 minutes straight; a live arm with no entries for 30 minutes while
 `entry_state` keeps growing; Helius quota below 10 % or less than 2 GB of free
-disk. The reason is written to `manifest.early_stop_reason`, `SUMMARY.md` and
+disk. Since run #4 the RPC branch counts **unrecovered** reads only
+(`rpc_unrecovered_rate`, threshold 2 % over 10 minutes): a Helius 429 that the
+retry layer recovers after 0.25 s / 0.75 s is back-pressure, not a telemetry
+failure, and it is still visible as `http_429_count` / `retry_count`. The reason is written to `manifest.early_stop_reason`, `SUMMARY.md` and
 `ab_summary.json`, and the artefacts are finalized — never zeroed. PnL is not a
 reason to stop. The Helius quota is read from `HELIUS_QUOTA_REMAINING_PCT` or
 `<RUN_DIR>/helius_quota.json`; with neither, that check is reported as

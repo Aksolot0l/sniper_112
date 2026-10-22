@@ -110,6 +110,13 @@ class ReadOnlyRpcMetrics:
         self.logical_requests = 0
         self.batch_groups = 0
         self.failed_requests = 0
+        # Run #4: separate "we saw a 429" from "we lost the read". A retried
+        # 429 that succeeds is back-pressure, not a telemetry failure, and the
+        # stop-list must judge only the unrecovered ones.
+        self.retry_count = 0
+        self.recovered_requests = 0
+        self.http_429_count = 0
+        self.unrecovered_failures = 0
         self.accounts_requested = 0
         self.null_accounts = 0
         self.null_retries = 0
@@ -127,6 +134,8 @@ class ReadOnlyRpcMetrics:
         if error_type:
             self.failed_requests += 1
             self.errors[str(error_type)] += 1
+            if str(error_type) == 'http_429':
+                self.http_429_count += 1
 
     def snapshot(self) -> dict[str, Any]:
         values = sorted(self.latencies_ms)
@@ -141,6 +150,13 @@ class ReadOnlyRpcMetrics:
             'logical_requests': self.logical_requests,
             'batch_groups': self.batch_groups,
             'failed_requests': self.failed_requests,
+            'http_429_count': self.http_429_count,
+            'retry_count': self.retry_count,
+            'unrecovered_failures': self.unrecovered_failures,
+            'unrecovered_rate': round(
+                self.unrecovered_failures / self.requests, 6,
+            ) if self.requests else 0.0,
+            'recovered_failures': self.recovered_requests,
             'accounts_requested': self.accounts_requested,
             'null_accounts': self.null_accounts,
             'null_retries': self.null_retries,
@@ -169,7 +185,7 @@ async def _rpc_multiple_accounts_once(
     addresses: list[str],
     encoding: str,
     commitment: str,
-) -> tuple[list[Optional[dict[str, Any]]], Optional[int]]:
+) -> tuple[list[Optional[dict[str, Any]]], Optional[int], Optional[str]]:
     payload = {
         'jsonrpc': '2.0',
         'id': 1,
@@ -183,17 +199,18 @@ async def _rpc_multiple_accounts_once(
         ) as resp:
             status = int(resp.status)
             if status != 200:
-                _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), error_type=f'http_{status}')
-                return [None] * len(addresses), None
+                error_type = f'http_{status}'
+                _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), error_type=error_type)
+                return [None] * len(addresses), None, error_type
             data = await resp.json()
         if not isinstance(data, dict) or data.get('error'):
             _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), error_type='jsonrpc_error')
-            return [None] * len(addresses), None
+            return [None] * len(addresses), None, 'jsonrpc_error'
         result = data.get('result') or {}
         values = result.get('value')
         if not isinstance(values, list) or len(values) != len(addresses):
             _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), error_type='malformed_result')
-            return [None] * len(addresses), None
+            return [None] * len(addresses), None, 'malformed_result'
         context = result.get('context') or {}
         try:
             context_slot = int(context.get('slot')) if context.get('slot') is not None else None
@@ -201,15 +218,59 @@ async def _rpc_multiple_accounts_once(
             context_slot = None
         null_count = sum(value is None for value in values)
         _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), null_count=null_count)
-        return values, context_slot
+        return values, context_slot, None
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        error_type = f'exception_{type(exc).__name__}'
         _rpc_metrics.record(
-            (time.monotonic() - started) * 1000, len(addresses),
-            error_type=f'exception_{type(exc).__name__}',
+            (time.monotonic() - started) * 1000, len(addresses), error_type=error_type,
         )
-        return [None] * len(addresses), None
+        return [None] * len(addresses), None, error_type
+
+
+# Errors that mean "the provider pushed back", not "the request was wrong".
+_RETRYABLE_RPC_ERRORS = frozenset({
+    'http_429', 'http_500', 'http_502', 'http_503', 'http_504',
+    'exception_ClientError', 'exception_ServerTimeoutError',
+    'exception_TimeoutError', 'exception_ClientOSError',
+})
+RPC_MAX_ATTEMPTS = 3          # first try + 2 retries
+RPC_RETRY_BACKOFF_SEC = (0.25, 0.75)
+
+
+async def _rpc_multiple_accounts_with_retry(
+    session: aiohttp.ClientSession,
+    http_rpc_url: str,
+    addresses: list[str],
+    encoding: str,
+    commitment: str,
+) -> tuple[list[Optional[dict[str, Any]]], Optional[int], Optional[str]]:
+    """One logical read with back-pressure retries (run #4).
+
+    Helius answers in 429 bursts. Without a retry every burst turned into a
+    "failed request" and the stop-list killed an 8-hour session after 49
+    minutes (run #3: 16/1408 = 1.14 %). A retried 429 that succeeds is
+    back-pressure, not a failure: it is counted in ``retry_count`` and stays
+    visible as ``http_429_count``, while only reads that never recovered reach
+    ``unrecovered_failures`` — the number the stop-list judges.
+    """
+    error_type: Optional[str] = None
+    for attempt in range(RPC_MAX_ATTEMPTS):
+        values, slot, error_type = await _rpc_multiple_accounts_once(
+            session, http_rpc_url, addresses, encoding, commitment,
+        )
+        if error_type is None:
+            if attempt:
+                _rpc_metrics.recovered_requests += 1
+            return values, slot, None
+        if error_type not in _RETRYABLE_RPC_ERRORS or attempt == RPC_MAX_ATTEMPTS - 1:
+            break
+        _rpc_metrics.retry_count += 1
+        backoff = RPC_RETRY_BACKOFF_SEC[min(attempt, len(RPC_RETRY_BACKOFF_SEC) - 1)]
+        await asyncio.sleep(backoff)
+    _rpc_metrics.unrecovered_failures += 1
+    return [None] * len(addresses), None, error_type
 
 
 async def _rpc_get_multiple_accounts_direct(
@@ -233,7 +294,7 @@ async def _rpc_get_multiple_accounts_direct(
     last_slot: Optional[int] = None
     for start in range(0, len(unique), 100):
         chunk = unique[start:start + 100]
-        values, slot = await _rpc_multiple_accounts_once(
+        values, slot, _error = await _rpc_multiple_accounts_with_retry(
             session, http_rpc_url, chunk, encoding, commitment,
         )
         result.update(zip(chunk, values))
@@ -243,7 +304,7 @@ async def _rpc_get_multiple_accounts_direct(
         if missing and retry_null:
             _rpc_metrics.null_retries += len(missing)
             await asyncio.sleep(0.120)
-            retry_values, retry_slot = await _rpc_multiple_accounts_once(
+            retry_values, retry_slot, _retry_error = await _rpc_multiple_accounts_with_retry(
                 session, http_rpc_url, missing, encoding, commitment,
             )
             for address, value in zip(missing, retry_values):

@@ -16,8 +16,9 @@ from price import (
 class FakeResponse:
     status = 200
 
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: dict, status: int = 200) -> None:
         self.payload = payload
+        self.status = status
 
     async def __aenter__(self):
         return self
@@ -50,6 +51,86 @@ class FakeRpcSession:
                     'data': [base64.b64encode(address.encode()).decode(), 'base64'],
                 })
         return FakeResponse({'result': {'context': {'slot': 77}, 'value': values}})
+
+
+class FlakyRpcSession:
+    """Answers with the scripted HTTP statuses, then 200 forever."""
+
+    def __init__(self, statuses: list[int]) -> None:
+        self.statuses = list(statuses)
+        self.calls: list[dict] = []
+
+    def post(self, url: str, **kwargs):
+        payload = kwargs['json']
+        self.calls.append(payload)
+        status = self.statuses.pop(0) if self.statuses else 200
+        if status != 200:
+            return FakeResponse({}, status=status)
+        values = [
+            {'owner': 'owner-test',
+             'data': [base64.b64encode(address.encode()).decode(), 'base64']}
+            for address in payload['params'][0]
+        ]
+        return FakeResponse({'result': {'context': {'slot': 77}, 'value': values}})
+
+
+class RetryLayerTests(unittest.IsolatedAsyncioTestCase):
+    """Run #4: a retried 429 is back-pressure, not a lost read."""
+
+    async def asyncSetUp(self) -> None:
+        reset_rpc_metrics()
+
+    async def test_429_is_retried_and_counted_as_recovered(self) -> None:
+        from unittest.mock import patch
+
+        from price import _rpc_multiple_accounts_with_retry
+
+        session = FlakyRpcSession([429, 429])
+        with patch('price.RPC_RETRY_BACKOFF_SEC', (0.0, 0.0)):
+            values, slot, error = await _rpc_multiple_accounts_with_retry(
+                session, 'https://rpc.invalid', ['mint-a'], 'base64', 'processed',
+            )
+        self.assertIsNone(error)
+        self.assertEqual(len(session.calls), 3)          # two 429s, then success
+        self.assertIsNotNone(values[0])
+        metrics = rpc_metrics_snapshot()
+        self.assertEqual(metrics['http_429_count'], 2)
+        self.assertEqual(metrics['retry_count'], 2)
+        self.assertEqual(metrics['recovered_failures'], 1)
+        self.assertEqual(metrics['failed_requests'], 2)
+        self.assertEqual(metrics['unrecovered_failures'], 0)
+        self.assertEqual(metrics['unrecovered_rate'], 0.0)
+
+    async def test_exhausted_429s_are_the_only_unrecovered_failures(self) -> None:
+        from unittest.mock import patch
+
+        from price import RPC_MAX_ATTEMPTS, _rpc_multiple_accounts_with_retry
+
+        session = FlakyRpcSession([429] * (RPC_MAX_ATTEMPTS + 2))
+        with patch('price.RPC_RETRY_BACKOFF_SEC', (0.0, 0.0)):
+            values, slot, error = await _rpc_multiple_accounts_with_retry(
+                session, 'https://rpc.invalid', ['mint-a'], 'base64', 'processed',
+            )
+        self.assertEqual(error, 'http_429')
+        self.assertEqual(values, [None])
+        self.assertEqual(len(session.calls), RPC_MAX_ATTEMPTS)
+        metrics = rpc_metrics_snapshot()
+        self.assertEqual(metrics['unrecovered_failures'], 1)
+        self.assertEqual(metrics['retry_count'], RPC_MAX_ATTEMPTS - 1)
+        self.assertGreater(metrics['unrecovered_rate'], 0.0)
+
+    async def test_non_retryable_error_is_not_retried(self) -> None:
+        from price import _rpc_multiple_accounts_with_retry
+
+        session = FlakyRpcSession([400])
+        values, slot, error = await _rpc_multiple_accounts_with_retry(
+            session, 'https://rpc.invalid', ['mint-a'], 'base64', 'processed',
+        )
+        self.assertEqual(error, 'http_400')
+        self.assertEqual(len(session.calls), 1)
+        metrics = rpc_metrics_snapshot()
+        self.assertEqual(metrics['retry_count'], 0)
+        self.assertEqual(metrics['unrecovered_failures'], 1)
 
 
 class ReadOnlyRpcBatchTests(unittest.IsolatedAsyncioTestCase):
