@@ -169,6 +169,40 @@ class ABProfileTests(unittest.TestCase):
         out_of_band = entry_shadow_flags(PROFILE_A, 20.0, 20.5)
         self.assertFalse(any(out_of_band.values()), 'birth band applies to every cap')
 
+    def test_entry_state_carries_dev_buy_fields_from_create_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(tmp)
+            collector = SimpleNamespace(record_decision=Mock())
+            coin = NewCoin(
+                mint='mint-dev-buy', source='Pump.fun', signature='sig',
+                curve='curve', packet={
+                    'v_sol': 32.0,
+                    'initial_buy_lamports': 97545455,
+                    'sol_amount_lamports': 1_000_000_000,
+                },
+            )
+            snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+            with patch('portfolio_ab.get_collector', return_value=collector):
+                simulator.record_entry_state(coin, snapshot, 31.0, 31.5, time.time())
+            self.assertEqual(collector.record_decision.call_count, 1)
+            # record_decision(mint, source, stage, decision, reasons, values)
+            args = collector.record_decision.call_args.args
+            self.assertEqual(args[2], 'entry_state')
+            self.assertEqual(args[5]['initial_buy_lamports'], 97545455)
+            self.assertEqual(args[5]['sol_amount_lamports'], 1_000_000_000)
+            self.assertEqual(args[5]['delta_bucket'], '0.1-1')
+
+            # A coin without the fields still writes both keys as None.
+            collector.record_decision.reset_mock()
+            bare = NewCoin(mint='mint-bare', source='Pump.fun', signature='sig2', packet={'v_sol': 32.0})
+            with patch('portfolio_ab.get_collector', return_value=collector):
+                simulator.record_entry_state(bare, snapshot, 31.0, 31.5, time.time())
+            values = collector.record_decision.call_args.args[5]
+            self.assertIn('initial_buy_lamports', values)
+            self.assertIn('sol_amount_lamports', values)
+            self.assertIsNone(values['initial_buy_lamports'])
+            self.assertIsNone(values['sol_amount_lamports'])
+
     def test_entry_thresholds_come_from_settings(self) -> None:
         base = make_settings()
         settings = SimpleNamespace(**{

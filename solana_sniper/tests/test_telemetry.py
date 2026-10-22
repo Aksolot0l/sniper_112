@@ -29,6 +29,7 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
                 tx_payer='2MRQDEBy1XfwvgwL8GbxXsD5wPq4gncn1YpsUKkosUFk',
                 packet={
                     'symbol': 'TEST', 'api_key': 'must-not-export',
+                    'initial_buy_lamports': 97545455, 'sol_amount_lamports': 1_000_000_000,
                     'private_key': 'must-not-export-private',
                     'rpc_endpoint': 'https://rpc.invalid/?api-key=must-not-export-query',
                     'debug': '{"token":"must-not-export-inline"}',
@@ -94,6 +95,9 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
                     '32CfGsZjrkHJukZuh97YN7t2eh8EmcuLkGuEzEYPBeRm',
                     '2MRQDEBy1XfwvgwL8GbxXsD5wPq4gncn1YpsUKkosUFk',
                 ))
+                self.assertEqual(db.execute(
+                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates'
+                ).fetchone(), (97545455, 1_000_000_000))
                 self.assertEqual(db.execute('SELECT count(*) FROM watchlist_events').fetchone()[0], 1)
                 self.assertEqual(db.execute('SELECT count(*) FROM quotes WHERE quote_only=1').fetchone()[0], 1)
                 self.assertEqual(db.execute('SELECT count(*) FROM paper_fills WHERE paper_only=1').fetchone()[0], 1)
@@ -122,6 +126,47 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(expected.issubset({p.name for p in (root / 'exports').iterdir()}))
             raw_jsonl = (root / 'exports' / 'raw_events.jsonl').read_text()
             self.assertNotIn('must-not-export', raw_jsonl)
+
+    async def test_legacy_candidates_table_gets_dev_buy_columns_added(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db_path = root / 'telemetry.sqlite'
+            # Pre-2026-10 schema: no dev-buy columns at all.
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    'CREATE TABLE candidates (candidate_id TEXT PRIMARY KEY, '
+                    'chain_id TEXT NOT NULL, mint TEXT NOT NULL, source TEXT NOT NULL, '
+                    'first_seen_at_utc TEXT NOT NULL, signature TEXT, curve TEXT, '
+                    'creator TEXT, name TEXT, symbol TEXT, decimals INTEGER, '
+                    'raw_json TEXT NOT NULL, config_json TEXT NOT NULL)'
+                )
+                db.execute(
+                    "INSERT INTO candidates VALUES ('legacy','solana-mainnet','OldMint',"
+                    "'Pump.fun','2026-10-01T00:00:00Z','sig',NULL,NULL,'OLD','OLD',"
+                    "6,'{}','{}')"
+                )
+            collector = CandidateCollector(str(db_path), str(root / 'exports'))
+            await collector.start()
+            collector.record_candidate(
+                NewCoin(
+                    mint='MintNewSchema', source='Pump.fun', signature='sig-2',
+                    packet={'initial_buy_lamports': 250_000_000, 'sol_amount_lamports': 500_000_000},
+                ),
+                {'paper_only': True},
+            )
+            await collector.close()
+            with sqlite3.connect(db_path) as db:
+                columns = {row[1] for row in db.execute('PRAGMA table_info(candidates)')}
+                self.assertIn('initial_buy_lamports', columns)
+                self.assertIn('sol_amount_lamports', columns)
+                self.assertEqual(db.execute(
+                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates '
+                    "WHERE mint='MintNewSchema'"
+                ).fetchone(), (250_000_000, 500_000_000))
+                self.assertEqual(db.execute(
+                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates '
+                    "WHERE mint='OldMint'"
+                ).fetchone(), (None, None))
 
     async def test_shadow_quotes_and_followups_are_scheduled_without_trades(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

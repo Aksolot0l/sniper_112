@@ -63,9 +63,49 @@ def _observation_offsets() -> tuple[int, ...]:
         return (0, 5, 10, 15, 60, 120)
 
 
+def _build_commit() -> str:
+    """Short code revision this process runs, without shelling out.
+
+    Order: SNIPER_BUILD env -> pack-written BUILD file -> local git HEAD.
+    The bundle ships BUILD (no .git), so a run on the user's PC still names
+    the exact commit it was built from.
+    """
+    for env_name in ('SNIPER_BUILD', 'BUILD_COMMIT'):
+        value = (os.getenv(env_name) or '').strip()
+        if value:
+            return value
+    here = Path(__file__).resolve()
+    build_file = here.with_name('BUILD')
+    try:
+        if build_file.is_file():
+            value = build_file.read_text(encoding='utf-8').strip()
+            if value:
+                return value
+    except OSError:
+        pass
+    git_dir = here.parent.parent / '.git'
+    try:
+        head = (git_dir / 'HEAD').read_text(encoding='utf-8').strip()
+        if head.startswith('ref:'):
+            ref_path = git_dir / head[4:].strip()
+            if ref_path.is_file():
+                head = ref_path.read_text(encoding='utf-8').strip()
+        if head and not head.startswith('ref:'):
+            return head[:7]
+    except OSError:
+        pass
+    return 'unknown'
+
+
 def _strategy_metadata() -> dict[str, Any]:
     """Declared up front so a run can never be compared against an older one."""
     return {
+        'build': _build_commit(),
+        'build_baseline': (
+            'a56be03 — 30-min run, no code changes; this build adds '
+            'telemetry-only fields (initialBuy, solAmount) and moves no '
+            'A/B behaviour'
+        ),
         'strategy_version': 'entry_v3+guard_v2+delta_cap_2.5',
         'comparison_policy': 'не смешивать с сессиями до 2026-10-22',
         'timeouts_35_90': 'slot safety net, not part of 4-mode ladder',
@@ -80,7 +120,21 @@ def _strategy_metadata() -> dict[str, Any]:
         'edge_status': (
             'no proven edge; cap 2.5 chosen for drawdown/slot hygiene '
             '(archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 '
-            'observed stop-outs; keeps 0 of the 2 rockets cut)'
+            'observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, '
+            'E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the '
+            'delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap'
+        ),
+        'judgement': (
+            'archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: '
+            '9 dead / 2 rockets (+38.3%, +106.8%)'
+        ),
+        'delta_min_note': (
+            'delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the '
+            'single exception is 6m3gx2eaH +26.8%'
+        ),
+        'experiment_next': (
+            'discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, '
+            'unique buyers'
         ),
         'expected_flow': (
             '~17% of entry_state pass at cap 2.5 (11/66 archived); '

@@ -640,9 +640,14 @@ class ABPaperSimulator:
             return
         base_profile = next(iter(self.books.values())).profile
         delta_sol = current_v_sol - birth_v_sol
+        # Free create-message fields (no RPC): dev's own buy, used later to
+        # discriminate rockets from corpses inside the wide delta buckets.
+        packet = coin.packet or {}
         collector.record_decision(
             coin.mint, coin.source, 'entry_state', 'fresh_state_ok', [],
             {'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
+             'initial_buy_lamports': packet.get('initial_buy_lamports'),
+             'sol_amount_lamports': packet.get('sol_amount_lamports'),
              'delta_sol': round(delta_sol, 6),
              'delta_bucket': delta_bucket(delta_sol),
              'delta_cap_used_sol': base_profile.delta_max_sol,

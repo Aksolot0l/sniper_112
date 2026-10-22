@@ -28,6 +28,7 @@ _SCHEMA = (
         source TEXT NOT NULL, first_seen_at_utc TEXT NOT NULL, signature TEXT,
         curve TEXT, creator TEXT, program_creator TEXT, tx_payer TEXT,
         name TEXT, symbol TEXT, decimals INTEGER,
+        initial_buy_lamports INTEGER, sol_amount_lamports INTEGER,
         raw_json TEXT NOT NULL, config_json TEXT NOT NULL
     )''',
     '''CREATE TABLE IF NOT EXISTS detections (
@@ -106,8 +107,9 @@ _SCHEMA = (
 _INSERTS = {
     'candidate': '''INSERT OR IGNORE INTO candidates
         (candidate_id,chain_id,mint,source,first_seen_at_utc,signature,curve,creator,
-         program_creator,tx_payer,name,symbol,decimals,raw_json,config_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         program_creator,tx_payer,name,symbol,decimals,initial_buy_lamports,
+         sol_amount_lamports,raw_json,config_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     'detection': '''INSERT OR IGNORE INTO detections
         (event_id,candidate_id,mint,source,detection_type,detected_at_utc,signature,raw_json)
         VALUES (?,?,?,?,?,?,?,?)''',
@@ -201,6 +203,17 @@ def _safe_json(value: Any) -> str:
         return '{}'
 
 
+def _int_or_none(value: Any) -> Optional[int]:
+    """Defensive cast for telemetry-only integer columns (never raises)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number
+
+
 def candidate_id_for(mint: str) -> str:
     return hashlib.sha256(f'solana-mainnet:{mint}'.encode('utf-8')).hexdigest()
 
@@ -274,6 +287,8 @@ class CandidateCollector:
                 for table, column, definition in (
                     ('candidates', 'program_creator', 'TEXT'),
                     ('candidates', 'tx_payer', 'TEXT'),
+                    ('candidates', 'initial_buy_lamports', 'INTEGER'),
+                    ('candidates', 'sol_amount_lamports', 'INTEGER'),
                     ('paper_fills', 'portfolio', "TEXT NOT NULL DEFAULT 'main'"),
                     ('paper_fills', 'out_amount_raw', 'TEXT'),
                     ('paper_fills', 'snapshot_pnl_rub', 'REAL'),
@@ -341,7 +356,9 @@ class CandidateCollector:
             coin.signature or None, coin.curve, program_creator,
             program_creator, tx_payer,
             str(packet.get('name') or ''), str(packet.get('symbol') or ''),
-            coin.decimals, _safe_json(packet), _safe_json(config),
+            coin.decimals, _int_or_none(packet.get('initial_buy_lamports')),
+            _int_or_none(packet.get('sol_amount_lamports')),
+            _safe_json(packet), _safe_json(config),
         ))
         self._put('detection', (
             uuid.uuid4().hex, cid, coin.mint, coin.source, 'candidate_received',

@@ -146,6 +146,28 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coin.packet['derived_bonding_curve'], VALID_CREATE['bondingCurveKey'])
         self.assertIsNone(coin.tx_payer)  # actor is not mislabeled as the first signer
         self.assertEqual(coin.packet['pumpportal_event_actor'], VALID_CREATE['traderPublicKey'])
+        # Dev's own buy straight from the create message: no extra RPC.
+        self.assertEqual(coin.packet['initial_buy_lamports'], 97545455)
+        self.assertEqual(coin.packet['sol_amount_lamports'], 3)
+        detector._seen_mints.discard(VALID_CREATE['mint'])
+
+    async def test_dev_buy_fields_are_none_when_absent_or_malformed(self) -> None:
+        import detector
+        from detector import lamports_or_none
+
+        self.assertEqual(lamports_or_none(1_000_000_000), 1_000_000_000)
+        self.assertEqual(lamports_or_none('250000000'), 250_000_000)
+        self.assertEqual(lamports_or_none(12.6), 13)
+        for bad in (None, '', '   ', 'abc', '1e9', True, float('nan'), float('inf'), -5, {}, []):
+            self.assertIsNone(lamports_or_none(bad), bad)
+
+        detector._seen_mints.discard(VALID_CREATE['mint'])
+        without_dev_buy = {k: v for k, v in VALID_CREATE.items() if k not in ('initialBuy', 'solAmount')}
+        with patch('detector.validate_pumpportal_create', return_value=validate_pumpportal_create(VALID_CREATE)):
+            coin = await on_transaction_signal(without_dev_buy, received_at=1234.5)
+        self.assertIsInstance(coin, NewCoin)
+        self.assertIsNone(coin.packet['initial_buy_lamports'])
+        self.assertIsNone(coin.packet['sol_amount_lamports'])
         detector._seen_mints.discard(VALID_CREATE['mint'])
 
     async def test_curve_quote_mint_is_checked_from_live_account_bytes(self) -> None:

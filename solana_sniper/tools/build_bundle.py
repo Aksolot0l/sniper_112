@@ -7,6 +7,7 @@ Launchers: START_WINDOWS.bat and START_MAC_LINUX.sh.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,7 +90,18 @@ def iter_files() -> list[Path]:
     return files
 
 
-def build(out_dir: Path) -> Path:
+def _git_commit() -> str:
+    """Short hash of the code being packed; 'unknown' outside a git checkout."""
+    try:
+        return subprocess.run(
+            ['git', '-C', str(PROJECT), 'rev-parse', '--short', 'HEAD'],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip() or 'unknown'
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+
+
+def build(out_dir: Path, commit: str | None = None) -> Path:
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / f'sniper_ab_paper_local_{stamp}.zip'
@@ -97,8 +109,13 @@ def build(out_dir: Path) -> Path:
     missing = [name for name in INCLUDE_FILES if not (PROJECT / name).is_file()]
     if missing:
         raise SystemExit(f'missing required files: {missing}')
+    commit = (commit or _git_commit()).strip()
+    if not commit:
+        commit = 'unknown'
     with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('READ_ME_FIRST.txt', READ_ME_FIRST)
+        # No .git inside the bundle: this file is how a run names its build.
+        archive.writestr('BUILD', commit + '\n')
         for path in files:
             rel = path.relative_to(PROJECT).as_posix()
             data = path.read_bytes()
@@ -117,8 +134,9 @@ def build(out_dir: Path) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', default=str(DIST))
+    parser.add_argument('--commit', default=None)
     args = parser.parse_args()
-    target = build(Path(args.out))
+    target = build(Path(args.out), args.commit)
     size_kb = target.stat().st_size / 1024
     print(f'built: {target} ({size_kb:.1f} KB)')
     with zipfile.ZipFile(target) as archive:

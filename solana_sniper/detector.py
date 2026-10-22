@@ -447,6 +447,32 @@ async def probe_pumpportal(timeout: float = 6.0) -> bool:
     return False
 
 
+def lamports_or_none(value: Any) -> Optional[int]:
+    """Safe parse of a PumpPortal base-unit integer (lamports / raw tokens).
+
+    Telemetry only: the value comes in the same create message, so this costs
+    no RPC. Absent, empty, non-finite or malformed values become None instead
+    of raising inside the hot listener path.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            number = int(text, 10)
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                return None
+            number = int(round(value))
+        else:
+            number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number >= 0 else None
+
+
 async def on_transaction_signal(
     raw: Dict[str, Any],
     received_at: Optional[float] = None,
@@ -491,6 +517,11 @@ async def on_transaction_signal(
         'pumpportal_event_actor': creator,
         'program_creator': None,
         'derived_bonding_curve': evidence.get('expected_curve'),
+        # Dev's own buy, straight from the create message (no extra RPC).
+        # `initialBuy` is raw token base units, `solAmount` is lamports;
+        # both are telemetry for the 4-12 discriminator experiment.
+        'initial_buy_lamports': lamports_or_none(raw.get('initialBuy')),
+        'sol_amount_lamports': lamports_or_none(raw.get('solAmount')),
     }
     if evidence.get('explicit_quote_mint'):
         packet['quote_mint'] = evidence['explicit_quote_mint']
