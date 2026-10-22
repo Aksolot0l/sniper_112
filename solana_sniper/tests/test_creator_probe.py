@@ -123,6 +123,32 @@ class RpcErrorDetailTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail['code'], -32602)
         self.assertIn('Invalid param', detail['message'])
 
+    async def test_successful_read_clears_previous_failure_of_same_wallet(self) -> None:
+        """Stale detail must not ride along on a probe with empty errors[]."""
+        class FlakySession(FakeSession):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls_left = 1
+
+            def post(self, _url, **kwargs):
+                if self.calls_left > 0:
+                    self.calls_left -= 1
+                    payload = kwargs['json']
+                    self.calls.append(payload)
+                    return BusyResponse({'jsonrpc': '2.0', 'id': payload['id']}, self)
+                return super().post(_url, **kwargs)
+
+        probe = CreatorOnchainProbe(FlakySession(), 'https://rpc.example.invalid')
+        first, error = await probe._signatures(CREATOR)
+        self.assertIsNone(first)
+        self.assertEqual(error, 'RuntimeError')
+        self.assertIn(CREATOR, probe._error_details)
+
+        second, error = await probe._signatures(CREATOR)
+        self.assertIsNone(error)
+        self.assertIsNotNone(second)
+        self.assertNotIn(CREATOR, probe._error_details)
+
     async def test_probe_result_carries_error_detail_and_never_gates_on_it(self) -> None:
         probe = CreatorOnchainProbe(BusySession(), 'https://rpc.example.invalid')
         coin = SimpleNamespace(

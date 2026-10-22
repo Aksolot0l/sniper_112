@@ -142,18 +142,34 @@ def _summary_markdown(
         ('conservative 100 bps, ₽', 'conservative_100bps_pnl_rub',
          'conservative_100bps_pnl_rub'),
     )
+    def _money(value: Any) -> str:
+        """Two decimals, or an em dash when the run has no such number."""
+        if value is None:
+            return '—'
+        try:
+            return f'{float(value):.2f}'
+        except (TypeError, ValueError):
+            return str(value)
+
     for label, key, base_key in rows:
         a = (summary.get('portfolio_a') or {}).get(key)
         b = (summary.get('portfolio_b') or {}).get(key)
         base_a = BASELINE_RUN_1['portfolio_a'].get(base_key, '—')
         base_b = BASELINE_RUN_1['portfolio_b'].get(base_key, '—')
-        add(f'| {label} | {a} | {b} | {base_a} | {base_b} |')
+        if key == 'entry_count' or key == 'closed_trade_count':
+            add(f'| {label} | {a} | {b} | {base_a} | {base_b} |')
+        else:
+            add(f'| {label} | {_money(a)} | {_money(b)} | {_money(base_a)} | {_money(base_b)} |')
+    # Per-trade PnL: one row, both arms, each value in its own column.
+    per_trade: dict[str, Any] = {}
     for arm in ('portfolio_a', 'portfolio_b'):
         entries = (summary.get(arm) or {}).get('entry_count') or 0
-        pnl = (summary.get(arm) or {}).get('realized_pnl_rub') or 0.0
-        add(f'| PnL на сделку, ₽ ({arm}) | '
-            f'{round(pnl / entries, 2) if entries else "—"} | | '
-            f'{BASELINE_RUN_1[arm]["pnl_per_trade_rub"]} | |')
+        pnl = (summary.get(arm) or {}).get('realized_pnl_rub')
+        per_trade[arm] = round(float(pnl) / entries, 2) if entries and pnl is not None else None
+    add('| PnL на сделку, ₽ | '
+        f'{_money(per_trade["portfolio_a"])} | {_money(per_trade["portfolio_b"])} | '
+        f'{_money(BASELINE_RUN_1["portfolio_a"]["pnl_per_trade_rub"])} | '
+        f'{_money(BASELINE_RUN_1["portfolio_b"]["pnl_per_trade_rub"])} |')
     add('')
     add('## Воронка')
     add('')
@@ -162,15 +178,15 @@ def _summary_markdown(
     add('')
     add(f"entry_state             {funnel.get('entry_state')}")
     for reason, count in (funnel.get('portfolio_a_signal') or {}).items():
-        add(f"  A signal: {reason:<30}{count}")
+        add(f"  A signal: {reason:<52}{count}")
     for reason, count in (funnel.get('portfolio_b_signal') or {}).items():
-        add(f"  B signal: {reason:<30}{count}")
+        add(f"  B signal: {reason:<52}{count}")
     add(f"admitted_by_current_cap {funnel.get('admitted_by_current_cap')}")
     add(f"opened                  A={((funnel.get('opened') or {}).get('portfolio_a'))} "
         f"B={((funnel.get('opened') or {}).get('portfolio_b'))}")
     for arm in ('portfolio_a', 'portfolio_b'):
         for reason, count in ((funnel.get('entry_skips') or {}).get(arm) or {}).items():
-            add(f"  {arm} skip: {reason:<30}{count}")
+            add(f"  {arm} skip: {reason:<52}{count}")
     add('```')
     add('')
     add('Дельта-полоса (сколько прошло бы при другом потолке):')

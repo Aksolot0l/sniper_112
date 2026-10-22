@@ -209,8 +209,13 @@ class CreatorOnchainProbe:
             cached = self._sig_cache.get(wallet)
             if cached is not None and (now - cached[0]) <= self.wallet_cache_sec:
                 self.cache_hits += 1
+                # A success must not inherit the previous failure of this wallet.
+                self._error_details.pop(wallet, None)
                 return dict(cached[1], cached=True), None
         result, error = await self._signatures_uncached(wallet)
+        if result is not None:
+            # Stale detail would make a clean probe look censored in the report.
+            self._error_details.pop(wallet, None)
         if result is not None and self.wallet_cache_sec > 0:
             self.cache_misses += 1
             if len(self._sig_cache) >= MAX_SIG_CACHE_ENTRIES:
@@ -272,6 +277,9 @@ class CreatorOnchainProbe:
                 if pubkey in expected_atas:
                     ata_rows.append((amount, decimals, str(pubkey)))
 
+            # A successful read clears any earlier failure of the same wallet,
+            # so error_detail is never attached to a probe with empty errors[].
+            self._error_details.pop(creator, None)
             ata_exists = bool(ata_rows)
             ata_balance_raw = sum(item[0] for item in ata_rows)
             decimals = ata_rows[0][1] if ata_rows else all_decimals

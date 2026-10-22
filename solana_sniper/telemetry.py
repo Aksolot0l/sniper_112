@@ -854,6 +854,41 @@ def get_collector() -> Optional[CandidateCollector]:
 # --------------------------------------------------------------------------
 # Post-run funnel report
 # --------------------------------------------------------------------------
+_GATE_PASS_REASONS = frozenset({'creator_guard_met', 'creator_gate_met'})
+_GATE_UNAVAILABLE_REASONS = frozenset({
+    'creator_history_unavailable',
+    'creator_token_ata_missing',
+    'creator_guard_unavailable',
+    'creator_guard_censored',
+})
+
+
+def gate_status_from_values(values: dict[str, Any]) -> str:
+    """Gate class of one ``portfolio_b_creator_gate`` row.
+
+    New runs store ``gate_status`` explicitly. Databases from earlier builds do
+    not, and reading only ``guard_reason`` there put ``creator_guard_met`` into
+    "reasons for rejection" (17 false rejects when replaying run #1). The rule
+    mirrors ``portfolio_ab.gate_status``; a blind spot is never a risk verdict.
+    """
+    status = str(values.get('gate_status') or '').strip()
+    if status:
+        return status
+    reason = str(values.get('guard_reason') or '').strip()
+    if values.get('creator_guard_passed') or reason in _GATE_PASS_REASONS:
+        return 'pass'
+    if reason in _GATE_UNAVAILABLE_REASONS:
+        return 'unavailable'
+    if reason == 'creator_history_too_short':
+        if (
+            str(values.get('creator_identity_type') or '') == 'pump_curve_creator'
+            and values.get('pumpportal_event_actor')
+        ):
+            return 'unavailable'
+        return 'fail_risk'
+    return 'fail_risk'
+
+
 def _first_reason(reasons_json: Any) -> str:
     try:
         parsed = json.loads(reasons_json or '[]')
@@ -877,8 +912,18 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
     report: dict[str, Any] = {'available': True, 'db': path.name}
     with sqlite3.connect(f'file:{path.resolve()}?mode=ro', uri=True) as db:
         def scalar(sql: str, params: tuple = ()) -> int:
-            row = db.execute(sql, params).fetchone()
+            try:
+                row = db.execute(sql, params).fetchone()
+            except sqlite3.Error:
+                # Trimmed/older databases may lack a table; report 0, not crash.
+                return 0
             return int(row[0]) if row and row[0] is not None else 0
+
+        def rows_of(sql: str, params: tuple = ()) -> list:
+            try:
+                return db.execute(sql, params).fetchall()
+            except sqlite3.Error:
+                return []
 
         report['candidates'] = scalar('SELECT COUNT(DISTINCT mint) FROM candidates')
         if not report['candidates']:
@@ -895,9 +940,9 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
 
         signals: dict[str, int] = {}
         for arm in ('portfolio_a', 'portfolio_b'):
-            rows = db.execute(
+            rows = rows_of(
                 'SELECT reasons_json FROM decisions WHERE stage=?', (f'{arm}_signal',)
-            ).fetchall()
+            )
             counts: dict[str, int] = {}
             for (reasons,) in rows:
                 reason = _first_reason(reasons)
@@ -911,10 +956,10 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                 "SELECT COUNT(*) FROM decisions WHERE stage=? AND decision='opened'",
                 (f'{arm}_entry',),
             )
-            skip_rows = db.execute(
+            skip_rows = rows_of(
                 "SELECT reasons_json FROM decisions WHERE stage=? AND decision IN ('skipped','not_opened')",
                 (f'{arm}_entry',),
-            ).fetchall()
+            )
             per_reason: dict[str, int] = {}
             for (reasons,) in skip_rows:
                 reason = _first_reason(reasons)
@@ -928,7 +973,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
         buckets: dict[str, int] = {}
         shadow: dict[str, int] = {}
         dev_buy: dict[str, int] = {}
-        for (values_json,) in db.execute(
+        for (values_json,) in rows_of(
             "SELECT values_json FROM decisions WHERE stage='entry_state'"
         ):
             try:
@@ -966,14 +1011,14 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
         gate: dict[str, int] = {}
         gate_reason: dict[str, int] = {}
         identity: dict[str, int] = {}
-        for (values_json,) in db.execute(
+        for (values_json,) in rows_of(
             "SELECT values_json FROM decisions WHERE stage='portfolio_b_creator_gate'"
         ):
             try:
                 values = json.loads(values_json or '{}')
             except (TypeError, ValueError):
                 continue
-            status = str(values.get('gate_status') or 'unclassified')
+            status = gate_status_from_values(values)
             gate[status] = gate.get(status, 0) + 1
             if status != 'pass':
                 reason = str(values.get('guard_reason') or 'unknown')
@@ -986,7 +1031,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
 
         # A-only mints: admitted by A, filtered by B. Split by gate class so a
         # telemetry blind spot can never be reported as a risk signal.
-        a_only_rows = db.execute(
+        a_only_rows = rows_of(
             """
             SELECT a.mint,
                    (SELECT COUNT(*) FROM decisions b
@@ -998,9 +1043,9 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
             FROM decisions a
             WHERE a.stage = 'portfolio_a_entry' AND a.decision = 'opened'
             """
-        ).fetchall()
+        )
         pnl_by_mint: dict[str, float] = {}
-        for mint, pnl in db.execute(
+        for mint, pnl in rows_of(
             "SELECT mint, pnl_leg_rub FROM paper_fills WHERE portfolio='portfolio_a'"
         ):
             pnl_by_mint[mint] = pnl_by_mint.get(mint, 0.0) + float(pnl or 0.0)
@@ -1012,7 +1057,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                 values = json.loads(gate_values or '{}')
             except (TypeError, ValueError):
                 values = {}
-            klass = str(values.get('gate_status') or 'unclassified')
+            klass = gate_status_from_values(values)
             reason = str(values.get('guard_reason') or 'unknown')
             slot = a_only.setdefault(klass, {'mints': 0, 'reasons': {}, 'pnl_leg_sum_rub': 0.0})
             slot['mints'] += 1

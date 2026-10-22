@@ -76,6 +76,74 @@ def _build_db(path: Path) -> None:
         db.commit()
 
 
+class LegacyGateReplayTests(unittest.TestCase):
+    """DBs from earlier builds have no gate_status; derive it, don't guess."""
+
+    def test_missing_gate_status_is_derived_from_guard_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    'CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                    'candidate_id TEXT, mint TEXT, source TEXT, stage TEXT, '
+                    'decision TEXT, reasons_json TEXT, values_json TEXT, '
+                    'occurred_at_utc TEXT)'
+                )
+                db.execute(
+                    'CREATE TABLE paper_fills (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                    'mint TEXT, source TEXT, portfolio TEXT, pnl_leg_rub REAL)'
+                )
+
+                def row(mint: str, values: dict) -> None:
+                    db.execute(
+                        'INSERT INTO decisions (candidate_id,mint,source,stage,decision,'
+                        'reasons_json,values_json,occurred_at_utc) VALUES (?,?,?,?,?,?,?,?)',
+                        ('c', mint, 'Pump.fun', 'portfolio_b_creator_gate', 'pass',
+                         '[]', json.dumps(values), 't'),
+                    )
+
+                # old schema: guard_reason only, no gate_status
+                for i in range(17):
+                    row(f'ok{i}', {'guard_reason': 'creator_guard_met',
+                                   'creator_guard_passed': True,
+                                   'creator_identity_type': 'pumpportal_event_actor'})
+                row('blind', {'guard_reason': 'creator_token_ata_missing',
+                              'creator_guard_passed': False})
+                row('risk', {'guard_reason': 'creator_burst_activity',
+                             'creator_guard_passed': False})
+                # confirmed pass without the boolean must still be a pass
+                row('met_only', {'guard_reason': 'creator_guard_met'})
+                db.commit()
+            funnel = funnel_from_db(db_path)
+        self.assertEqual(funnel['gate_status'], {'fail_risk': 1, 'pass': 18, 'unavailable': 1})
+        self.assertNotIn('creator_guard_met', funnel['gate_reasons'])
+        self.assertEqual(funnel['gate_reasons'],
+                         {'creator_burst_activity': 1, 'creator_token_ata_missing': 1})
+
+    def test_helper_agrees_with_portfolio_ab_classification(self) -> None:
+        from portfolio_ab import gate_status as profile_class
+        from telemetry import gate_status_from_values
+
+        cases = [
+            (True, 'creator_guard_met', {}),
+            (False, 'creator_history_unavailable', {}),
+            (False, 'creator_token_ata_missing', {}),
+            (False, 'creator_burst_activity', {}),
+            (False, 'creator_repeat_deploy_in_session', {}),
+            (False, 'creator_token_balance_zero', {}),
+            (False, 'creator_history_too_short',
+             {'creator_identity_type': 'pump_curve_creator',
+              'pumpportal_event_actor': 'Actor'}),
+            (False, 'creator_history_too_short',
+             {'creator_identity_type': 'pumpportal_event_actor',
+              'pumpportal_event_actor': 'Actor'}),
+        ]
+        for passed, reason, probe in cases:
+            expected = profile_class(passed, reason, probe)
+            values = {'guard_reason': reason, 'creator_guard_passed': passed, **probe}
+            self.assertEqual(gate_status_from_values(values), expected, (passed, reason))
+
+
 class FunnelReportTests(unittest.TestCase):
     def test_funnel_counts_a_only_split_and_shadow_caps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,6 +207,91 @@ class FunnelReportTests(unittest.TestCase):
         self.assertIn('| 16 |', closed_row)
         pnl_row = [ln for ln in text.splitlines() if ln.startswith('| realized PnL')][0]
         self.assertIn('-1035.56', pnl_row)
+
+    def test_per_trade_row_keeps_each_arm_in_its_own_column(self) -> None:
+        """Regression: both arms used to print into the portfolio_a column."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            _build_db(db_path)
+            funnel = funnel_from_db(db_path)
+        settings = SimpleNamespace(
+            http_rpc_url='https://rpc.example.invalid', wss_url='wss://rpc.example.invalid',
+            entry_fee_sol=0.00008, exit_fee_sol=0.00005, usd_rub_rate=90.0,
+        )
+        with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
+            manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
+        # One trade per arm, so per-trade PnL equals the fixture PnL exactly.
+        summary = {
+            'portfolio_a': {'entry_count': 1, 'closed_trade_count': 1,
+                            'realized_pnl_rub': -41.5, 'conservative_100bps_pnl_rub': -48.0},
+            'portfolio_b': {'entry_count': 1, 'closed_trade_count': 1,
+                            'realized_pnl_rub': 12.0, 'conservative_100bps_pnl_rub': 9.5},
+        }
+        text = _summary_markdown(manifest, funnel, summary)
+        rows = [ln for ln in text.splitlines() if ln.startswith('| PnL на сделку')]
+        self.assertEqual(len(rows), 1, rows)
+        cells = [c.strip() for c in rows[0].strip('|').split('|')]
+        self.assertEqual(len(cells), 5, rows[0])
+        self.assertEqual(cells[0], 'PnL на сделку, ₽')
+        self.assertEqual(cells[1], '-41.50')
+        self.assertEqual(cells[2], '12.00')
+        self.assertEqual(cells[3], '-39.83')   # baseline run #1, arm A
+        self.assertEqual(cells[4], '-42.05')   # baseline run #1, arm B
+
+    def test_money_columns_use_two_decimals_and_dash_for_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            _build_db(db_path)
+            funnel = funnel_from_db(db_path)
+        settings = SimpleNamespace(
+            http_rpc_url='https://rpc.example.invalid', wss_url='wss://rpc.example.invalid',
+            entry_fee_sol=0.00008, exit_fee_sol=0.00005, usd_rub_rate=90.0,
+        )
+        with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
+            manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
+        summary = {
+            'portfolio_a': {'entry_count': 2, 'closed_trade_count': 2,
+                            'realized_pnl_rub': -1035.555661,
+                            'conservative_100bps_pnl_rub': None},
+            'portfolio_b': {'entry_count': 0, 'closed_trade_count': 0,
+                            'realized_pnl_rub': 0.0, 'conservative_100bps_pnl_rub': 0.0},
+        }
+        text = _summary_markdown(manifest, funnel, summary)
+        self.assertIn('| realized PnL, ₽ | -1035.56 | 0.00 |', text)
+        self.assertNotIn('-1035.555661', text)
+        # No entries -> no per-trade number, and a dash instead of 0.00.
+        per_trade = [ln for ln in text.splitlines() if ln.startswith('| PnL на сделку')][0]
+        cells = [c.strip() for c in per_trade.strip('|').split('|')]
+        self.assertEqual(cells[1], '-517.78')
+        self.assertEqual(cells[2], '—')
+        # Conservative None must not leak into the table as "None".
+        self.assertNotIn('| None |', text)
+
+    def test_funnel_lines_do_not_glue_reason_and_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            _build_db(db_path)
+            funnel = funnel_from_db(db_path)
+        settings = SimpleNamespace(
+            http_rpc_url='https://rpc.example.invalid', wss_url='wss://rpc.example.invalid',
+            entry_fee_sol=0.00008, exit_fee_sol=0.00005, usd_rub_rate=90.0,
+        )
+        with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
+            manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
+        funnel['portfolio_b_signal'] = {
+            'creator_guard_creator_history_too_short': 5,
+            'live_momentum_entry': 7,
+        }
+        text = _summary_markdown(manifest, funnel, {
+            'portfolio_a': {'entry_count': 0}, 'portfolio_b': {'entry_count': 0},
+        })
+        self.assertNotIn('too_short5', text)
+        self.assertIn('creator_guard_creator_history_too_short', text)
+        for line in text.splitlines():
+            if 'creator_guard_creator_history_too_short' in line:
+                self.assertTrue(line.endswith('5'), line)
+                # The count must be separated from the reason by whitespace.
+                self.assertEqual(line[-2], ' ', f'glued reason/count: {line!r}')
 
     def test_manifest_declares_fix_7_and_keeps_cap_and_ladder(self) -> None:
         settings = SimpleNamespace(
