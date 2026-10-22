@@ -337,10 +337,9 @@ async def run(seconds: float) -> int:
         if not book.profile.is_shadow:
             counters['closed'] += 1
 
-    # Run #3 artefacts: own mark stream + shadow fills.
-    export_dir = run_dir / 'exports'
-    simulator.write_ticks(export_dir / 'ticks.csv')
-    simulator.write_shadow_fills(export_dir / 'shadow_fills.csv')
+    # Run #3 artefacts: own mark stream + shadow fills. The snapshot helper is
+    # the same one the live run calls every 60 s (P0-5), so the smoke proves it.
+    simulator.snapshot_artifacts(reason='smoke_end')
     summary = simulator.summary()
     (run_dir / 'ab_summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -349,14 +348,18 @@ async def run(seconds: float) -> int:
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
         'entry': (
             '30.5 <= v_sol_birth <= 34.5 and '
-            'A: 0.10 <= delta <= 2.5 ; B: 0.00 <= delta <= 34.5 - v_sol_birth'
+            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5  (identical for A and B)'
         ),
         'entry_latency_ms': 150.0,
+        'run4_single_difference': 'exit_rule',
         'ab_test': {
-            'single_difference': 'delta_min',
+            # Run #4: the exit rule is the one live difference.
+            'single_difference': 'exit_rule',
             'decision_rule': (
-                'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% CI '
-                'of the difference excludes 0'
+                'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% '
+                'bootstrap CI of the difference excludes 0 (20 000 resamples); '
+                'shadow_no_trail beats A iff >= +6 RUB with a CI excluding 0; '
+                'several comparisons -> exploratory, Bonferroni alpha 0.0125'
             ),
         },
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},

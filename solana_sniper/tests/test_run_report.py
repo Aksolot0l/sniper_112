@@ -283,12 +283,14 @@ class FunnelReportTests(unittest.TestCase):
         }
         text = _summary_markdown(manifest, {}, summary)
         self.assertIn('критерий не выполнен', text)
-        self.assertIn('5-секундный', text)
         self.assertNotIn('стало прибыльно', text.lower())
         # The run must never be sold as an improvement.
-        self.assertIn('остаётся убыточным по ожиданию', text)
+        self.assertIn('B остаётся убыточным', text)
         self.assertIn('entry_latency_ms = 150.0', text)
-        self.assertIn('| portfolio_a | None |', text)
+        self.assertIn('| portfolio_a | 10 | -20.00 |', text)
+        # Exit reasons and the P0 acceptance table are part of the report.
+        self.assertIn('exit_reason × портфель', text)
+        self.assertIn('P0: принят ли прогон', text)
 
     def test_missing_db_is_reported_not_raised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -454,27 +456,28 @@ class FunnelReportTests(unittest.TestCase):
         )
         with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
             manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
-        # Run #4: one difference — delta_min — and an explicit latency model.
+        # Run #4: the single live difference is the EXIT rule.
         self.assertEqual(
             manifest['entry'],
             '30.5 <= v_sol_birth <= 34.5 and '
-            'A: 0.10 <= (v_sol_now - v_sol_birth) <= 2.5 ; '
-            'B: 0.00 <= (v_sol_now - v_sol_birth) <= 34.5 - v_sol_birth',
+            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5  (identical for A and B)',
         )
-        self.assertEqual(manifest['profiles']['portfolio_a'],
-                         {'delta_min': 0.10, 'delta_cap': 2.5,
-                          'creator_gate': False, 'entry_at_detection': False})
-        self.assertEqual(manifest['profiles']['portfolio_b'],
-                         {'delta_min': 0.00, 'delta_cap': 'birth_ceiling - birth',
-                          'creator_gate': False, 'entry_at_detection': True})
-        self.assertEqual(manifest['run4_single_difference'], 'delta_min')
+        self.assertEqual(manifest['profiles']['portfolio_a']['exit_rule'],
+                         '4-mode ladder (Round 6, unchanged)')
+        self.assertIn('time_exit_15s', manifest['profiles']['portfolio_b']['exit_rule'])
+        self.assertEqual(manifest['profiles']['portfolio_a']['delta_min'], 0.10)
+        self.assertEqual(manifest['profiles']['portfolio_b']['delta_min'], 0.10)
+        self.assertEqual(manifest['run4_single_difference'], 'exit_rule')
         self.assertEqual(manifest['entry_latency_ms'], 150.0)
-        self.assertEqual(manifest['profiles']['shadow_t0_5s']['single_exit_sec'], 5.0)
-        self.assertEqual(manifest['profiles']['shadow_t0_5s']['mirror_of'], 'portfolio_b')
+        self.assertEqual(manifest['ab_test']['single_difference'], 'exit_rule')
+        self.assertEqual(manifest['profiles']['shadow_no_trail']['max_slots'], 1)
+        self.assertEqual(manifest['profiles']['shadow_no_trail']['mirror_of'],
+                         'portfolio_a')
+        self.assertNotIn('shadow_exit25', manifest['profiles'])
+        self.assertIn('+8 RUB', manifest['run4_decision_rule'])
+        self.assertIn('2%', manifest['stop_list'])
         # Run #3's declaration stays in the manifest as a closed result.
         self.assertTrue(manifest['run3_single_difference'].startswith('delta_max_sol'))
-        self.assertFalse(manifest['strategies']['portfolio_b']['creator_gate'])
-        self.assertTrue(manifest['strategies']['shadow_gate']['creator_gate'])
         self.assertIn('does NOT create profit', manifest['fix_7'])
         self.assertIn('fix #8', manifest['open_question_cap'])
         common = manifest['strategies']['portfolio_a']
@@ -482,6 +485,127 @@ class FunnelReportTests(unittest.TestCase):
         self.assertIn('pnl_pct <= -10.0', common['stop_loss'])
         self.assertEqual(common['timeout_before_trailing_sec'], 35)
         self.assertEqual(common['timeout_after_trailing_sec'], 90)
+
+
+
+class ReportRegressionTests(unittest.TestCase):
+    """Defects found while reviewing fix #7 — locked so they cannot return."""
+
+    def _summary(self) -> dict:
+        return {
+            'portfolio_a': {'entry_count': 26, 'realized_pnl_rub': -1035.555661,
+                            'stats': {'n': 26, 'mean': -39.83, 'median': -40.0,
+                                      'sd': 10.0, 'ci95_mean': [-45.0, -35.0],
+                                      'sum': -1035.56}},
+            'portfolio_b': {'entry_count': 16, 'realized_pnl_rub': -672.77,
+                            'stats': {'n': 16, 'mean': -42.05, 'median': -42.0,
+                                      'sd': 10.0, 'ci95_mean': [-47.0, -37.0],
+                                      'sum': -672.77}},
+            'ab_test': {
+                'single_difference': 'delta_min', 'entry_latency_ms': 150.0,
+                'portfolio_a': {'delta_min_sol': 0.1},
+                'portfolio_b': {'delta_min_sol': 0.0},
+                'difference': {'mean_diff': -2.0, 'ci95': [-20.0, 16.0]},
+            },
+        }
+
+    @staticmethod
+    def _manifest() -> dict:
+        return {'run_id': 'run-x', 'build': 'x', 'entry': 'e',
+                'actual_duration_sec': 1800, 'planned_duration_sec': 1800,
+                'paper_only': True, 'signed_transactions': 0}
+
+    def test_per_trade_pnl_keeps_each_arm_in_its_own_column(self) -> None:
+        # D1: the row used to print both arms into the portfolio_a column, so
+        # a reader compared A against A and "run #1 B" stayed empty.
+        text = _summary_markdown(self._manifest(), {}, self._summary())
+        row = next(line for line in text.splitlines()
+                   if line.startswith('| PnL на сделку'))
+        cells = [cell.strip() for cell in row.strip('|').split('|')]
+        self.assertEqual(cells[0], 'PnL на сделку, ₽')
+        # A, B, run #1 A, run #1 B — each number under its own arm.
+        self.assertEqual(cells[1], '-39.83')
+        self.assertEqual(cells[2], '-42.05')
+        self.assertEqual(cells[3], '-39.83')
+        self.assertEqual(cells[4], '-42.05')
+
+    def test_per_trade_pnl_is_dash_when_an_arm_has_no_entries(self) -> None:
+        summary = self._summary()
+        summary['portfolio_b'] = {'entry_count': 0, 'realized_pnl_rub': 0.0,
+                                  'stats': {'n': 0}}
+        text = _summary_markdown(self._manifest(), {}, summary)
+        row = next(line for line in text.splitlines()
+                   if line.startswith('| PnL на сделку'))
+        cells = [cell.strip() for cell in row.strip('|').split('|')]
+        self.assertEqual(cells[1], '-39.83')
+        self.assertEqual(cells[2], '—')     # never a fake 0 or a divide by zero
+
+    def test_pnl_is_rounded_not_printed_as_a_raw_float(self) -> None:
+        # D5: -1035.555661 must not leak into the table.
+        text = _summary_markdown(self._manifest(), {}, self._summary())
+        self.assertNotIn('-1035.555661', text)
+        self.assertIn('| realized PnL, ₽ | -1035.56 | -672.77 |', text)
+
+    def test_long_skip_reasons_stay_separated_from_their_count(self) -> None:
+        # D2: width 30 glued "creator_guard_creator_history_too_short5".
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    'CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                    'candidate_id TEXT, mint TEXT, source TEXT, stage TEXT, '
+                    'decision TEXT, reasons_json TEXT, values_json TEXT, '
+                    'occurred_at_utc TEXT)'
+                )
+                db.execute(
+                    'INSERT INTO decisions (candidate_id,mint,source,stage,'
+                    'decision,reasons_json,values_json,occurred_at_utc) '
+                    'VALUES (?,?,?,?,?,?,?,?)',
+                    ('m1', 'm1', 'Pump.fun', 'portfolio_b_entry', 'skipped',
+                     json.dumps(['creator_guard_creator_history_too_short']),
+                     '{}', 't'),
+                )
+                db.commit()
+            funnel = funnel_from_db(db_path)
+        text = _summary_markdown(self._manifest(), funnel, self._summary())
+        line = next(line for line in text.splitlines()
+                    if 'creator_guard_creator_history_too_short' in line)
+        self.assertRegex(line, r'creator_history_too_short\s{2,}1$')
+
+    def test_passing_gate_rows_never_reach_gate_reasons(self) -> None:
+        # D4: a successful probe must not be filed under "reasons for refusal",
+        # even when an old build stored a stale gate_status.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    'CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+                    'candidate_id TEXT, mint TEXT, source TEXT, stage TEXT, '
+                    'decision TEXT, reasons_json TEXT, values_json TEXT, '
+                    'occurred_at_utc TEXT)'
+                )
+                for mint, values in (
+                    ('a', {'gate_status': 'unavailable',
+                           'guard_reason': 'creator_guard_met',
+                           'creator_guard_passed': True,
+                           'creator_identity_type': 'pump_curve_creator'}),
+                    ('b', {'guard_reason': 'creator_burst_activity',
+                           'creator_guard_passed': False, 'status': 'ok',
+                           'creator_identity_type': 'pump_curve_creator'}),
+                ):
+                    db.execute(
+                        'INSERT INTO decisions (candidate_id,mint,source,stage,'
+                        'decision,reasons_json,values_json,occurred_at_utc) '
+                        'VALUES (?,?,?,?,?,?,?,?)',
+                        (mint, mint, 'Pump.fun', 'portfolio_b_creator_gate',
+                         'pass' if values.get('creator_guard_passed') else 'fail',
+                         '[]', json.dumps(values), 't'),
+                    )
+                db.commit()
+            funnel = funnel_from_db(db_path)
+        self.assertEqual(funnel['gate_status'].get('pass'), 1)
+        self.assertNotIn('creator_guard_met', funnel['gate_reasons'])
+        self.assertEqual(funnel['gate_reasons'], {'creator_burst_activity': 1})
 
 
 if __name__ == '__main__':

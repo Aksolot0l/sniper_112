@@ -32,7 +32,8 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 - A/B portfolio, entry rule, exit ladder: `portfolio_ab.py`, `pump_curve_quote.py`, `price.py`
 - Creator identity / guard / wallet cache: `creator_probe.py`
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
-- Tests: `tests/` (165 tests). Bundle builder: `tools/build_bundle.py`
+- Tests: `tests/` (187 tests). Bundle builder: `tools/build_bundle.py`
+- Report preview before launch: `RUN4_SUMMARY_PREVIEW.md` (synthetic numbers, shows the exact SUMMARY.md layout and criteria)
 
 ## Strategy state (2026-10-22)
 
@@ -61,36 +62,60 @@ Shigure 33.16→38.59) while buying dead `delta == 0` decoys (8 of 9 such fills
 lost money). CAVELON (36.0) and PERFORMA (39.88) are **not** affected by that
 anti-filter any more: the 34.5 birth ceiling rejects them as `birth_out_of_band`.
 
-Exits — approved 4-mode ladder, 1:1 (unchanged this run; next experiment): SL −10% before TP1/rocket; no-progress
+Exits — approved 4-mode ladder, A only (B is the run #4 experiment): SL −10% before TP1/rocket; no-progress
 (5 s, peak < +4%, PnL < +1.5%); positive stagnation (4.5 s, PnL ≥ +1.5%);
 TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`; rocket bypass at +50%
 keeps 100%. Timeouts 35 s / 90 s remain as slot-safety nets.
 
-**Run #4 arms (active).** The live arms again differ in exactly one number,
-but this time it is `delta_min`: `portfolio_a = 0.10`, `portfolio_b = 0.00`.
-B therefore enters on the first on-chain curve read after detection and pays
-no premium for waiting for momentum; A is the unchanged run-#3 config. Because
-B never waits, its delta cap is derived from the same birth ceiling
-(`34.5 − v_sol_birth`, i.e. 2.5 SOL at the 32 SOL mid-band) so that the band
-can never be the second difference. Exits, birth band, 3 slots and the 500 ₽
-stake are frozen.
+**Run #4 arms (active): the exit rule is the single difference.**
 
-`entry_latency_ms = 150` is a declared parameter (manifest + every trade): no
-fill may be booked earlier than `found_at + 150 ms`, and the fill price always
-comes from the first curve read, never from the WSS packet. Each trade records
-the measured `entry_lag_ms`, whether the floor was met, and two separate
-premiums: `entry_premium_pct` (entry mid vs the coin's t0 mid — the price of
-waiting, expected ≤ 0.3 % for B and ≈ 2.1 % for A) and
-`entry_fill_premium_pct` (fees + impact inside the same snapshot), so the fee
-line is never read as the cost of waiting. The shadow `shadow_t0_5s` mirrors B
-with zero capital and sells 100 % at market exactly 5 s after entry — no SL, no
-TP, no shelf, no timeout — to price the drift on its own.
+Same entry in both live arms — `30.5 ≤ v_sol_birth ≤ 34.5` and
+`0.10 ≤ v_sol_now − v_sol_birth ≤ 2.5`, priced from the first on-chain curve
+read after detection. Only the exit differs:
 
-The pre-registered rule is: B beats A iff `mean(B) − mean(A) >= +8 ₽` per trade
-and the 95 % bootstrap CI excludes 0. **Honest expectation:** even in the best
-case B stays negative (≈ −1.06 %/trade, i.e. round-trip fees plus adverse
-drift). Run #4 measures what the 5-second wait costs; it does not look for
-profit, and no number from it may be described as "being profitable now".
+| | A (Round 6, frozen) | B (run #4) |
+|---|---|---|
+| time exit | 35 s / 90 s safety nets | **100 % at t ≥ 15.0 s** (`time_exit_15s`) |
+| stop loss | −10 % before TP1/rocket | **−20 %, for the whole life of the position** |
+| take profit | TP1 +30 % sells 50 % | **+100 % sells 50 %** |
+| trail 0.85× best | on after +10 % | **off** |
+| shelf / no-progress | 4.5 s / 5 s | **off** |
+
+Why: on the same 84 trades, holding to 15 s without SL/TP/trail gives −265 ₽
+instead of −1 344 ₽ (+12.8 ₽/trade), and the loss comes from the take-profits
+(SL/trail +674 ₽ on 13 trades, SL +175 ₽ on 21, no-progress −81 ₽ on 44). The
+horizon is sharp: 5 s −4.9 ₽, **15 s −3.2 ₽**, 60 s −32.6 ₽, 120 s −46.7 ₽.
+Slots (3), stake (500 ₽), bank (1500 ₽) and the entry are unchanged.
+
+Shadows, both zero capital, 1 position each, polled at 0.5 Hz on A's entries:
+`shadow_gate` (Round 6 creator gate) and `shadow_no_trail` (A's entry with
+TP1 +30 %/50 % kept, trail/shelf/no-progress off, remainder sold at 15 s).
+`shadow_exit25` and `shadow_t0_5s` are deleted. A shadow can never change A/B
+fills; `shadow_poll_dropped` in the report counts polls skipped by the budget.
+
+The pre-registered rule stays: B beats A iff `mean(B) − mean(A) ≥ +8 ₽` per
+trade and the 95 % bootstrap CI of the difference excludes 0 (20 000
+resamples); `shadow_no_trail` beats A iff ≥ +6 ₽ with a CI excluding 0;
+several comparisons make the result exploratory (Bonferroni α = 0.0125).
+**Honest expectation: B stays negative**, −8…−4 ₽/trade against −15…−17 ₽ for
+A. The run measures what the current exit costs, not profit; no number from it
+may be described as "being profitable now". If B ≈ A, say so and go to the
+deferred `delta_min = 0` experiment (§5.1) in a separate run.
+
+Run #4 instrumentation (no behaviour change): per tick `trigger_pct`,
+`fill_pct`, `exit_latency_ms`, `peak_pct`, `peak_t_sec` (`exports/ticks.csv`);
+per trade `entry_premium_pct`, `entry_lag_ms`, `held_sec`, `mfe_pct`, `mae_pct`,
+`peak_pct`, `captured_pct_of_peak`; per arm/shadow `n, sum, mean, median, sd,
+ci95_mean`, `n_for_significance`, `sum_without_top2`, `sum_without_worst2`;
+`exit_reason × portfolio` table; `ab_test.single_difference = exit_rule`;
+security-rejected coins read only at offsets 0 and 15 (others stay visible as
+`status=skipped_security_deep`) and `security_fail_rockets` reports how many of
+them ran ≥ +50 % in 15 s; 429s retried (0.2/0.5/1.2 s + jitter, `Retry-After`
+honoured, ≤ 3 retries, concurrency ≤ 6) and only `unrecovered_failures`
+(≤ 2 % over 600 s) can trip the stop-list; artefacts (`ticks.csv`,
+`shadow_fills.csv`, `ab_summary.json`, wallets, `STATUS.txt`) are rewritten
+every 60 s and once more in the stop handler; session-end cancellations carry
+`excluded_from_stats = 1`.
 
 Pre-launch gate for the 10-minute check:
 `python tools/preflight_budget.py runs/<RUN_DIR>` — RPC requests ≤ 1.5 ×

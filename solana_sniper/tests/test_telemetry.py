@@ -16,6 +16,7 @@ from models import NewCoin, SwapQuote
 from telemetry import (
     CandidateCollector,
     _observation_target_monotonic,
+    _security_fail_report,
     _utc_from_epoch as telemetry_utc_from_epoch,
 )
 
@@ -451,3 +452,118 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class SecurityFailObservationTests(unittest.IsolatedAsyncioTestCase):
+    """P0-2: a coin the security filters reject is not worth 6 RPC reads."""
+
+    def _collector(self, root: Path, offsets=(0, 5, 10, 60, 120)):
+        return CandidateCollector(
+            str(root / 'telemetry.sqlite'), str(root / 'exports'),
+            observation_offsets_sec=offsets,
+        )
+
+    async def test_security_fail_keeps_only_offsets_zero_and_fifteen(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = self._collector(root)
+            await collector.start()
+            self.assertIsNone(collector._deep_offsets_for('MintUnknown'))
+            collector.set_security_verdict('MintGood', True)
+            self.assertIsNone(collector._deep_offsets_for('MintGood'))
+            collector.set_security_verdict('MintBad', False)
+            self.assertEqual(collector._deep_offsets_for('MintBad'), (0, 15))
+            await collector.close()
+
+    async def test_followups_write_skipped_rows_instead_of_silence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = self._collector(root)
+            await collector.start()
+            coin = NewCoin(
+                mint='MintSecurityFail', source='Pump.fun', signature='sig-bad',
+                curve='curve-bad', packet={'v_sol': 32.0},
+            )
+            collector.set_security_verdict(coin.mint, False)
+            settings = SimpleNamespace(http_rpc_url='https://rpc.invalid')
+            with patch('telemetry.pump_curve_price_usd',
+                       AsyncMock(return_value=1e-7)):
+                await collector._collect_followups(
+                    coin, object(), settings, time.monotonic(), time.time(), set(),
+                )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                rows = dict(db.execute(
+                    'SELECT target_offset_sec, status FROM observations '
+                    'WHERE mint=?', (coin.mint,),
+                ).fetchall())
+        # Offsets 0 and 15 were really read (15 is not in this schedule, so it
+        # is simply absent); everything deep is marked, never dropped.
+        self.assertEqual(rows.get(0), 'ok')
+        self.assertEqual(rows.get(5), 'skipped_security_deep')
+        self.assertEqual(rows.get(10), 'skipped_security_deep')
+        self.assertEqual(rows.get(60), 'skipped_security_deep')
+        self.assertEqual(rows.get(120), 'skipped_security_deep')
+        self.assertEqual(collector.security_fail_deep_skipped, 4)
+        self.assertEqual(collector.stats()['write_errors'], 0)
+
+    def test_security_fail_report_counts_rockets_over_observed_coins(self) -> None:
+        rejected = [
+            ('M1', '["creator_history_too_short"]'),
+            ('M2', '["creator_history_too_short"]'),
+            ('M3', '["holder_concentration"]'),
+            # Blind spot: rejected, never read at all.
+            ('M4', '["holder_concentration"]'),
+        ]
+        observations = [
+            ('M1', 0, 1.0), ('M1', 15, 1.9),   # +90 % -> rocket
+            ('M2', 0, 1.0), ('M2', 15, 1.1),   # +10 % -> not a rocket
+            ('M3', 0, 2.0),                    # offset 15 missing -> no verdict
+        ]
+
+        def rows_of(sql, params=()):
+            if 'FROM decisions' in sql:
+                return rejected
+            self.assertIn("status='ok'", sql)
+            return observations
+
+        report = _security_fail_report(None, rows_of, lambda sql: 7)
+        self.assertEqual(report['security_fail_total'], 4)
+        self.assertEqual(report['security_fail_observed'], 3)
+        self.assertEqual(report['security_fail_observed_share'], 0.75)
+        # One rocket out of the 3 observed, never out of the 4 rejected.
+        self.assertEqual(report['security_fail_rockets'], 1)
+        self.assertEqual(report['security_fail_rocket_share'], round(1 / 3, 4))
+        self.assertEqual(report['security_fail_reasons'],
+                         {'creator_history_too_short': 2, 'holder_concentration': 1})
+        self.assertEqual(report['security_fail_skipped_deep'], 7)
+
+    def test_security_fail_report_is_honest_when_nothing_was_rejected(self) -> None:
+        report = _security_fail_report(None, lambda sql, params=(): [],
+                                       lambda sql: 0)
+        self.assertEqual(report['security_fail_total'], 0)
+        self.assertIsNone(report['security_fail_rocket_share'])
+        self.assertIsNone(report['security_fail_observed_share'])
+
+    async def test_cancelled_rows_carry_excluded_from_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = self._collector(root, offsets=(0, 5))
+            await collector.start()
+            collector.record_observation(
+                'MintCancelled', 'Pump.fun', 5,
+                '2023-11-14T22:13:25Z', 'cancelled_at_session_end',
+                error_type='session_stopped',
+            )
+            collector.record_observation(
+                'MintCancelled', 'Pump.fun', 0,
+                '2023-11-14T22:13:20Z', 'ok', price_usd=1e-7,
+            )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                rows = dict(db.execute(
+                    'SELECT status, excluded_from_stats FROM observations '
+                    "WHERE mint='MintCancelled'"
+                ).fetchall())
+        self.assertEqual(rows['cancelled_at_session_end'], 1)
+        # A real read is never excluded.
+        self.assertEqual(rows['ok'], 0)

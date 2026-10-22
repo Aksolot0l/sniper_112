@@ -94,22 +94,32 @@ class ABProfile:
     # -18.7% within 15 s of its own entry. The 12 SOL ceiling fitted the filter
     # to a single observation.
     delta_max_sol: float = 2.5
-    # Run #4 (arm B): the cap is derived from the birth ceiling itself, so the
-    # delta window cannot block an entry that happens at the moment of
-    # detection. With 30.5 <= v_sol_birth <= 34.5 the cap is between 0 and
-    # 4 SOL, i.e. it only rejects what a live t0 entry cannot produce anyway.
+    # Optional: derive the cap from the birth ceiling instead of a constant
+    # (kept for the deferred `delta_min = 0` experiment, off in run #4).
     delta_max_from_birth_ceiling: bool = False
-    # --- entry latency model (run #4) ---
+    # True only for the deferred t0-entry experiment; run #4 enters like A.
+    entry_at_detection: bool = False
+    # --- entry latency model (instrument, identical for every arm) ---
     # The fill price always comes from the real on-chain curve read, never from
     # the WSS packet. `entry_latency_ms` is the modelled execution delay between
     # detection and the fill; the measured delay of every trade is written as
     # `entry_lag_ms`, and a read that arrives earlier than the model is counted
     # as a floor violation instead of being silently priced at t0.
     entry_latency_ms: float = 150.0
-    # True for arms that enter on the first curve read after detection (no
-    # momentum wait): arm B and the shadow_t0_5s book.
-    entry_at_detection: bool = False
-    # --- exit ladder (approved 4-mode logic) ---
+    # --- exit rule (run #4: THE single live difference between A and B) ---
+    # A keeps the approved 4-mode ladder untouched. B replaces the trail with a
+    # clock: 100% at market once `time_exit_sec` has elapsed, a widened -20%
+    # stop so noise does not close the position at 2 s, and a +100% half-sale
+    # for the rare rocket. TP1, the trail, the shelf and no-progress are off.
+    time_exit_sec: Optional[float] = None
+    # Apply the stop loss regardless of TP1/rocket state (B does; A only
+    # protects before TP1, exactly as in Round 6).
+    stop_loss_always: bool = False
+    tp1_sell_pct: float = 50.0
+    trailing_enabled: bool = True
+    shelf_enabled: bool = True
+    no_progress_enabled: bool = True
+    # --- exit ladder (approved 4-mode logic, arm A) ---
     no_progress_pct: float = 1.5
     stop_loss_pct: float = 10.0
     no_progress_sec: float = 5.0
@@ -132,12 +142,6 @@ class ABProfile:
     capital_rub: float = 1_500.0
     # Copy the entries of this arm instead of evaluating the entry rule again.
     mirror_of: Optional[str] = None
-    # shadow_exit25: sell 100% on the first tick at >= this PnL; TP1/trailing/
-    # shelf/no-progress are disabled, SL and the 35 s timeout stay.
-    single_exit_pct: Optional[float] = None
-    # shadow_t0_5s: hold exactly this long and sell 100% at market — no SL,
-    # TP, shelf or timeout. It measures the drift alone, with no exit rule.
-    single_exit_sec: Optional[float] = None
     initial_balance_rub: float = 1_500.0
     position_size_rub: float = 500.0
     max_slots: int = 3
@@ -252,40 +256,47 @@ def gate_status(
     return 'fail_risk'
 
 
-# Run #4: A is the run #3 reference (unchanged); B drops the momentum wait.
-# The single behavioural difference is `delta_min_sol` (0.10 vs 0). B's delta
-# cap is derived from the birth ceiling (34.5 - v_sol_birth) so that the cap
-# cannot reject a t0 entry — that is a consequence of delta_min = 0, not a
-# second experiment.
+# Run #4 (exit experiment). A is the Round 6 reference, untouched: the 4-mode
+# ladder, delta_min 0.10, cap 2.5, 3 slots, 500 RUB. B keeps A's entry to the
+# letter and changes ONE thing — the exit rule: the trail is replaced by a
+# 15-second clock, the stop widens to -20% and a +100% half-sale protects the
+# rare rocket. `exit_rule` is the declared single difference.
 PROFILE_A = ABProfile(name='portfolio_a', delta_max_sol=2.5)
 PROFILE_B = ABProfile(
     name='portfolio_b',
-    delta_min_sol=0.0,
-    delta_max_from_birth_ceiling=True,
-    entry_at_detection=True,
+    delta_max_sol=2.5,
+    time_exit_sec=15.0,
+    stop_loss_pct=20.0,
+    stop_loss_always=True,
+    tp1_pct=100.0,
+    tp1_sell_pct=50.0,
+    # +100% replaces the +50% rocket bypass: above TP the position is simply
+    # held to the 15 s clock.
+    rocket_bypass_pct=1_000.0,
+    trailing_enabled=False,
+    shelf_enabled=False,
+    no_progress_enabled=False,
 )
 
-# Virtual books: same 1 500 RUB / 500 RUB / 3 slots accounting, 0 RUB of real
-# capital, never fed into ab_summary's live arms.
+# Virtual books: same 1 500 RUB / 500 RUB accounting, 0 RUB of real capital,
+# never fed into ab_summary's live arms. One position each: a shadow must not
+# buy RPC budget from the live arms.
 SHADOW_GATE = ABProfile(
     name='shadow_gate', delta_max_sol=2.5, require_creator_gate=True,
-    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_a',
+    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_a', max_slots=1,
 )
-SHADOW_EXIT25 = ABProfile(
-    name='shadow_exit25', delta_max_sol=2.5, is_shadow=True, capital_rub=0.0,
-    mirror_of='portfolio_a', single_exit_pct=25.0,
+# shadow_no_trail: A's entry and A's TP1 (+30%, half), the trail removed, the
+# rest held to the 15 s clock, no-progress and shelf off. It separates the
+# trail's contribution from the "time instead of trail" contribution.
+SHADOW_NO_TRAIL = ABProfile(
+    name='shadow_no_trail', delta_max_sol=2.5,
+    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_a', max_slots=1,
+    time_exit_sec=15.0,
+    trailing_enabled=False,
+    shelf_enabled=False,
+    no_progress_enabled=False,
 )
-# shadow_t0_5s: entries exactly like B (t0 + entry_latency_ms), but the position
-# is closed 5 s after it opens, at market, with no SL/TP/shelf/timeout. It
-# measures the drift alone — the +1.44 % leg of the run #3 decomposition.
-SHADOW_T0_5S = ABProfile(
-    name='shadow_t0_5s',
-    delta_min_sol=0.0, delta_max_from_birth_ceiling=True,
-    entry_at_detection=True,
-    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_b',
-    single_exit_sec=5.0,
-)
-SHADOW_PROFILES = (SHADOW_GATE, SHADOW_EXIT25, SHADOW_T0_5S)
+SHADOW_PROFILES = (SHADOW_GATE, SHADOW_NO_TRAIL)
 
 
 def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
@@ -302,32 +313,25 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
         'delta_min_sol': float(getattr(settings, 'entry_delta_min_sol', 0.10)),
     }
     guard_min_sig = int(getattr(settings, 'creator_guard_min_sig', 25))
+    latency = float(getattr(settings, 'entry_latency_ms', 150.0))
     a = replace(
-        PROFILE_A, **shared,
+        PROFILE_A, **shared, entry_latency_ms=latency,
         delta_max_sol=float(getattr(settings, 'entry_delta_max_sol', 2.5)),
     )
-    # B keeps its own delta_min: the arm is defined by "no momentum wait", so
-    # the shared env value must not leak into it.
+    # B's ENTRY is A's entry; only the exit block differs.
     b = replace(
         PROFILE_B,
         v_sol_birth_min=shared['v_sol_birth_min'],
         v_sol_birth_max=shared['v_sol_birth_max'],
-        entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)),
+        delta_min_sol=shared['delta_min_sol'],
+        delta_max_sol=float(getattr(settings, 'entry_delta_max_sol', 2.5)),
+        entry_latency_ms=latency,
     )
-    a = replace(a, entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)))
     shadow_gate = replace(SHADOW_GATE, **shared, guard_min_signatures=guard_min_sig)
-    shadow_exit25 = replace(SHADOW_EXIT25, **shared)
-    # shadow_t0_5s IS the B entry rule; the env delta_min must not leak in.
-    shadow_t0 = replace(
-        SHADOW_T0_5S,
-        v_sol_birth_min=shared['v_sol_birth_min'],
-        v_sol_birth_max=shared['v_sol_birth_max'],
-        entry_latency_ms=float(getattr(settings, 'entry_latency_ms', 150.0)),
-    )
+    shadow_no_trail = replace(SHADOW_NO_TRAIL, **shared)
     return {
         a.name: a, b.name: b,
-        shadow_gate.name: shadow_gate, shadow_exit25.name: shadow_exit25,
-        shadow_t0.name: shadow_t0,
+        shadow_gate.name: shadow_gate, shadow_no_trail.name: shadow_no_trail,
     }
 
 
@@ -411,6 +415,9 @@ class SimPosition:
     mfe_pct: float = 0.0
     mae_pct: float = 0.0
     exit_trigger_pnl_pct: Optional[float] = None
+    # When the exit rule fired (epoch). The tick stream reports the latency
+    # between this moment and the booked fill.
+    exit_trigger_at_epoch: Optional[float] = None
 
     @property
     def remaining_fraction(self) -> float:
@@ -606,6 +613,8 @@ class ExecutableQuote:
 # Run #4: the stop-list judges UNRECOVERED errors only. Run #3 died after 49
 # minutes on 16/1408 = 1.14 % "failures" that were plain Helius 429 bursts;
 # a 429 that a retry recovers is back-pressure, not a telemetry failure.
+# Shadows are marked every Nth 0.4 s cycle (N = 5 -> 2.0 s = 0.5 Hz).
+SHADOW_POLL_EVERY_CYCLES = 5
 STOP_RPC_ERROR_RATE = 0.02          # > 2 % unrecovered requests over the window
 STOP_RPC_WINDOW_SEC = 600.0         # ... last 10 minutes
 STOP_RPC_MIN_REQUESTS = 20          # never judge a rate on 3 calls
@@ -781,6 +790,11 @@ class ABPaperSimulator:
         self._entry_state_at_last_entry: dict[str, int] = {
             name: 0 for name in self.books
         }
+        # P0-3 shadow budget (one batch, <= 0.5 Hz per shadow).
+        self._poll_cycle = 0
+        self._poll_shadows_now = False
+        self.shadow_poll_dropped = 0
+        self.rpc_reads_by_profile: dict[str, int] = {}
         # (monotonic, requests, failed attempts, p95, unrecovered reads)
         self._rpc_samples: list[tuple[float, int, int, Optional[float], int]] = []
         self._rpc_latency_high_since: Optional[float] = None
@@ -973,6 +987,10 @@ class ABPaperSimulator:
         }
         collector = self._collector()
         if collector is not None:
+            # P0-2: a rejected coin is only observed at offsets 0 and 15, so the
+            # "did it become a rocket" question stays answerable at 1/3 of the
+            # reads. Telemetry-only; no decision reads this flag.
+            collector.set_security_verdict(coin.mint, verdict.passed)
             collector.record_decision(
                 coin.mint, coin.source, 'security_and_market_filters',
                 'pass' if verdict.passed else 'fail', verdict.reasons,
@@ -1719,12 +1737,30 @@ class ABPaperSimulator:
             self._maybe_early_stop()
             if self.early_stop_event.is_set():
                 return
+            # P0-3: shadows are polled at most every 2 s (<= 0.5 Hz) while the
+            # live arms keep the 0.4 s cycle. A shadow that is skipped while it
+            # holds a position is counted as a dropped poll, so a starved
+            # shadow is visible instead of silently drifting.
+            self._poll_cycle += 1
+            self._poll_shadows_now = self._poll_cycle % SHADOW_POLL_EVERY_CYCLES == 0
             all_positions = [
                 (book, pos)
                 for book in self.books.values()
                 for pos in list(book.positions.values())
                 if pos.status != 'closed'
+                and (self._poll_shadows_now or not book.profile.is_shadow)
             ]
+            if not self._poll_shadows_now:
+                for book in self.books.values():
+                    if book.profile.is_shadow and book.positions:
+                        self.shadow_poll_dropped += 1
+            # Per-profile RPC accounting: one batch serves every open position,
+            # so each book is charged one read per cycle it participated in.
+            if all_positions:
+                for name in {book.profile.name for book, _pos in all_positions}:
+                    self.rpc_reads_by_profile[name] = (
+                        self.rpc_reads_by_profile.get(name, 0) + 1
+                    )
             if all_positions:
                 curve_addresses = list(dict.fromkeys(
                     pos.curve for _book, pos in all_positions if pos.curve
@@ -1824,6 +1860,8 @@ class ABPaperSimulator:
                     self._record_tick(book, pos, pnl_pct, mark_at, unit_price_rub, sol_usd)
                     trigger = self._exit_trigger(book.profile, pos, pnl_pct, mark_at)
                     if trigger is not None:
+                        if pos.exit_trigger_at_epoch is None:
+                            pos.exit_trigger_at_epoch = mark_at
                         pos.exit_trigger_pnl_pct = round(pnl_pct, 6)
                     if trigger is None:
                         if pos.exit_pending_reason and not pos.exit_pending_reason.lower().startswith('timeout'):
@@ -1838,6 +1876,7 @@ class ABPaperSimulator:
                         curve, fee_context_for_marks, context_slot,
                         sol_usd, pnl_pct, mark_value_rub,
                     )
+                    pos.exit_trigger_at_epoch = None
                     changed_books.add(book.profile.name)
                 for book in self.books.values():
                     if book.profile.name in changed_books:
@@ -1927,6 +1966,7 @@ class ABPaperSimulator:
         """
         fx = max(1e-9, float(self.settings.usd_rub_rate))
         price_usd = unit_price_rub / (sol_usd * fx) if sol_usd > 0 else None
+        peak_at = pos.best_pnl_updated_at or pos.opened_at_epoch
         self.ticks.append({
             'portfolio': book.profile.name,
             'mint': pos.mint,
@@ -1934,6 +1974,20 @@ class ABPaperSimulator:
             'price_usd': round(price_usd, 12) if price_usd else None,
             'pnl_pct': round(pnl_pct, 4),
             'event': event,
+            # P0-1: the gap between the rule and the money. trigger_pct is the
+            # mark that fired the exit rule, fill_pct the PnL actually booked,
+            # exit_latency_ms the time between the two.
+            'trigger_pct': (
+                round(pos.exit_trigger_pnl_pct, 4)
+                if pos.exit_trigger_pnl_pct is not None else None
+            ),
+            'fill_pct': round(pnl_pct, 4) if event == 'exit' else None,
+            'exit_latency_ms': (
+                round(max(0.0, at_epoch - pos.exit_trigger_at_epoch) * 1000.0, 2)
+                if event == 'exit' and pos.exit_trigger_at_epoch else None
+            ),
+            'peak_pct': round(pos.best_pnl_pct, 4),
+            'peak_t_sec': round(max(0.0, peak_at - pos.opened_at_epoch), 3),
         })
 
     def write_ticks(self, path: Path) -> None:
@@ -1941,7 +1995,11 @@ class ABPaperSimulator:
         with path.open('w', encoding='utf-8-sig', newline='') as handle:
             writer = csv.DictWriter(
                 handle,
-                fieldnames=('portfolio', 'mint', 't_sec', 'price_usd', 'pnl_pct', 'event'),
+                fieldnames=(
+                    'portfolio', 'mint', 't_sec', 'price_usd', 'pnl_pct', 'event',
+                    'trigger_pct', 'fill_pct', 'exit_latency_ms',
+                    'peak_pct', 'peak_t_sec',
+                ),
             )
             writer.writeheader()
             writer.writerows(self.ticks)
@@ -2018,33 +2076,15 @@ class ABPaperSimulator:
         if pos.remaining_tokens_raw <= 0:
             return None
 
-        # shadow_t0_5s: hold exactly N seconds, then sell 100% at market.
-        # No SL, no TP, no trailing, no shelf, no no-progress and no timeout:
-        # the only thing this book measures is the drift of the coin itself.
-        if profile.single_exit_sec is not None:
-            if held >= profile.single_exit_sec:
-                return (
-                    f'Fixed {profile.single_exit_sec:.0f}s exit (pnl={pnl_pct:+.1f}%)',
-                    pos.remaining_tokens_raw,
-                )
-            return None
-
-        # shadow_exit25: 100% on the first tick at or above the threshold.
-        # TP1, trailing, shelf and no-progress are disabled by design; SL and
-        # the 35 s timeout are kept exactly as in the live ladder.
-        if profile.single_exit_pct is not None:
-            if pnl_pct <= -profile.stop_loss_pct:
-                return f'SL (−{profile.stop_loss_pct:.1f}%)', pos.remaining_tokens_raw
-            if pnl_pct >= profile.single_exit_pct:
-                return (
-                    f'Exit{profile.single_exit_pct:.0f} '
-                    f'(+{profile.single_exit_pct:.1f}%; pnl={pnl_pct:+.1f}%)',
-                    pos.remaining_tokens_raw,
-                )
-            timeout = profile.timeout_before_trailing_sec
-            if held >= timeout:
-                return f'Timeout ({timeout:.1f}s)', pos.remaining_tokens_raw
-            return None
+        # Run #4, arm B: the clock replaces the trail. 100% at market once the
+        # declared horizon has passed — no TP1 band, no 0.85x trail, no shelf
+        # and no no-progress rule can close the position before it.
+        if profile.time_exit_sec is not None and held >= profile.time_exit_sec:
+            return (
+                f'time_exit_{profile.time_exit_sec:g}s '
+                f'(pnl={pnl_pct:+.1f}%)',
+                pos.remaining_tokens_raw,
+            )
 
         # Once a TP1 sell quote has failed, retry the same half-size paper fill
         # on every fresh mark; do not silently downgrade it to a full-position exit.
@@ -2059,8 +2099,13 @@ class ABPaperSimulator:
         best_updated_at = pos.best_pnl_updated_at or pos.opened_at_epoch
         stalled_sec = max(0.0, now - best_updated_at)
 
-        # A fast loss is protected only before TP1 and before the rocket bypass.
-        if (
+        # Arm B (stop_loss_always) protects the whole position for its full
+        # life. A keeps the Round 6 rule: the stop only applies before TP1 and
+        # before the rocket bypass, while best PnL is still below +10%.
+        if profile.stop_loss_always:
+            if pnl_pct <= -profile.stop_loss_pct:
+                return f'SL (−{profile.stop_loss_pct:.1f}%)', pos.remaining_tokens_raw
+        elif (
             not pos.tp1_done and not pos.tp1_rocket_bypass
             and pos.best_pnl_pct < profile.trailing_activation_pct
             and pnl_pct <= -profile.stop_loss_pct
@@ -2081,13 +2126,20 @@ class ABPaperSimulator:
             not pos.tp1_done and not pos.tp1_rocket_bypass
             and profile.tp1_pct <= pnl_pct < profile.rocket_bypass_pct
         ):
-            sell_amount = max(1, pos.remaining_tokens_raw // 2)
+            sell_pct = max(1.0, min(100.0, profile.tp1_sell_pct))
+            sell_amount = max(
+                1, int(round(pos.remaining_tokens_raw * sell_pct / 100.0)),
+            )
+            sell_amount = min(sell_amount, pos.remaining_tokens_raw)
             pos.tp1_partial_pending = True
             pos.tp1_pending_sell_raw = sell_amount
-            return f'TP1 +{profile.tp1_pct:.0f}% partial 50%', sell_amount
+            return (
+                f'TP1 +{profile.tp1_pct:.0f}% partial {profile.tp1_sell_pct:.0f}%',
+                sell_amount,
+            )
 
         # Retain 85% of the best PnL once a position has first reached +10%.
-        if pos.best_pnl_pct >= profile.trailing_activation_pct:
+        if profile.trailing_enabled and pos.best_pnl_pct >= profile.trailing_activation_pct:
             floor_pnl_pct = profile.profit_retain_ratio * pos.best_pnl_pct
             if pnl_pct <= floor_pnl_pct:
                 return (
@@ -2098,13 +2150,21 @@ class ABPaperSimulator:
 
         # A flat shelf is closed after 4.5 seconds since the last meaningful
         # high, but only when the position remains at least +2% in profit.
-        if pnl_pct >= profile.shelf_min_pnl_pct and stalled_sec >= profile.shelf_stagnation_sec:
+        if (
+            profile.shelf_enabled
+            and pnl_pct >= profile.shelf_min_pnl_pct
+            and stalled_sec >= profile.shelf_stagnation_sec
+        ):
             return (
                 f'Shelf stagnation ({stalled_sec:.1f}s; pnl={pnl_pct:+.1f}%)',
                 pos.remaining_tokens_raw,
             )
 
-        if not pos.no_progress_checked and held >= profile.no_progress_sec:
+        if (
+            profile.no_progress_enabled
+            and not pos.no_progress_checked
+            and held >= profile.no_progress_sec
+        ):
             pos.no_progress_checked = True
             if (
                 pos.best_pnl_pct < profile.no_progress_best_max_pct
@@ -2446,6 +2506,15 @@ class ABPaperSimulator:
                 'entry_fill_premium_pct': pos.entry_fill_premium_pct,
                 'mfe_pct': round(pos.mfe_pct, 6),
                 'mae_pct': round(pos.mae_pct, 6),
+                'peak_pct': round(pos.best_pnl_pct, 6),
+                'peak_t_sec': round(
+                    max(0.0, (pos.best_pnl_updated_at or pos.opened_at_epoch)
+                        - pos.opened_at_epoch), 3,
+                ),
+                'captured_pct_of_peak': (
+                    round(total_pnl_pct / pos.best_pnl_pct, 4)
+                    if pos.best_pnl_pct > 0 else None
+                ),
                 'trigger_pct': pos.exit_trigger_pnl_pct,
                 'fill_pct': round(total_pnl_pct, 6),
                 'network_fees_rub': round(pos.realized_fee_rub, 6),
@@ -2551,6 +2620,56 @@ class ABPaperSimulator:
             pos.last_poll_error_type = reason
             pos.last_poll_error_logged_epoch = now
 
+    def snapshot_artifacts(self, *, reason: str = 'periodic') -> dict[str, Any]:
+        """Write every artefact that does not need the run to be over (P0-5).
+
+        Run #5 lost its telemetry DB, log, summary and wallets because they
+        were only written in the final handler. This is called every 60 s from
+        the session, so a killed process still leaves readable numbers.
+        """
+        export_dir = Path(os.getenv('TELEMETRY_EXPORT_DIR', str(self.run_dir / 'exports')))
+        written: list[str] = []
+        for name, writer in (
+            ('ticks.csv', self.write_ticks),
+            ('shadow_fills.csv', self.write_shadow_fills),
+        ):
+            try:
+                writer(export_dir / name)
+                written.append(name)
+            except Exception as exc:  # an artefact must never kill the run
+                log(f'⚠️ {name} не записан ({type(exc).__name__})', Color.YELLOW)
+        summary = self.summary()
+        summary_path = self.run_dir / 'ab_summary.json'
+        tmp = summary_path.with_suffix('.json.tmp')
+        try:
+            tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+            os.replace(tmp, summary_path)
+            written.append('ab_summary.json')
+        except Exception as exc:
+            log(f'⚠️ ab_summary.json не записан ({type(exc).__name__})', Color.YELLOW)
+        for book in self.books.values():
+            try:
+                book.save(self.run_id)
+            except Exception:
+                pass
+        try:
+            (self.run_dir / 'STATUS.txt').write_text(
+                f'snapshot={reason}\nwritten_at_utc={utc_now()}\n'
+                f'duration_sec={round(time.time() - self.started_at_epoch, 1)}\n'
+                'paper_only=true\nsigned_transactions=0\n'
+                + ''.join(
+                    f'{name}: entries={book.entry_count} '
+                    f'closed={book.closed_trade_count} '
+                    f'cash={book.cash_balance_rub:.2f} '
+                    f'pnl={book.realized_pnl_rub:.2f}\n'
+                    for name, book in self.books.items()
+                ),
+                encoding='utf-8',
+            )
+        except OSError:
+            pass
+        return {'written': written, 'reason': reason}
+
     async def close(self) -> dict[str, Any]:
         self._stopping.set()
         if self._poll_task is not None:
@@ -2579,6 +2698,65 @@ class ABPaperSimulator:
         tmp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
         os.replace(tmp, summary_path)
         return summary
+
+    @staticmethod
+    def _exit_rule_label(profile: ABProfile) -> str:
+        """One line that identifies the exit rule of a book (manifest/report)."""
+        if profile.time_exit_sec is not None:
+            parts = [
+                f'time_exit_{profile.time_exit_sec:g}s=100%',
+                f'SL=−{profile.stop_loss_pct:.0f}%',
+                f'TP+{profile.tp1_pct:.0f}%={profile.tp1_sell_pct:.0f}%',
+            ]
+            if profile.trailing_enabled:
+                parts.append('trail=0.85x')
+            return ' + '.join(parts) + ' (no trail/shelf/no-progress)'
+        return (
+            f'4-mode ladder: SL −{profile.stop_loss_pct:.0f}%, '
+            f'TP1 +{profile.tp1_pct:.0f}%={profile.tp1_sell_pct:.0f}%, '
+            f'TP1/rocket bypass +{profile.rocket_bypass_pct:g}%, '
+            f'trail 0.85x after +{profile.trailing_activation_pct:.0f}%, '
+            f'shelf {profile.shelf_stagnation_sec:g}s, '
+            f'no-progress {profile.no_progress_sec:g}s'
+        )
+
+    @staticmethod
+    def exit_reason_kind(reason: str) -> str:
+        """Collapse a free-text exit reason into a category for the report."""
+        text = str(reason or '').strip()
+        head = text.split('(')[0].strip()
+        for prefix, label in (
+            ('time_exit', 'time_exit'),
+            ('SL/trail', 'trail'),
+            ('SL', 'stop_loss'),
+            ('TP1', 'tp'),
+            ('Shelf', 'shelf'),
+            ('No progress', 'no_progress'),
+            ('Timeout', 'timeout'),
+        ):
+            if head.startswith(prefix):
+                return label
+        return head or 'unknown'
+
+    def _exit_breakdown(self, book: PortfolioBook) -> dict[str, Any]:
+        """n / sum / mean / median hold per exit category (P0-4)."""
+        buckets: dict[str, dict[str, Any]] = {}
+        for trade in book.closed_trades:
+            reasons = str(trade.get('reason') or '')
+            kind = self.exit_reason_kind(reasons.split(' + ')[-1] if reasons else '')
+            slot = buckets.setdefault(kind, {'n': 0, 'sum_rub': 0.0, 'holds': []})
+            slot['n'] += 1
+            slot['sum_rub'] += float(trade.get('pnl_rub') or 0.0)
+            slot['holds'].append(float(trade.get('held_sec') or 0.0))
+        return {
+            kind: {
+                'n': slot['n'],
+                'sum_rub': round(slot['sum_rub'], 2),
+                'mean_rub': round(slot['sum_rub'] / slot['n'], 2),
+                'median_hold_sec': round(median(slot['holds']) or 0.0, 2),
+            }
+            for kind, slot in sorted(buckets.items(), key=lambda kv: -kv[1]['n'])
+        }
 
     def _entry_quality(self, book: PortfolioBook) -> dict[str, Any]:
         """Premium paid for waiting and the age of the read that was priced."""
@@ -2669,7 +2847,11 @@ class ABPaperSimulator:
                 'position_size_rub': book.profile.position_size_rub,
                 'is_shadow': book.profile.is_shadow,
                 'mirror_of': book.profile.mirror_of,
-                'single_exit_pct': book.profile.single_exit_pct,
+                'exit_rule': self._exit_rule_label(book.profile),
+                'time_exit_sec': book.profile.time_exit_sec,
+                'stop_loss_pct': book.profile.stop_loss_pct,
+                'tp1_pct': book.profile.tp1_pct,
+                'trailing_enabled': book.profile.trailing_enabled,
                 'delta_max_sol': book.profile.delta_max_sol,
                 'delta_min_sol': book.profile.delta_min_sol,
                 'require_creator_gate': book.profile.require_creator_gate,
@@ -2688,6 +2870,8 @@ class ABPaperSimulator:
                 'stats': trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades]),
                 # --- run #4: the number the run is about (acceptance #1, #4) ---
                 'entry_quality': self._entry_quality(book),
+                # P0-4: what closed the trade, not just the total.
+                'exit_breakdown': self._exit_breakdown(book),
             }
         return {
             'run_id': self.run_id,
@@ -2725,8 +2909,16 @@ class ABPaperSimulator:
                 'require_creator_gate': book.profile.require_creator_gate,
                 'is_shadow': book.profile.is_shadow,
                 'mirror_of': book.profile.mirror_of,
-                'single_exit_pct': book.profile.single_exit_pct,
-                'single_exit_sec': book.profile.single_exit_sec,
+                'exit_rule': self._exit_rule_label(book.profile),
+                'time_exit_sec': book.profile.time_exit_sec,
+                'stop_loss_pct': book.profile.stop_loss_pct,
+                'tp1_pct': book.profile.tp1_pct,
+                'tp1_sell_pct': book.profile.tp1_sell_pct,
+                'stop_loss_always': book.profile.stop_loss_always,
+                'trailing_enabled': book.profile.trailing_enabled,
+                'shelf_enabled': book.profile.shelf_enabled,
+                'no_progress_enabled': book.profile.no_progress_enabled,
+                'max_slots': book.profile.max_slots,
                 'capital_rub': book.profile.capital_rub,
                 'entry_quality': portfolios[name].get('entry_quality'),
             } for name, book in self.books.items()},
@@ -2738,10 +2930,16 @@ class ABPaperSimulator:
             **{name: book for name, book in portfolios.items()
                if name not in ('portfolio_a', 'portfolio_b')},
             'ab_test': {
-                # Run #4: the ONLY declared difference is the entry threshold.
-                'single_difference': 'delta_min',
-                'portfolio_a': {'delta_min_sol': 0.10, 'require_creator_gate': False},
-                'portfolio_b': {'delta_min_sol': 0.0, 'require_creator_gate': False},
+                # Run #4: the ONLY declared difference is the exit rule.
+                'single_difference': 'exit_rule',
+                'portfolio_a': {
+                    'exit_rule': self._exit_rule_label(self.books['portfolio_a'].profile),
+                    'require_creator_gate': False,
+                },
+                'portfolio_b': {
+                    'exit_rule': self._exit_rule_label(self.books['portfolio_b'].profile),
+                    'require_creator_gate': False,
+                },
                 'entry_latency_ms': 150.0,
                 'decision_rule': (
                     'B beats A iff mean(B) - mean(A) >= +8 RUB '
@@ -2751,17 +2949,19 @@ class ABPaperSimulator:
                     [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_a']['closed_trades']],
                     [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_b']['closed_trades']],
                 ),
-                'shadow_t0_5s': {
-                    'stats': portfolios.get('shadow_t0_5s', {}).get('stats'),
-                    'entry_quality': portfolios.get('shadow_t0_5s', {}).get('entry_quality'),
+                'shadow_no_trail': {
+                    'stats': portfolios.get('shadow_no_trail', {}).get('stats'),
+                    'exit_rule': (
+                        portfolios.get('shadow_no_trail', {}).get('exit_rule')
+                    ),
                 },
                 'entry_latency_floor_violations': self.entry_latency_floor_violations,
                 'expectation': (
-                    'B is expected to stay NEGATIVE: removing the 2.12 %/trade '
-                    'momentum-wait premium leaves ~ -1.06 %/trade (~ -5.3 RUB), '
-                    'which is the round-trip fee plus adverse drift. This run '
-                    'measures how much of the loss the wait costs; it does not '
-                    'look for profit'
+                    'B is expected at -8..-4 RUB/trade against -15..-17 RUB for '
+                    'A, i.e. less negative and still negative. The +12.8 '
+                    'RUB/trade counterfactual comes from holding to 15 s, not '
+                    'from holding longer (60 s = -32.6 RUB). No number from '
+                    'this run means the strategy became profitable'
                 ),
             },
             # B-arm gate funnel: a blind spot must never be counted as a risk
@@ -2777,5 +2977,13 @@ class ABPaperSimulator:
                     )
                 ),
             },
-            'rpc_metrics': rpc_metrics_snapshot(),
+            'rpc_metrics': {
+                **rpc_metrics_snapshot(),
+                'requests_per_profile': dict(sorted(self.rpc_reads_by_profile.items())),
+                'shadow_poll_dropped': self.shadow_poll_dropped,
+                'shadow_poll_every_cycles': SHADOW_POLL_EVERY_CYCLES,
+                'shadow_poll_hz': round(
+                    1.0 / (0.40 * SHADOW_POLL_EVERY_CYCLES), 2,
+                ),
+            },
         }

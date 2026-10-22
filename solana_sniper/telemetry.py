@@ -79,7 +79,8 @@ _SCHEMA = (
         candidate_id TEXT, mint TEXT NOT NULL, source TEXT NOT NULL,
         target_offset_sec INTEGER NOT NULL, target_at_utc TEXT NOT NULL,
         observed_at_utc TEXT NOT NULL, status TEXT NOT NULL, price_usd REAL,
-        price_source TEXT, latency_ms REAL, error_type TEXT
+        price_source TEXT, latency_ms REAL, error_type TEXT,
+        excluded_from_stats INTEGER NOT NULL DEFAULT 0
     )''',
     '''CREATE TABLE IF NOT EXISTS paper_fills (
         id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
@@ -135,7 +136,8 @@ _INSERTS = {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)''',
     'observation': '''INSERT OR IGNORE INTO observations
         (event_id,candidate_id,mint,source,target_offset_sec,target_at_utc,observed_at_utc,
-         status,price_usd,price_source,latency_ms,error_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+         status,price_usd,price_source,latency_ms,error_type,excluded_from_stats)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     'fill': '''INSERT OR IGNORE INTO paper_fills
         (event_id,quote_event_id,candidate_id,mint,source,occurred_at_utc,reason,sold_fraction,
          fill_price_usd,net_return_rub,pnl_leg_rub,fee_rub,out_amount_raw,min_out_raw,
@@ -300,6 +302,14 @@ def candidate_id_for(mint: str) -> str:
     return hashlib.sha256(f'solana-mainnet:{mint}'.encode('utf-8')).hexdigest()
 
 
+EXCLUDED_OBSERVATION_STATUSES = frozenset({'cancelled_at_session_end'})
+
+
+def _excluded_from_stats(status: str) -> int:
+    """1 when an observation row must stay out of every statistic."""
+    return 1 if str(status or '').strip() in EXCLUDED_OBSERVATION_STATUSES else 0
+
+
 class CandidateCollector:
     """Bounded-queue SQLite telemetry with independent, rate-limited shadow sampling."""
 
@@ -331,6 +341,13 @@ class CandidateCollector:
         self._sol_cache: tuple[float, Optional[float]] = (0.0, None)
         self.creator_watch = creator_watch
         self.enable_shadow_quotes = bool(enable_shadow_quotes)
+        # P0-2: security verdict per mint. Coins rejected by the security
+        # filters are observed only at offsets 0 and 15 — enough to answer
+        # "did it become a rocket in the first 15 s", a third of the reads.
+        self._security_verdicts: dict[str, bool] = {}
+        # Deep offsets kept for coins that failed the security filters.
+        self.security_fail_deep_offsets_sec = (0, 15)
+        self.security_fail_deep_skipped = 0
 
     async def start(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -380,6 +397,8 @@ class CandidateCollector:
                     ('paper_fills', 'conservative_min_out_raw', 'TEXT'),
                     ('paper_fills', 'conservative_sold_fraction', 'REAL'),
                     ('paper_fills', 'conservative_error', 'TEXT'),
+                    ('observations', 'excluded_from_stats',
+                     'INTEGER NOT NULL DEFAULT 0'),
                 ):
                     cursor = await db.execute(f'PRAGMA table_info({table})')
                     existing_columns = {row[1] for row in await cursor.fetchall()}
@@ -572,6 +591,20 @@ class CandidateCollector:
             )
         return stored_id
 
+    def set_security_verdict(self, mint: str, passed: bool) -> None:
+        """Remember the security verdict so the deep observation can be trimmed.
+
+        Telemetry only: nothing in the entry/exit path reads this.
+        """
+        self._security_verdicts[mint] = bool(passed)
+
+    def _deep_offsets_for(self, mint: str) -> Optional[tuple[int, ...]]:
+        """Offsets worth an RPC for this mint; None = no trim (verdict unknown)."""
+        verdict = self._security_verdicts.get(mint)
+        if verdict is None or verdict:
+            return None
+        return self.security_fail_deep_offsets_sec
+
     def record_observation(
         self, mint: str, source: str, target_offset_sec: int,
         target_at_utc: str, status: str, price_usd: Optional[float] = None,
@@ -588,6 +621,10 @@ class CandidateCollector:
             event_id, candidate_id_for(mint), mint, source,
             int(target_offset_sec), target_at_utc, observed_at, status,
             price_usd, price_source, latency_ms, error_type,
+            # Run #4: rows the session end interrupted are missing data, not
+            # a zero. The flag travels with the row so every later query can
+            # exclude them without knowing the status string.
+            _excluded_from_stats(status),
         ))
         if self.creator_watch is not None:
             self.creator_watch.record_observation(
@@ -734,7 +771,21 @@ class CandidateCollector:
         started_monotonic: float, target_epoch: float, completed: set[int],
     ) -> None:
         try:
+            deep = self._deep_offsets_for(coin.mint)
             for offset in self.observation_offsets_sec:
+                if deep is not None and offset not in deep:
+                    # P0-2: no RPC for a coin we would never trade. The row
+                    # still exists, so "not measured" cannot be read as "did
+                    # not move".
+                    self.security_fail_deep_skipped += 1
+                    self.record_observation(
+                        coin.mint, coin.source, offset,
+                        _utc_from_epoch(target_epoch + offset),
+                        'skipped_security_deep',
+                        error_type='security_filters_failed',
+                    )
+                    completed.add(offset)
+                    continue
                 # Absolute target in the monotonic clock. The old form added
                 # the remaining wall-clock delay to the moment the collector
                 # started, so offsets drifted by the collector's own latency
@@ -892,7 +943,7 @@ class CandidateCollector:
             '- `creator_probes`: read-only getSignaturesForAddress(limit=25) and creator ATA balance results; RPC failures are non-blocking.\n'
             '- `watchlist_events`: independent Watchlist candidate polls, quote-confirmed entries/exits, and portfolio summaries.\n'
             '- `quotes`: buy/sell observations, including shadow quotes; `quote_only=1` means no transaction/fill.\n'
-            '- `observations`: price/source at a scheduled offset from first discovery; Pump.fun samples are fresh curve RPC reads (no indexer fallback or interpolation), and late/cancelled/missing rows are explicit.\n'
+            '- `observations`: price/source at a scheduled offset from first discovery; Pump.fun samples are fresh curve RPC reads (no indexer fallback or interpolation), and late/cancelled/missing rows are explicit. `excluded_from_stats=1` marks rows that must stay out of every statistic (session-end cancellation); `status=skipped_security_deep` means the coin failed the security filters, so offsets beyond 0 and 15 were deliberately not read.\n'
             '- `paper_fills`: simulated sale legs only; `out_amount_raw`/`snapshot_pnl_rub` are the primary snapshot fill, while `min_out_raw` and `conservative_100bps_*` preserve the separate 100 bps shadow; `portfolio` separates A and B; no on-chain executions.\n'
             '- `collector_meta`: queue drops and writer errors. Timestamps are UTC; raw token amounts are strings.\n'
             '- Future observations are labels/targets only; never use them as features available at discovery time.\n',
@@ -994,6 +1045,74 @@ def _first_reason(reasons_json: Any) -> str:
     if isinstance(parsed, list) and parsed:
         return str(parsed[0])
     return 'none'
+
+
+def _security_fail_report(db: Any, rows_of: Any, scalar: Any) -> dict[str, Any]:
+    """Rocket rate among coins the security filters rejected (P0-2).
+
+    A rocket is a coin whose price at offset 15 is at least +50 % of its
+    offset-0 price. Percentages are reported over *observed* coins, never over
+    all rejected ones: the unread majority is a blind spot, not a zero.
+    """
+    rejected = rows_of(
+        "SELECT mint, reasons_json FROM decisions "
+        "WHERE stage='security_and_market_filters' AND decision='fail'"
+    )
+    mints: dict[str, str] = {}
+    for mint, reasons in rejected:
+        if mint in mints:
+            continue
+        try:
+            parsed = json.loads(reasons or '[]')
+            reason = str(parsed[0]) if isinstance(parsed, list) and parsed else 'unknown'
+        except (TypeError, ValueError):
+            reason = 'unknown'
+        mints[str(mint)] = reason
+    if not mints:
+        return {
+            'security_fail_total': 0, 'security_fail_observed': 0,
+            'security_fail_rockets': 0, 'security_fail_rocket_share': None,
+            'security_fail_reasons': {}, 'security_fail_observed_share': None,
+        }
+    prices: dict[str, dict[int, float]] = {}
+    placeholders = ','.join('?' for _ in mints)
+    rows = rows_of(
+        f"SELECT mint, target_offset_sec, price_usd FROM observations "
+        f"WHERE status='ok' AND price_usd IS NOT NULL AND mint IN ({placeholders})",
+        tuple(mints),
+    )
+    for mint, offset, price in rows:
+        try:
+            offset_int = int(offset)
+            value = float(price)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            prices.setdefault(str(mint), {})[offset_int] = value
+    observed = {mint: series for mint, series in prices.items() if series}
+    rockets = 0
+    for series in observed.values():
+        first = series.get(0)
+        at15 = series.get(15)
+        if first and at15 and at15 >= first * 1.5:
+            rockets += 1
+    reasons: dict[str, int] = {}
+    for mint, reason in mints.items():
+        if mint in observed:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    return {
+        'security_fail_total': len(mints),
+        'security_fail_observed': len(observed),
+        'security_fail_observed_share': round(len(observed) / len(mints), 4),
+        'security_fail_rockets': rockets,
+        'security_fail_rocket_share': (
+            round(rockets / len(observed), 4) if observed else None
+        ),
+        'security_fail_reasons': dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
+        'security_fail_skipped_deep': scalar(
+            "SELECT COUNT(*) FROM observations WHERE status='skipped_security_deep'"
+        ),
+    }
 
 
 def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
@@ -1172,6 +1291,12 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
             for klass, slot in sorted(a_only.items())
         }
 
+        # --- P0-2: the blind spot that was never measured --------------------
+        # Coins rejected by the security filters used to have no price series
+        # at all, so "how many rockets do we lose before the entry" could not
+        # be answered. They are now read at offsets 0 and 15 only.
+        report.update(_security_fail_report(db, rows_of, scalar))
+
         # P0-1 acceptance: |observed_at - target_at| <= 250 ms per offset for
         # >= 99% of rows. Anything worse means the schedule, not the market,
         # is being measured.
@@ -1182,7 +1307,9 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                    SUM(CASE WHEN ABS(
                        (julianday(observed_at_utc) - julianday(target_at_utc)) * 86400.0
                    ) <= 0.25 THEN 1 ELSE 0 END)
-            FROM observations GROUP BY target_offset_sec ORDER BY target_offset_sec
+            FROM observations
+            WHERE excluded_from_stats = 0
+            GROUP BY target_offset_sec ORDER BY target_offset_sec
             """
         ):
             timing[str(int(offset))] = {
@@ -1191,6 +1318,23 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                 'share': round(int(within or 0) / max(1, int(total or 0)), 4),
             }
         report['observation_timing'] = timing
+        # Cancelled offsets never enter any statistic: a read that the session
+        # end interrupted is missing data, not a zero.
+        status_counts = {
+            str(status): int(count or 0)
+            for status, count in rows_of(
+                'SELECT status, COUNT(*) FROM observations GROUP BY status'
+            )
+        }
+        report['observation_status'] = dict(sorted(status_counts.items()))
+        report['cancelled_observations'] = status_counts.get(
+            'cancelled_at_session_end', 0,
+        )
+        # The flag, not just the status string, is what every statistic uses.
+        report['cancelled_excluded_from_stats'] = True
+        report['excluded_observations'] = scalar(
+            'SELECT COUNT(*) FROM observations WHERE excluded_from_stats = 1'
+        )
 
         # P0-3 acceptance: error_detail must be present on every failed probe.
         probe_total, probe_failed, probe_with_detail = (

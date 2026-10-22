@@ -149,6 +149,32 @@ class RpcErrorDetailTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(second)
         self.assertNotIn(CREATOR, probe._error_details)
 
+    async def test_token_account_success_also_clears_the_stale_detail(self) -> None:
+        """The ATA read has its own success path; both must clear the wallet."""
+
+        class FlakyAtaSession(FakeSession):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail_ata = True
+
+            def post(self, _url, **kwargs):
+                if self.fail_ata and kwargs['json']['method'] == 'getTokenAccountsByOwner':
+                    self.fail_ata = False
+                    payload = kwargs['json']
+                    self.calls.append(payload)
+                    return BusyResponse({'jsonrpc': '2.0', 'id': payload['id']}, self)
+                return super().post(_url, **kwargs)
+
+        probe = CreatorOnchainProbe(FlakyAtaSession(), 'https://rpc.example.invalid')
+        first, error = await probe._creator_token_accounts(CREATOR, MINT)
+        self.assertIsNone(first)
+        self.assertEqual(error, 'RuntimeError')
+        self.assertIn(CREATOR, probe._error_details)
+        second, error = await probe._creator_token_accounts(CREATOR, MINT)
+        self.assertIsNone(error)
+        self.assertIsNotNone(second)
+        self.assertNotIn(CREATOR, probe._error_details)
+
     async def test_probe_result_carries_error_detail_and_never_gates_on_it(self) -> None:
         probe = CreatorOnchainProbe(BusySession(), 'https://rpc.example.invalid')
         coin = SimpleNamespace(
