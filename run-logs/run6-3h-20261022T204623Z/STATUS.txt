@@ -1,18 +1,18 @@
 run_id: run6-3h-20261022T204623Z
-snapshot_utc: 2026-10-22T20:47:29Z
+snapshot_utc: 2026-10-22T21:15:46Z
 mode: light
-run_dir_size: 4.6M
-opens: 4
-closes: 4
-[20:47:06] 👁️ Новая монета: CaD4m9eHNVthQFFZcYHrYTrUvUJsLkejRMVTmZqJpump (Pump.fun | CTO)
-[20:47:09] 👁️ Новая монета: J73Mxra3vk84R7U7MfLNDnqZMM4RAbXUeLVUzpHeJ5hG (Pump.fun | CRIME)
-[20:47:09] 🛑 J73M…J5hG — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[20:47:11] 👁️ Новая монета: 4qtdfKN4ZcizMNhnG14or7URdCbtQw9W58jSAmWmDWnY (Pump.fun | CTO)
-[20:47:12] 🛑 4qtd…DWnY — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[20:47:12] 👁️ Новая монета: 5tvzpryPyHGdwQ4Xue7weGbWAVaUZY2ekhmyq3E6W2PL (Pump.fun | KIMCHI)
-[20:47:16] 👁️ Новая монета: 2Yjj9DafXzSGnS5MCWpcq7F9zCPpDFgGvoDh6ryypump (Pump.fun | THRUSTLAB)
-[20:47:16] ⛔ PumpPortal create отклонён: 9Avy…pump — bonding_curve_pda_mismatch (curve=7cMNHmwJuWXWJLGsWcsHbuZjrFNtvS1pNqThf5LBu9oy, expected=ExeT8GrsAFA6hKkADPFAzAXHUYRVdBePMCLdCXC9tnpR)
-[20:47:17] 👁️ Новая монета: Cmp9DaNTHfUr5JisZ92weNPj4YqMfHckCMMTSi8JZrSi (Pump.fun | CTO)
-[20:47:17] 🛑 Cmp9…ZrSi — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (9AvytnUKsLxPxFHFqS6VLxaxt5p6BhYNr53SD2Chpump)
-[20:47:18] 👁️ Новая монета: 7WsozApFQ1NxHz8v6cKrYWFVxxF8rZkXyc9KS3VNyriq (Pump.fun | CTO)
-[20:47:18] 🛑 7Wso…yriq — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+run_dir_size: 24M
+opens: 55
+closes: 55
+[21:15:12] 👁️ Новая монета: DUYcGM9FP5TvTaAy768EiQudCVKH5N9d8tq2JhFUGmNX (Pump.fun | CNCADE)
+[21:15:12] 👁️ Новая монета: GxnyuJ4crDTbMEAUiTJrvmvzoLoWEZKpR8LWFnTxpnt4 (Pump.fun | CNCADE)
+[21:15:12] 👁️ Новая монета: EmvNx57oEuKy7ttL2yhkfVJG9iQ7cc1cj1bLTpHnv99C (Pump.fun | CNCADE)
+[21:15:12] 👁️ Новая монета: 2X7iAZHsAig7kdmvt7fJFVHham4kajxYy5e56TH3Xc5m (Pump.fun | BILLY)
+[21:15:12] 🛑 DUYc…GmNX — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
+[21:15:12] 🛑 Gxny…pnt4 — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
+[21:15:12] 🛑 EmvN…v99C — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
+[21:15:12] 🛑 2X7i…Xc5m — Pump.fun security filters blocked: не прочитали mint и Pump.fun curve в одном RPC-запросе — вход заблокирован
+[21:15:15] 👁️ Новая монета: 95u9Gnwg7ftrsD4vxgmjJriCHk4z6whauPLpPzHgSvph (Pump.fun | JANE)
+[21:15:15] 🛑 95u9…Svph — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF)
+[21:15:16] 👁️ Новая монета: 4YUYp1biP2aTJYKqPjpe1pAKAaYLfqMLZtZ7CExiMehg (Pump.fun | HYPER)
+[21:15:16] 🛑 4YUY…Mehg — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (98sMhvDwXj1RQi5c5Mndm3vPe9cBqPrbLaufMXFNMh5g)
