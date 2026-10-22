@@ -447,12 +447,50 @@ async def probe_pumpportal(timeout: float = 6.0) -> bool:
     return False
 
 
-def lamports_or_none(value: Any) -> Optional[int]:
-    """Safe parse of a PumpPortal base-unit integer (lamports / raw tokens).
+MAX_DEV_BUY_SOL = 50.0
+MAX_INITIAL_BUY_RAW = 1_000_000_000_000_000_000  # 1e18 base units: absurd above this
 
-    Telemetry only: the value comes in the same create message, so this costs
-    no RPC. Absent, empty, non-finite or malformed values become None instead
-    of raising inside the hot listener path.
+
+MAX_DEV_BUY_SOL_RAW = 1_000_000.0  # sanity ceiling for the unvalidated field
+
+
+def _dev_buy_number(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number <= 0 or number > MAX_DEV_BUY_SOL_RAW:
+        return None
+    return round(number, 9)
+
+
+def dev_buy_sol(value: Any) -> Optional[float]:
+    """PumpPortal ``solAmount``: SOL the dev bought at creation.
+
+    Measured on run #1: this is *not* lamports — real payloads carry 0, 1, 3, 6,
+    85. Telemetry only (same create message, no RPC). Per the fix-#7 spec the
+    validated field keeps only ``0 < x <= 50`` SOL; larger readings stay
+    visible in ``dev_buy_sol_raw`` so an 85 SOL dev buy is never invisible.
+    """
+    number = _dev_buy_number(value)
+    if number is None or number > MAX_DEV_BUY_SOL:
+        return None
+    return number
+
+
+def dev_buy_sol_raw(value: Any) -> Optional[float]:
+    """Same number without the 50 SOL plausibility cut (diagnostics only)."""
+    return _dev_buy_number(value)
+
+
+def initial_buy_raw(value: Any) -> Optional[int]:
+    """PumpPortal ``initialBuy`` in token base units.
+
+    Also telemetry only. Run #1 showed this field is unreliable (0 for a third
+    of the events, and values far below a 1e9 supply), so implausible or zero
+    readings become ``None`` rather than a fake measurement.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -470,7 +508,9 @@ def lamports_or_none(value: Any) -> Optional[int]:
             number = int(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    return number if number >= 0 else None
+    if number <= 0 or number > MAX_INITIAL_BUY_RAW:
+        return None
+    return number
 
 
 async def on_transaction_signal(
@@ -518,10 +558,12 @@ async def on_transaction_signal(
         'program_creator': None,
         'derived_bonding_curve': evidence.get('expected_curve'),
         # Dev's own buy, straight from the create message (no extra RPC).
-        # `initialBuy` is raw token base units, `solAmount` is lamports;
-        # both are telemetry for the 4-12 discriminator experiment.
-        'initial_buy_lamports': lamports_or_none(raw.get('initialBuy')),
-        'sol_amount_lamports': lamports_or_none(raw.get('solAmount')),
+        # `dev_buy_sol` is SOL (PumpPortal reports 1/3/6, not lamports);
+        # `initial_buy_raw` is token base units and is often unreliable.
+        # Both are telemetry for the birth-max / 4-12 discriminator work.
+        'dev_buy_sol': dev_buy_sol(raw.get('solAmount')),
+        'dev_buy_sol_raw': dev_buy_sol_raw(raw.get('solAmount')),
+        'initial_buy_raw': initial_buy_raw(raw.get('initialBuy')),
     }
     if evidence.get('explicit_quote_mint'):
         packet['quote_mint'] = evidence['explicit_quote_mint']

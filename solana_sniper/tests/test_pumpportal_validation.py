@@ -147,27 +147,39 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(coin.tx_payer)  # actor is not mislabeled as the first signer
         self.assertEqual(coin.packet['pumpportal_event_actor'], VALID_CREATE['traderPublicKey'])
         # Dev's own buy straight from the create message: no extra RPC.
-        self.assertEqual(coin.packet['initial_buy_lamports'], 97545455)
-        self.assertEqual(coin.packet['sol_amount_lamports'], 3)
+        # `solAmount` is SOL (run #1 saw 1/3/6/85), `initialBuy` token base units.
+        self.assertEqual(coin.packet['dev_buy_sol'], 3.0)
+        self.assertEqual(coin.packet['initial_buy_raw'], 97545455)
         detector._seen_mints.discard(VALID_CREATE['mint'])
 
     async def test_dev_buy_fields_are_none_when_absent_or_malformed(self) -> None:
         import detector
-        from detector import lamports_or_none
+        from detector import dev_buy_sol, dev_buy_sol_raw, initial_buy_raw
 
-        self.assertEqual(lamports_or_none(1_000_000_000), 1_000_000_000)
-        self.assertEqual(lamports_or_none('250000000'), 250_000_000)
-        self.assertEqual(lamports_or_none(12.6), 13)
-        for bad in (None, '', '   ', 'abc', '1e9', True, float('nan'), float('inf'), -5, {}, []):
-            self.assertIsNone(lamports_or_none(bad), bad)
+        # `solAmount` carries SOL, not lamports (run #1: 1, 3, 6, 85).
+        self.assertEqual(dev_buy_sol(3), 3.0)
+        self.assertEqual(dev_buy_sol('6'), 6.0)
+        self.assertEqual(dev_buy_sol(50.0), 50.0)
+        for bad in (None, '', 'abc', True, float('nan'), float('inf'), 0, -5,
+                    50.001, 85, 1e9, {}, []):
+            self.assertIsNone(dev_buy_sol(bad), bad)
+        # A dev buy above the plausibility cut stays visible for diagnostics.
+        self.assertEqual(dev_buy_sol_raw(85), 85.0)
+        self.assertIsNone(dev_buy_sol_raw(0))
+        self.assertIsNone(dev_buy_sol_raw('abc'))
+        # `initialBuy` is raw token units and unreliable: 0 / absurd -> None.
+        self.assertEqual(initial_buy_raw(97545454.545454), 97545455)
+        self.assertEqual(initial_buy_raw('2115328'), 2115328)
+        for bad in (None, '', 'abc', True, float('nan'), -1, 0, 10 ** 19, {}, []):
+            self.assertIsNone(initial_buy_raw(bad), bad)
 
         detector._seen_mints.discard(VALID_CREATE['mint'])
         without_dev_buy = {k: v for k, v in VALID_CREATE.items() if k not in ('initialBuy', 'solAmount')}
         with patch('detector.validate_pumpportal_create', return_value=validate_pumpportal_create(VALID_CREATE)):
             coin = await on_transaction_signal(without_dev_buy, received_at=1234.5)
         self.assertIsInstance(coin, NewCoin)
-        self.assertIsNone(coin.packet['initial_buy_lamports'])
-        self.assertIsNone(coin.packet['sol_amount_lamports'])
+        self.assertIsNone(coin.packet['dev_buy_sol'])
+        self.assertIsNone(coin.packet['initial_buy_raw'])
         detector._seen_mints.discard(VALID_CREATE['mint'])
 
     async def test_curve_quote_mint_is_checked_from_live_account_bytes(self) -> None:

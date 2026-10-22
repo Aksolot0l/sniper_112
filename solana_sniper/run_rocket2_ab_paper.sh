@@ -76,7 +76,9 @@ export CREATOR_HISTORY_DIR="$PROJECT/runs"
 export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
 # --- entry v3: live momentum instead of the anti-filter delta cap ---
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
-export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-50.0}"
+# Потолок рождения 34.5 (а не 50): v_sol_birth = 29.96 + dev_buy, потолок 50
+# пускал монеты с покупкой дева 4-6 SOL; 36 из 50 таких падали <= -25%.
+export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-34.5}"
 export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
 # --- creator guard: B-only treatment, in-memory wallet cache keeps RPS flat ---

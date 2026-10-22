@@ -37,6 +37,34 @@ from telemetry import get_collector
 DEFAULT_GUARD_MIN_SIGNATURES = 25
 DEFAULT_BURST_WINDOW_SEC = 3600.0
 MAX_SIG_CACHE_ENTRIES = 4000
+MAX_ERROR_DETAIL_ENTRIES = 512
+
+
+class RpcCallError(RuntimeError):
+    """RPC failure that keeps the payload needed to explain itself.
+
+    Run #1 lost 108 of 405 probes to a fail-closed ``RuntimeError`` in ~83 ms
+    with no trace of the cause; the label alone cannot distinguish HTTP 429
+    from a malformed request or an RPC-level error object.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        http_status: Optional[int] = None,
+        code: Any = None,
+        message: str = '',
+        body: str = '',
+        method: str = '',
+    ) -> None:
+        super().__init__(label)
+        self.label = label
+        self.http_status = http_status
+        self.code = code
+        self.message = str(message or '')[:200]
+        self.body = str(body or '')[:200]
+        self.method = method
 
 
 class CreatorOnchainProbe:
@@ -70,8 +98,31 @@ class CreatorOnchainProbe:
         self._sig_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.cache_hits = 0
         self.cache_misses = 0
+        # wallet -> last failure description (diagnostics only, bounded).
+        self._error_details: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ RPC
+    def _remember_error(self, method: str, target: str, exc: BaseException) -> None:
+        """Keep one bounded description of the last failure per wallet.
+
+        Behaviour-neutral: the guard still fails closed on the same exceptions;
+        this only preserves *why* (HTTP status / JSON-RPC code / message) so a
+        post-run review can separate a 429 from a malformed request.
+        """
+        detail = {
+            'method': method,
+            'target': target,
+            'label': str(getattr(exc, 'label', '') or type(exc).__name__),
+            'http_status': getattr(exc, 'http_status', None),
+            'code': getattr(exc, 'code', None),
+            'message': str(getattr(exc, 'message', '') or '')[:200],
+            'body': str(getattr(exc, 'body', '') or '')[:200],
+            'error_type': type(exc).__name__,
+        }
+        if len(self._error_details) >= MAX_ERROR_DETAIL_ENTRIES:
+            self._error_details.clear()
+        self._error_details[target] = detail
+
     async def _rpc(self, method: str, params: list[Any]) -> dict[str, Any]:
         payload = {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}
         async with asyncio.timeout(self.timeout_sec):
@@ -82,11 +133,39 @@ class CreatorOnchainProbe:
                     timeout=aiohttp.ClientTimeout(total=self.timeout_sec),
                 ) as response:
                     if response.status != 200:
-                        raise RuntimeError(f'rpc_http_{response.status}')
+                        body = ''
+                        try:
+                            body = (await response.text())[:200]
+                        except Exception:
+                            body = ''
+                        raise RpcCallError(
+                            f'rpc_http_{response.status}',
+                            http_status=response.status, body=body, method=method,
+                        )
                     data = await response.json()
         if not isinstance(data, dict) or data.get('error'):
-            raise RuntimeError('rpc_error_response')
+            error = data.get('error') if isinstance(data, dict) else None
+            if isinstance(error, dict):
+                raise RpcCallError(
+                    'rpc_error_response',
+                    code=error.get('code'),
+                    message=str(error.get('message') or ''),
+                    body=str(error.get('data') or ''),
+                    method=method,
+                )
+            raise RpcCallError('rpc_error_response', method=method)
         return data
+
+    @staticmethod
+    def _error_label(exc: BaseException) -> str:
+        """Stable label used by reports; RpcCallError stays "RuntimeError".
+
+        Run #1 reports count failures by exception class, so keeping the label
+        identical lets run #2 be compared without re-learning the columns.
+        """
+        if isinstance(exc, RuntimeError):
+            return 'RuntimeError'
+        return type(exc).__name__
 
     async def _signatures_uncached(
         self, wallet: str,
@@ -118,7 +197,8 @@ class CreatorOnchainProbe:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            return None, type(exc).__name__
+            self._remember_error('getSignaturesForAddress', wallet, exc)
+            return None, self._error_label(exc)
 
     async def _signatures(
         self, wallet: str,
@@ -210,7 +290,8 @@ class CreatorOnchainProbe:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            return None, type(exc).__name__
+            self._remember_error('getTokenAccountsByOwner', creator, exc)
+            return None, self._error_label(exc)
 
     # ------------------------------------------------------------- decision
     def _burst(self, summary: Optional[dict[str, Any]], now_epoch: float) -> tuple[Optional[float], bool]:
@@ -355,6 +436,15 @@ class CreatorOnchainProbe:
             token_data, token_error = await self._creator_token_accounts(resolved, mint)
 
         errors = [error for error in (sig_error, token_error) if error]
+        # Diagnostics only: why the reads failed (HTTP status / RPC code /
+        # message), one entry per wallet touched by this probe.
+        error_detail = [
+            self._error_details[wallet]
+            for wallet in dict.fromkeys(
+                w for w in (curve_creator, str(event_actor or ''), resolved)
+                if w and w in self._error_details
+            )
+        ]
         signature_count = sig_data.get('count') if sig_data else None
         ata_exists = token_data.get('ata_exists') if token_data else None
         balance_raw = token_data.get('balance_raw') if token_data else None
@@ -449,6 +539,12 @@ class CreatorOnchainProbe:
             'creator_gate_reason': 'creator_gate_met' if gate_passed else guard_reason,
             'censored': censored,
             'errors': errors,
+            # run #1 blind spot: 108/405 probes failed with only the exception
+            # class recorded, so a 429 could not be told from a bad request.
+            'error_detail': error_detail or None,
+            'error_codes': sorted({
+                str(item.get('label')) for item in error_detail if item.get('label')
+            }),
             'paper_only_read_only_rpc': True,
         }
         return self._record_result(
@@ -458,6 +554,7 @@ class CreatorOnchainProbe:
             ata_exists=ata_exists,
             token_balance_raw=balance_raw,
             token_balance_ui=token_data.get('balance_ui') if token_data else None,
+            error_detail=error_detail or None,
         )
 
     def _record_result(
@@ -468,6 +565,7 @@ class CreatorOnchainProbe:
         ata_exists: Optional[bool] = None,
         token_balance_raw: Optional[str] = None,
         token_balance_ui: Optional[float] = None,
+        error_detail: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         mint = str(getattr(coin, 'mint', '') or '')
         source = str(getattr(coin, 'source', 'Pump.fun'))
@@ -498,6 +596,7 @@ class CreatorOnchainProbe:
                     latency_ms=values.get('latency_ms'),
                     observed_at_utc=values.get('observed_at_utc') or _utc_iso(observed_epoch),
                     error_type=','.join(values.get('errors') or []) or None,
+                    error_detail=error_detail,
                 )
             except Exception:
                 pass

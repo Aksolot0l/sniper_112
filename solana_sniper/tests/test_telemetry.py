@@ -29,7 +29,7 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
                 tx_payer='2MRQDEBy1XfwvgwL8GbxXsD5wPq4gncn1YpsUKkosUFk',
                 packet={
                     'symbol': 'TEST', 'api_key': 'must-not-export',
-                    'initial_buy_lamports': 97545455, 'sol_amount_lamports': 1_000_000_000,
+                    'dev_buy_sol': 3.0, 'initial_buy_raw': 97545455,
                     'private_key': 'must-not-export-private',
                     'rpc_endpoint': 'https://rpc.invalid/?api-key=must-not-export-query',
                     'debug': '{"token":"must-not-export-inline"}',
@@ -96,8 +96,8 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
                     '2MRQDEBy1XfwvgwL8GbxXsD5wPq4gncn1YpsUKkosUFk',
                 ))
                 self.assertEqual(db.execute(
-                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates'
-                ).fetchone(), (97545455, 1_000_000_000))
+                    'SELECT dev_buy_sol,initial_buy_raw FROM candidates'
+                ).fetchone(), (3.0, 97545455))
                 self.assertEqual(db.execute('SELECT count(*) FROM watchlist_events').fetchone()[0], 1)
                 self.assertEqual(db.execute('SELECT count(*) FROM quotes WHERE quote_only=1').fetchone()[0], 1)
                 self.assertEqual(db.execute('SELECT count(*) FROM paper_fills WHERE paper_only=1').fetchone()[0], 1)
@@ -150,21 +150,21 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
             collector.record_candidate(
                 NewCoin(
                     mint='MintNewSchema', source='Pump.fun', signature='sig-2',
-                    packet={'initial_buy_lamports': 250_000_000, 'sol_amount_lamports': 500_000_000},
+                    packet={'dev_buy_sol': 2.5, 'initial_buy_raw': 250_000_000},
                 ),
                 {'paper_only': True},
             )
             await collector.close()
             with sqlite3.connect(db_path) as db:
                 columns = {row[1] for row in db.execute('PRAGMA table_info(candidates)')}
-                self.assertIn('initial_buy_lamports', columns)
-                self.assertIn('sol_amount_lamports', columns)
+                self.assertIn('dev_buy_sol', columns)
+                self.assertIn('initial_buy_raw', columns)
                 self.assertEqual(db.execute(
-                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates '
+                    'SELECT dev_buy_sol,initial_buy_raw FROM candidates '
                     "WHERE mint='MintNewSchema'"
-                ).fetchone(), (250_000_000, 500_000_000))
+                ).fetchone(), (2.5, 250_000_000))
                 self.assertEqual(db.execute(
-                    'SELECT initial_buy_lamports,sol_amount_lamports FROM candidates '
+                    'SELECT dev_buy_sol,initial_buy_raw FROM candidates '
                     "WHERE mint='OldMint'"
                 ).fetchone(), (None, None))
 

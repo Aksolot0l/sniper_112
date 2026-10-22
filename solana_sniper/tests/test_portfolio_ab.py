@@ -98,7 +98,7 @@ def make_settings():
         exit_fee_sol=0.00005,
         http_rpc_url='https://rpc.invalid',
         entry_birth_min_sol=30.5,
-        entry_birth_max_sol=50.0,
+        entry_birth_max_sol=34.5,
         entry_delta_min_sol=0.10,
         entry_delta_max_sol=2.5,
         creator_guard_min_sig=25,
@@ -130,11 +130,12 @@ class ABProfileTests(unittest.TestCase):
             # Small live deltas still pass (the entry rule that replaced the cap).
             self.assertTrue(profile.entry_check(31.0, 31.5)[0])
             self.assertTrue(profile.entry_check(30.5, 31.4)[0])
-            self.assertTrue(profile.entry_check(39.88, 40.41)[0])   # PERFORMA (+0.53)
+            # PERFORMA was born at 39.88 — inside the old 50 SOL band, outside
+            # the 34.5 one: the new ceiling is a dev-buy filter, not a delta one.
+            self.assertEqual(profile.entry_check(39.88, 40.41)[1], 'birth_out_of_band')
             # delta cap is 2.5: the "big rocket" deltas are now late chases.
             self.assertEqual(profile.delta_max_sol, 2.5)
-            for birth, now in ((33.95, 45.51), (33.16, 38.59),    # Turtle, Shigure
-                               (36.0, 40.43), (35.0, 39.0)):       # CAVELON, SKILLSPECTOR
+            for birth, now in ((33.95, 45.51), (33.16, 38.59)):   # Turtle, Shigure
                 ok, reason = profile.entry_check(birth, now)
                 self.assertFalse(ok)
                 self.assertEqual(reason, 'momentum_too_late')
@@ -143,7 +144,55 @@ class ABProfileTests(unittest.TestCase):
             self.assertFalse(profile.entry_check(32.0, 34.5001)[0])
             # Birth band still guards supply-shape outliers.
             self.assertFalse(profile.entry_check(30.49, 31.3)[0])
-            self.assertFalse(profile.entry_check(50.01, 50.5)[0])
+            self.assertFalse(profile.entry_check(35.01, 35.5)[0])
+
+    def test_birth_max_boundary_is_34_5_and_delta_band_is_untouched(self) -> None:
+        for profile in (PROFILE_A, PROFILE_B):
+            self.assertEqual(profile.v_sol_birth_max, 34.5)
+            self.assertEqual(profile.delta_min_sol, 0.10)
+            self.assertEqual(profile.delta_max_sol, 2.5)
+            # Inclusive upper bound: 34.5 is admitted, 34.51 is not.
+            self.assertEqual(profile.entry_check(34.49, 34.8), (True, 'live_momentum_entry'))
+            self.assertEqual(profile.entry_check(34.5, 34.8), (True, 'live_momentum_entry'))
+            self.assertEqual(profile.entry_check(34.51, 34.8), (False, 'birth_out_of_band'))
+            # The measured mechanism: v_sol_birth = 29.96 + dev_buy_SOL.
+            self.assertEqual(profile.entry_check(29.96, 30.2), (False, 'birth_out_of_band'))
+            self.assertEqual(profile.entry_check(29.96 + 4.5, 34.7), (True, 'live_momentum_entry'))
+            self.assertEqual(profile.entry_check(29.96 + 4.55, 34.8), (False, 'birth_out_of_band'))
+            # Both bounds of the delta window are unchanged by fix #7.
+            self.assertEqual(profile.entry_check(33.0, 33.09)[1], 'no_live_momentum')
+            self.assertEqual(profile.entry_check(33.0, 33.10), (True, 'live_momentum_entry'))
+            self.assertEqual(profile.entry_check(33.0, 35.5), (True, 'live_momentum_entry'))
+            self.assertEqual(profile.entry_check(33.0, 35.51)[1], 'momentum_too_late')
+
+    def test_gate_status_separates_blind_spot_from_risk(self) -> None:
+        from portfolio_ab import gate_status
+
+        self.assertEqual(gate_status(True, 'creator_guard_met', {}), 'pass')
+        # Fail-closed telemetry, not a verdict about the creator.
+        for reason in ('creator_history_unavailable', 'creator_token_ata_missing',
+                       'creator_guard_unavailable', 'creator_guard_censored'):
+            self.assertEqual(gate_status(False, reason, {}), 'unavailable', reason)
+        # 25-signature floor hit on the curve fee vault while a real actor
+        # exists = identity uncertainty (run #1: 4 of 12 A-only mints).
+        self.assertEqual(
+            gate_status(False, 'creator_history_too_short', {
+                'creator_identity_type': 'pump_curve_creator',
+                'pumpportal_event_actor': 'ActorWallet111',
+            }),
+            'unavailable',
+        )
+        # Same reason on a resolved deployer is a real risk signal.
+        self.assertEqual(
+            gate_status(False, 'creator_history_too_short', {
+                'creator_identity_type': 'pumpportal_event_actor',
+                'pumpportal_event_actor': 'ActorWallet111',
+            }),
+            'fail_risk',
+        )
+        for reason in ('creator_burst_activity', 'creator_repeat_deploy_in_session',
+                       'creator_token_balance_zero'):
+            self.assertEqual(gate_status(False, reason, {}), 'fail_risk', reason)
 
     def test_delta_buckets_and_shadow_caps_are_pure_arithmetic(self) -> None:
         self.assertEqual(delta_bucket(-0.4), '0')
@@ -177,8 +226,8 @@ class ABProfileTests(unittest.TestCase):
                 mint='mint-dev-buy', source='Pump.fun', signature='sig',
                 curve='curve', packet={
                     'v_sol': 32.0,
-                    'initial_buy_lamports': 97545455,
-                    'sol_amount_lamports': 1_000_000_000,
+                    'dev_buy_sol': 3.0,
+                    'initial_buy_raw': 97545455,
                 },
             )
             snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
@@ -188,8 +237,9 @@ class ABProfileTests(unittest.TestCase):
             # record_decision(mint, source, stage, decision, reasons, values)
             args = collector.record_decision.call_args.args
             self.assertEqual(args[2], 'entry_state')
-            self.assertEqual(args[5]['initial_buy_lamports'], 97545455)
-            self.assertEqual(args[5]['sol_amount_lamports'], 1_000_000_000)
+            self.assertEqual(args[5]['dev_buy_sol'], 3.0)
+            self.assertEqual(args[5]['initial_buy_raw'], 97545455)
+            self.assertTrue(args[5]['dev_bought_at_birth'])
             self.assertEqual(args[5]['delta_bucket'], '0.1-1')
 
             # A coin without the fields still writes both keys as None.
@@ -198,10 +248,11 @@ class ABProfileTests(unittest.TestCase):
             with patch('portfolio_ab.get_collector', return_value=collector):
                 simulator.record_entry_state(bare, snapshot, 31.0, 31.5, time.time())
             values = collector.record_decision.call_args.args[5]
-            self.assertIn('initial_buy_lamports', values)
-            self.assertIn('sol_amount_lamports', values)
-            self.assertIsNone(values['initial_buy_lamports'])
-            self.assertIsNone(values['sol_amount_lamports'])
+            self.assertIn('dev_buy_sol', values)
+            self.assertIn('initial_buy_raw', values)
+            self.assertIsNone(values['dev_buy_sol'])
+            self.assertIsNone(values['initial_buy_raw'])
+            self.assertIsNone(values['dev_bought_at_birth'])
 
     def test_entry_thresholds_come_from_settings(self) -> None:
         base = make_settings()

@@ -28,7 +28,7 @@ _SCHEMA = (
         source TEXT NOT NULL, first_seen_at_utc TEXT NOT NULL, signature TEXT,
         curve TEXT, creator TEXT, program_creator TEXT, tx_payer TEXT,
         name TEXT, symbol TEXT, decimals INTEGER,
-        initial_buy_lamports INTEGER, sol_amount_lamports INTEGER,
+        dev_buy_sol REAL, initial_buy_raw INTEGER,
         raw_json TEXT NOT NULL, config_json TEXT NOT NULL
     )''',
     '''CREATE TABLE IF NOT EXISTS detections (
@@ -56,7 +56,7 @@ _SCHEMA = (
         requested_at_utc TEXT NOT NULL, observed_at_utc TEXT NOT NULL,
         latency_ms REAL, signature_count INTEGER, oldest_block_time INTEGER,
         ata_exists INTEGER, token_balance_raw TEXT, token_balance_ui REAL,
-        error_type TEXT, values_json TEXT NOT NULL
+        error_type TEXT, error_detail TEXT, values_json TEXT NOT NULL
     )''',
     '''CREATE TABLE IF NOT EXISTS watchlist_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
@@ -107,8 +107,8 @@ _SCHEMA = (
 _INSERTS = {
     'candidate': '''INSERT OR IGNORE INTO candidates
         (candidate_id,chain_id,mint,source,first_seen_at_utc,signature,curve,creator,
-         program_creator,tx_payer,name,symbol,decimals,initial_buy_lamports,
-         sol_amount_lamports,raw_json,config_json)
+         program_creator,tx_payer,name,symbol,decimals,dev_buy_sol,
+         initial_buy_raw,raw_json,config_json)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     'detection': '''INSERT OR IGNORE INTO detections
         (event_id,candidate_id,mint,source,detection_type,detected_at_utc,signature,raw_json)
@@ -122,8 +122,9 @@ _INSERTS = {
     'creator_probe': '''INSERT OR IGNORE INTO creator_probes
         (event_id,candidate_id,mint,source,program_creator,tx_payer,status,
          requested_at_utc,observed_at_utc,latency_ms,signature_count,oldest_block_time,
-         ata_exists,token_balance_raw,token_balance_ui,error_type,values_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         ata_exists,token_balance_raw,token_balance_ui,error_type,error_detail,
+         values_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
     'watchlist_event': '''INSERT OR IGNORE INTO watchlist_events
         (event_id,candidate_id,mint,source,event_type,status,occurred_at_utc,values_json)
         VALUES (?,?,?,?,?,?,?,?)''',
@@ -201,6 +202,50 @@ def _safe_json(value: Any) -> str:
         return json.dumps(clean(value), ensure_ascii=False, separators=(',', ':'), default=str)
     except Exception:
         return '{}'
+
+
+MAX_ERROR_DETAIL_CHARS = 200
+
+
+def _summarize_error_detail(details: Any) -> Optional[str]:
+    """One bounded, redacted line per failed RPC (code/message/first 200 chars).
+
+    Run #1 showed 108 of 405 probes failing in ~83 ms with nothing but
+    ``RuntimeError`` recorded, so a 429 could not be told from a bad request.
+    """
+    if not details:
+        return None
+    if isinstance(details, str):
+        return _redact_text(details)[:MAX_ERROR_DETAIL_CHARS] or None
+    if not isinstance(details, (list, tuple)):
+        return None
+    parts = []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get('label') or item.get('method') or 'error')
+        bits = [label]
+        for key in ('http_status', 'code'):
+            if item.get(key) is not None:
+                bits.append(f'{key}={item[key]}')
+        message = str(item.get('message') or item.get('body') or '').strip()
+        if message:
+            bits.append(message[:MAX_ERROR_DETAIL_CHARS])
+        parts.append(' '.join(bits))
+    if not parts:
+        return None
+    return _redact_text('; '.join(parts))[:MAX_ERROR_DETAIL_CHARS]
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    """Defensive cast for telemetry-only REAL columns (never raises)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if number == number and abs(number) != float('inf') else None
 
 
 def _int_or_none(value: Any) -> Optional[int]:
@@ -287,8 +332,9 @@ class CandidateCollector:
                 for table, column, definition in (
                     ('candidates', 'program_creator', 'TEXT'),
                     ('candidates', 'tx_payer', 'TEXT'),
-                    ('candidates', 'initial_buy_lamports', 'INTEGER'),
-                    ('candidates', 'sol_amount_lamports', 'INTEGER'),
+                    ('candidates', 'dev_buy_sol', 'REAL'),
+                    ('candidates', 'initial_buy_raw', 'INTEGER'),
+                    ('creator_probes', 'error_detail', 'TEXT'),
                     ('paper_fills', 'portfolio', "TEXT NOT NULL DEFAULT 'main'"),
                     ('paper_fills', 'out_amount_raw', 'TEXT'),
                     ('paper_fills', 'snapshot_pnl_rub', 'REAL'),
@@ -356,8 +402,8 @@ class CandidateCollector:
             coin.signature or None, coin.curve, program_creator,
             program_creator, tx_payer,
             str(packet.get('name') or ''), str(packet.get('symbol') or ''),
-            coin.decimals, _int_or_none(packet.get('initial_buy_lamports')),
-            _int_or_none(packet.get('sol_amount_lamports')),
+            coin.decimals, _float_or_none(packet.get('dev_buy_sol')),
+            _int_or_none(packet.get('initial_buy_raw')),
             _safe_json(packet), _safe_json(config),
         ))
         self._put('detection', (
@@ -413,15 +459,18 @@ class CandidateCollector:
         latency_ms: Optional[float],
         observed_at_utc: str,
         error_type: Optional[str] = None,
+        error_detail: Optional[str] = None,
     ) -> None:
         event_id = uuid.uuid4().hex
         requested_at = str(values.get('probe_started_at_utc') or utc_now())
+        if error_detail is None:
+            error_detail = _summarize_error_detail(values.get('error_detail'))
         self._put('creator_probe', (
             event_id, candidate_id_for(mint), mint, source,
             program_creator, tx_payer, status, requested_at, observed_at_utc,
             latency_ms, signature_count, oldest_block_time,
             None if ata_exists is None else int(bool(ata_exists)),
-            token_balance_raw, token_balance_ui, error_type,
+            token_balance_raw, token_balance_ui, error_type, error_detail,
             _safe_json(values),
         ))
         self.record_decision(
@@ -542,7 +591,7 @@ class CandidateCollector:
         }
         if config['portfolio_scope'] == 'ab_only':
             shared = {
-                'entry': '30.5 <= v_sol_birth <= 38.0 and v_sol_now <= v_sol_birth + 0.8',
+                'entry': '30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= 2.5',
                 'stop_loss': 'pnl_pct <= -10 before best_pnl_pct reaches +20',
                 'no_progress': 'once at 10s: best_pnl_pct < +15 and pnl_pct < +1.5',
                 'trailing': 'after best_pnl_pct >= +20: min(peak-15.0, 0.75*peak), sell 100%',
@@ -800,3 +849,184 @@ def set_collector(collector: Optional[CandidateCollector]) -> None:
 
 def get_collector() -> Optional[CandidateCollector]:
     return _COLLECTOR
+
+
+# --------------------------------------------------------------------------
+# Post-run funnel report
+# --------------------------------------------------------------------------
+def _first_reason(reasons_json: Any) -> str:
+    try:
+        parsed = json.loads(reasons_json or '[]')
+    except (TypeError, ValueError):
+        return 'unparsed'
+    if isinstance(parsed, list) and parsed:
+        return str(parsed[0])
+    return 'none'
+
+
+def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
+    """Read-only funnel summary of one finished run.
+
+    Answers the two questions run #1 left open without any new RPC:
+    where candidates disappear between detection and an open position, and how
+    many were admitted by the *current* delta cap versus the shadow caps.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return {'available': False, 'reason': 'telemetry_db_missing'}
+    report: dict[str, Any] = {'available': True, 'db': path.name}
+    with sqlite3.connect(f'file:{path.resolve()}?mode=ro', uri=True) as db:
+        def scalar(sql: str, params: tuple = ()) -> int:
+            row = db.execute(sql, params).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+        report['candidates'] = scalar('SELECT COUNT(DISTINCT mint) FROM candidates')
+        if not report['candidates']:
+            report['candidates'] = scalar(
+                "SELECT COUNT(DISTINCT mint) FROM detections WHERE detection_type='candidate_received'"
+            )
+        report['security_pass'] = scalar(
+            "SELECT COUNT(DISTINCT mint) FROM decisions "
+            "WHERE stage='security_and_market_filters' AND decision='pass'"
+        )
+        report['entry_state'] = scalar(
+            "SELECT COUNT(DISTINCT mint) FROM decisions WHERE stage='entry_state'"
+        )
+
+        signals: dict[str, int] = {}
+        for arm in ('portfolio_a', 'portfolio_b'):
+            rows = db.execute(
+                'SELECT reasons_json FROM decisions WHERE stage=?', (f'{arm}_signal',)
+            ).fetchall()
+            counts: dict[str, int] = {}
+            for (reasons,) in rows:
+                reason = _first_reason(reasons)
+                counts[reason] = counts.get(reason, 0) + 1
+            report[f'{arm}_signal'] = dict(sorted(counts.items()))
+
+        opened: dict[str, int] = {}
+        skipped: dict[str, int] = {}
+        for arm in ('portfolio_a', 'portfolio_b'):
+            opened[arm] = scalar(
+                "SELECT COUNT(*) FROM decisions WHERE stage=? AND decision='opened'",
+                (f'{arm}_entry',),
+            )
+            skip_rows = db.execute(
+                "SELECT reasons_json FROM decisions WHERE stage=? AND decision IN ('skipped','not_opened')",
+                (f'{arm}_entry',),
+            ).fetchall()
+            per_reason: dict[str, int] = {}
+            for (reasons,) in skip_rows:
+                reason = _first_reason(reasons)
+                per_reason[reason] = per_reason.get(reason, 0) + 1
+            skipped[arm] = dict(sorted(per_reason.items(), key=lambda kv: -kv[1]))
+        report['opened'] = opened
+        report['entry_skips'] = skipped
+
+        # Delta admission: how many entry_state rows pass the cap in force vs
+        # the shadow caps (the "26 instead of ~40" question, answered by data).
+        buckets: dict[str, int] = {}
+        shadow: dict[str, int] = {}
+        dev_buy: dict[str, int] = {}
+        for (values_json,) in db.execute(
+            "SELECT values_json FROM decisions WHERE stage='entry_state'"
+        ):
+            try:
+                values = json.loads(values_json or '{}')
+            except (TypeError, ValueError):
+                continue
+            bucket = str(values.get('delta_bucket') or 'unknown')
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+            for key, flag in values.items():
+                if key.startswith('pass_if_cap_') and flag:
+                    shadow[key] = shadow.get(key, 0) + 1
+            if values.get('dev_buy_sol') is None:
+                dev_buy['unknown'] = dev_buy.get('unknown', 0) + 1
+            else:
+                dev_buy['bought'] = dev_buy.get('bought', 0) + 1
+        report['delta_buckets'] = dict(sorted(buckets.items()))
+        report['pass_if_cap'] = dict(sorted(shadow.items()))
+        report['dev_buy_presence'] = dict(sorted(dev_buy.items()))
+        # One-line chain requested by the fix-#7 spec.
+        a_signals = report.get('portfolio_a_signal') or {}
+        report['chain'] = (
+            f"candidates={report['candidates']} -> "
+            f"security_pass={report['security_pass']} -> "
+            f"birth_reject={a_signals.get('birth_out_of_band', 0)} -> "
+            f"no_live_momentum={a_signals.get('no_live_momentum', 0)} -> "
+            f"momentum_too_late={a_signals.get('momentum_too_late', 0)} -> "
+            f"admits={a_signals.get('live_momentum_entry', 0)} -> "
+            f"opened={opened['portfolio_a']} -> "
+            f"cash_below_slot={(skipped['portfolio_a'].get('cash_below_slot_size', 0))}"
+        )
+        report['admitted_by_current_cap'] = scalar(
+            "SELECT COUNT(*) FROM decisions WHERE stage='portfolio_a_signal' AND decision='pass'"
+        )
+
+        gate: dict[str, int] = {}
+        gate_reason: dict[str, int] = {}
+        identity: dict[str, int] = {}
+        for (values_json,) in db.execute(
+            "SELECT values_json FROM decisions WHERE stage='portfolio_b_creator_gate'"
+        ):
+            try:
+                values = json.loads(values_json or '{}')
+            except (TypeError, ValueError):
+                continue
+            status = str(values.get('gate_status') or 'unclassified')
+            gate[status] = gate.get(status, 0) + 1
+            if status != 'pass':
+                reason = str(values.get('guard_reason') or 'unknown')
+                gate_reason[reason] = gate_reason.get(reason, 0) + 1
+            ident = str(values.get('creator_identity_type') or 'unknown')
+            identity[ident] = identity.get(ident, 0) + 1
+        report['gate_status'] = dict(sorted(gate.items()))
+        report['gate_reasons'] = dict(sorted(gate_reason.items(), key=lambda kv: -kv[1]))
+        report['probe_identity'] = dict(sorted(identity.items()))
+
+        # A-only mints: admitted by A, filtered by B. Split by gate class so a
+        # telemetry blind spot can never be reported as a risk signal.
+        a_only_rows = db.execute(
+            """
+            SELECT a.mint,
+                   (SELECT COUNT(*) FROM decisions b
+                     WHERE b.mint = a.mint AND b.stage = 'portfolio_b_entry'
+                       AND b.decision = 'opened') AS b_opened,
+                   (SELECT values_json FROM decisions g
+                     WHERE g.mint = a.mint AND g.stage = 'portfolio_b_creator_gate'
+                     LIMIT 1) AS gate_values
+            FROM decisions a
+            WHERE a.stage = 'portfolio_a_entry' AND a.decision = 'opened'
+            """
+        ).fetchall()
+        pnl_by_mint: dict[str, float] = {}
+        for mint, pnl in db.execute(
+            "SELECT mint, pnl_leg_rub FROM paper_fills WHERE portfolio='portfolio_a'"
+        ):
+            pnl_by_mint[mint] = pnl_by_mint.get(mint, 0.0) + float(pnl or 0.0)
+        a_only: dict[str, dict[str, Any]] = {}
+        for mint, b_opened, gate_values in a_only_rows:
+            if b_opened:
+                continue
+            try:
+                values = json.loads(gate_values or '{}')
+            except (TypeError, ValueError):
+                values = {}
+            klass = str(values.get('gate_status') or 'unclassified')
+            reason = str(values.get('guard_reason') or 'unknown')
+            slot = a_only.setdefault(klass, {'mints': 0, 'reasons': {}, 'pnl_leg_sum_rub': 0.0})
+            slot['mints'] += 1
+            slot['reasons'][reason] = slot['reasons'].get(reason, 0) + 1
+            # pnl_leg_rub sum excludes the entry fee; labelled as such.
+            slot['pnl_leg_sum_rub'] = round(
+                slot['pnl_leg_sum_rub'] + pnl_by_mint.get(mint, 0.0), 2,
+            )
+        report['a_only'] = {
+            klass: {
+                'mints': slot['mints'],
+                'reasons': dict(sorted(slot['reasons'].items(), key=lambda kv: -kv[1])),
+                'pnl_leg_sum_rub': slot['pnl_leg_sum_rub'],
+            }
+            for klass, slot in sorted(a_only.items())
+        }
+    return report

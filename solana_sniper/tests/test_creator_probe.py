@@ -73,6 +73,70 @@ class FakeSession:
         return FakeResponse({'jsonrpc': '2.0', 'id': payload['id'], 'result': result}, self)
 
 
+class BusyResponse(FakeResponse):
+    """HTTP 429 with a JSON body, as seen once in run #1."""
+
+    status = 429
+
+    async def text(self):
+        return '{"error":{"code":-32429,"message":"rate limited"}}'
+
+
+class BusySession(FakeSession):
+    def post(self, _url, **kwargs):
+        payload = kwargs['json']
+        self.calls.append(payload)
+        return BusyResponse({'jsonrpc': '2.0', 'id': payload['id']}, self)
+
+
+class RpcErrorDetailTests(unittest.IsolatedAsyncioTestCase):
+    """Run #1 lost 108/405 probes to a bare RuntimeError; keep the payload."""
+
+    async def test_http_429_keeps_status_and_body(self) -> None:
+        probe = CreatorOnchainProbe(BusySession(), 'https://rpc.example.invalid')
+        result, error = await probe._signatures(CREATOR)
+        self.assertIsNone(result)
+        # The guard still fails closed on the same exception type...
+        self.assertEqual(error, 'RuntimeError')
+        # ...and the reason is now recoverable.
+        detail = probe._error_details[CREATOR]
+        self.assertEqual(detail['http_status'], 429)
+        self.assertEqual(detail['method'], 'getSignaturesForAddress')
+        self.assertIn('rate limited', detail['body'])
+        self.assertIn('429', detail['label'])
+
+    async def test_rpc_error_object_keeps_code_and_message(self) -> None:
+        class ErrorSession(FakeSession):
+            def post(self, _url, **kwargs):
+                payload = kwargs['json']
+                self.calls.append(payload)
+                return FakeResponse({
+                    'jsonrpc': '2.0', 'id': payload['id'],
+                    'error': {'code': -32602, 'message': 'Invalid param: not a hash'},
+                }, self)
+
+        probe = CreatorOnchainProbe(ErrorSession(), 'https://rpc.example.invalid')
+        data, error = await probe._creator_token_accounts(CREATOR, MINT)
+        self.assertIsNone(data)
+        self.assertEqual(error, 'RuntimeError')
+        detail = probe._error_details[CREATOR]
+        self.assertEqual(detail['code'], -32602)
+        self.assertIn('Invalid param', detail['message'])
+
+    async def test_probe_result_carries_error_detail_and_never_gates_on_it(self) -> None:
+        probe = CreatorOnchainProbe(BusySession(), 'https://rpc.example.invalid')
+        coin = SimpleNamespace(
+            mint=MINT, program_creator=CREATOR, tx_payer=None,
+            packet={'pumpportal_event_actor': None}, signature='sig',
+        )
+        values = await probe.probe(coin)
+        self.assertFalse(values['creator_guard_passed'])
+        self.assertTrue(values['censored'])
+        self.assertTrue(values['error_detail'])
+        self.assertIn('rpc_http_429', values['error_codes'])
+        # The failure detail never turns into a pass.
+        self.assertEqual(values['creator_guard_reason'], 'creator_history_unavailable')
+
 class CreatorProbeTests(unittest.IsolatedAsyncioTestCase):
     async def test_signature_count_is_uncached_capped_page_stat(self) -> None:
         session = FakeSession()

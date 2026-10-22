@@ -35,7 +35,7 @@ from price import (
     set_rpc_batcher,
 )
 from storage import storage_worker
-from telemetry import CandidateCollector, set_collector
+from telemetry import CandidateCollector, funnel_from_db, set_collector
 from ws_client import ws_listener
 
 
@@ -97,16 +97,132 @@ def _build_commit() -> str:
     return 'unknown'
 
 
+# Reference numbers from run #1 (build 9f2cd08, 30 min, 1800 s). Reported by
+# the operator; kept only so SUMMARY.md can put run #2 next to run #1 without
+# pretending the two were measured in one process.
+BASELINE_RUN_1 = {
+    'build': '9f2cd08',
+    'duration_sec': 1800,
+    'entry_birth_max_sol': 50.0,
+    'portfolio_a': {
+        'entries': 26, 'closed_trade_count': 26, 'realized_pnl_rub': -1035.56,
+        'pnl_per_trade_rub': -39.83, 'conservative_100bps_pnl_rub': -1274.11,
+    },
+    'portfolio_b': {
+        'entries': 16, 'closed_trade_count': 16, 'realized_pnl_rub': -672.77,
+        'pnl_per_trade_rub': -42.05, 'conservative_100bps_pnl_rub': -818.87,
+    },
+    'source': 'run #1 report (30-min PAPER_ONLY run on the operator machine)',
+}
+
+
+def _summary_markdown(
+    manifest: dict[str, Any], funnel: dict[str, Any], summary: dict[str, Any],
+) -> str:
+    """Render the one-page post-run report next to the raw artifacts."""
+    lines: list[str] = []
+    add = lines.append
+    add(f"# Прогон {manifest.get('run_id')}")
+    add('')
+    add(f"- build: `{manifest.get('build')}` (baseline прогон №1: `{BASELINE_RUN_1['build']}`)")
+    add(f"- вход: `{manifest.get('entry')}`")
+    add(f"- длительность: {manifest.get('actual_duration_sec')} c "
+        f"(план {manifest.get('planned_duration_sec')} c)")
+    add(f"- paper-only: {manifest.get('paper_only')}; подписано транзакций: "
+        f"{manifest.get('signed_transactions')}")
+    add('')
+    add('## A / B')
+    add('')
+    add('| | portfolio_a | portfolio_b | прогон №1 A | прогон №1 B |')
+    add('|---|---:|---:|---:|---:|')
+    rows = (
+        ('входов', 'entry_count', 'entries'),
+        ('закрыто', 'closed_trade_count', 'closed_trade_count'),
+        ('realized PnL, ₽', 'realized_pnl_rub', 'realized_pnl_rub'),
+        ('conservative 100 bps, ₽', 'conservative_100bps_pnl_rub',
+         'conservative_100bps_pnl_rub'),
+    )
+    for label, key, base_key in rows:
+        a = (summary.get('portfolio_a') or {}).get(key)
+        b = (summary.get('portfolio_b') or {}).get(key)
+        base_a = BASELINE_RUN_1['portfolio_a'].get(base_key, '—')
+        base_b = BASELINE_RUN_1['portfolio_b'].get(base_key, '—')
+        add(f'| {label} | {a} | {b} | {base_a} | {base_b} |')
+    for arm in ('portfolio_a', 'portfolio_b'):
+        entries = (summary.get(arm) or {}).get('entry_count') or 0
+        pnl = (summary.get(arm) or {}).get('realized_pnl_rub') or 0.0
+        add(f'| PnL на сделку, ₽ ({arm}) | '
+            f'{round(pnl / entries, 2) if entries else "—"} | | '
+            f'{BASELINE_RUN_1[arm]["pnl_per_trade_rub"]} | |')
+    add('')
+    add('## Воронка')
+    add('')
+    add('```')
+    add(str(funnel.get('chain') or 'n/a'))
+    add('')
+    add(f"entry_state             {funnel.get('entry_state')}")
+    for reason, count in (funnel.get('portfolio_a_signal') or {}).items():
+        add(f"  A signal: {reason:<30}{count}")
+    for reason, count in (funnel.get('portfolio_b_signal') or {}).items():
+        add(f"  B signal: {reason:<30}{count}")
+    add(f"admitted_by_current_cap {funnel.get('admitted_by_current_cap')}")
+    add(f"opened                  A={((funnel.get('opened') or {}).get('portfolio_a'))} "
+        f"B={((funnel.get('opened') or {}).get('portfolio_b'))}")
+    for arm in ('portfolio_a', 'portfolio_b'):
+        for reason, count in ((funnel.get('entry_skips') or {}).get(arm) or {}).items():
+            add(f"  {arm} skip: {reason:<30}{count}")
+    add('```')
+    add('')
+    add('Дельта-полоса (сколько прошло бы при другом потолке):')
+    add('')
+    for key, count in (funnel.get('pass_if_cap') or {}).items():
+        add(f'- `{key}`: {count}')
+    add('')
+    add(f"Бакеты delta: {funnel.get('delta_buckets')}")
+    add('')
+    add('## Гейт B: риск против слепой зоны')
+    add('')
+    add(f"- `gate_status`: {funnel.get('gate_status')}")
+    add(f"- причины отказов: {funnel.get('gate_reasons')}")
+    add(f"- идентичность дева: {funnel.get('probe_identity')}")
+    a_only = funnel.get('a_only') or {}
+    if a_only:
+        add('- монеты, которые взял только A:')
+        for klass, slot in a_only.items():
+            add(f"  - `{klass}`: {slot.get('mints')} шт, pnl_leg сумма "
+                f"{slot.get('pnl_leg_sum_rub')} ₽ (без входной комиссии), "
+                f"причины: {slot.get('reasons')}")
+    add('')
+    add('## Как читать')
+    add('')
+    add('1. `unavailable` — это сбой телеметрии, а не сигнал риска; если его доля '
+        'велика, сравнение A/B смещено.')
+    add('2. `admitted_by_current_cap` против `pass_if_cap_*` отвечает, режет ли '
+        'поток потолок delta, или событий просто было меньше.')
+    add('3. PnL A против B имеет смысл только как проверка здравого смысла на '
+        'n ≈ 10–30; доказанного эджа нет.')
+    add('')
+    return '\n'.join(lines)
+
+
 def _strategy_metadata() -> dict[str, Any]:
     """Declared up front so a run can never be compared against an older one."""
     return {
         'build': _build_commit(),
         'build_baseline': (
-            'a56be03 — 30-min run, no code changes; this build adds '
-            'telemetry-only fields (initialBuy, solAmount) and moves no '
-            'A/B behaviour'
+            'run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, '
+            'B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics'
         ),
-        'strategy_version': 'entry_v3+guard_v2+delta_cap_2.5',
+        'strategy_version': 'entry_v3+guard_v2+delta_cap_2.5+birth_max_34.5',
+        'fix_7': (
+            'v_sol_birth_max 50.0 -> 34.5. Measured on run #1: '
+            'v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the '
+            'old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such '
+            'candidates fell <= -25% (median minimum -33.2%), and in the live '
+            'run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. '
+            'Expected 22-26 entries instead of 26 and A near -500 RUB: this '
+            'cuts the catastrophic tail, it does NOT create profit.'
+        ),
         'comparison_policy': 'не смешивать с сессиями до 2026-10-22',
         'timeouts_35_90': 'slot safety net, not part of 4-mode ladder',
         'known_hole': (
@@ -134,15 +250,26 @@ def _strategy_metadata() -> dict[str, Any]:
         ),
         'experiment_next': (
             'discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, '
-            'unique buyers'
+            'unique buyers. Run #1 added the missing half: the entry price is '
+            'always worse than observations t0, and the 0.1-2.5 band has a '
+            'median move of 0.0% with an asymmetric ladder, so zero movement '
+            'becomes -6..-8% per trade. No threshold fixes that'
         ),
         'expected_flow': (
-            '~17% of entry_state pass at cap 2.5 (11/66 archived); '
-            'archive density 8.5 entry_state/min -> ~40 A entries per 30 min, '
-            '~15% guard pass -> order of 6 B entries per 30 min'
+            'run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 '
+            '(12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 '
+            'expect 22-26 A entries and 3-6 B entries per 30 min. '
+            'admitted_by_current_cap in the manifest answers this from data'
+        ),
+        'open_question_cap': (
+            'delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band '
+            'there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 '
+            'held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, '
+            'not quality. Changing the cap is fix #8, deliberately not mixed '
+            'with #7'
         ),
         'entry': (
-            '30.5 <= v_sol_birth <= 50.0 and '
+            '30.5 <= v_sol_birth <= 34.5 and '
             '0.10 <= (v_sol_now - v_sol_birth) <= 2.5'
         ),
         'entry_note': (
@@ -162,7 +289,9 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'entry_note': (
             'live-momentum band replaces the 2026-10 anti-filter '
             '(v_sol_now <= v_sol_birth + 0.8 rejected every real runner '
-            'and bought dead delta==0 decoys)'
+            'and bought dead delta==0 decoys). Birth ceiling is 34.5 since '
+            'fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev '
+            'buys of 4-6 SOL and 36 of 50 such launches fell <= -25%'
         ),
         'stop_loss': 'before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%',
         'tp1': 'when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable',
@@ -568,7 +697,23 @@ async def main() -> None:
                 'signed_transactions': 0,
                 'submitted_transactions': 0,
             })
+            # Funnel + gate split, computed from the finished telemetry DB
+            # (read-only, no RPC). A blind spot in the probe must stay visible
+            # instead of being reported as a risk verdict.
+            try:
+                funnel = funnel_from_db(telemetry_path)
+            except Exception as exc:
+                funnel = {'available': False, 'reason': type(exc).__name__}
+            manifest['funnel'] = funnel
+            manifest['creator_gate'] = summary.get('creator_gate', {})
             _write_json(run_dir / 'manifest.json', manifest)
+            try:
+                (run_dir / 'SUMMARY.md').write_text(
+                    _summary_markdown(manifest, funnel, summary), encoding='utf-8',
+                )
+                log(f'📄 SUMMARY.md записан: {run_dir / "SUMMARY.md"}', Color.CYAN)
+            except Exception as exc:
+                log(f'⚠️ SUMMARY.md не записан ({type(exc).__name__})', Color.YELLOW)
             log(f'⏹ A/B run finalized: {run_id}; open and pending positions remain separately recorded.', Color.CYAN)
 
     for installed_signal in installed_signals:

@@ -32,15 +32,22 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 - A/B portfolio, entry rule, exit ladder: `portfolio_ab.py`, `pump_curve_quote.py`, `price.py`
 - Creator identity / guard / wallet cache: `creator_probe.py`
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
-- Tests: `tests/` (100 tests). Bundle builder: `tools/build_bundle.py`
+- Tests: `tests/` (119 tests). Bundle builder: `tools/build_bundle.py`
 
 ## Strategy state (2026-10-22)
 
 Entry v3 — live momentum, shared by both arms:
 
 ```
-30.5 <= v_sol_birth <= 50.0   and   0.10 <= (v_sol_now - v_sol_birth) <= 2.5
+30.5 <= v_sol_birth <= 34.5   and   0.10 <= (v_sol_now - v_sol_birth) <= 2.5
 ```
+
+Birth ceiling 34.5 (fix #7, was 50): run #1 measured
+`v_sol_birth = 29.96 + dev_buy_SOL` (corr 0.99988, n=145), so a 50 SOL ceiling
+admitted launches where the dev bought 4–6 SOL of his own token — 36 of 50 such
+candidates fell ≤ −25% (median minimum −33.2%), and in the live run they were 4
+mints for −538.57 ₽ in A and −552.79 ₽ in B. 34.5 keeps dev buys up to ~4.5 SOL.
+This cuts the catastrophic tail; it does **not** create an edge.
 
 Cap 2.5 (not 12): across the 66 archived `entry_state` rows joined with
 `observations`, `delta >= 2.5 SOL` gave a median -19.8% drawdown from the entry

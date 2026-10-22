@@ -71,7 +71,13 @@ class ABProfile:
     name: str
     # --- entry: live-momentum band (shared by both arms) ---
     v_sol_birth_min: float = 30.5
-    v_sol_birth_max: float = 50.0
+    # 34.5, not 50: run #1 (build 9f2cd08) measured v_sol_birth = 29.96 + dev_buy
+    # with corr 0.99988 (n=145). The 50 SOL ceiling therefore admitted launches
+    # where the dev bought 4-6 SOL of his own token: of 50 such candidates 36
+    # fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints
+    # for -538.57 RUB in A and -552.79 RUB in B. Ceiling 34.5 keeps dev buys up
+    # to ~4.5 SOL. This cuts the catastrophic tail; it does not create an edge.
+    v_sol_birth_max: float = 34.5
     delta_min_sol: float = 0.10
     # 2.5, not 12: across 66 archived entry_state rows joined with observations,
     # delta >= 2.5 SOL gave a median -19.8% drawdown from the entry point and
@@ -150,6 +156,46 @@ def entry_shadow_flags(
     }
 
 
+# Guard reasons that mean "we could not see the creator", not "the creator is
+# risky". Run #1 showed 8 of 12 A-only mints were dropped by these, not by a
+# risk signal, so the two classes must never be merged in the report.
+_GUARD_UNAVAILABLE_REASONS = frozenset({
+    'creator_history_unavailable',
+    'creator_token_ata_missing',
+    'creator_guard_unavailable',
+    'creator_guard_censored',
+})
+
+
+def gate_status(
+    gate_passed: bool,
+    guard_reason: str,
+    probe: Optional[dict[str, Any]] = None,
+) -> str:
+    """Map one guard outcome to ``pass`` / ``fail_risk`` / ``unavailable``.
+
+    ``unavailable`` is a blind spot of the telemetry (RPC fail-closed or the
+    curve fee wallet read instead of the deployer); ``fail_risk`` is a real
+    negative signal about a creator we did identify.
+    """
+    if gate_passed:
+        return 'pass'
+    reason = str(guard_reason or '')
+    if reason in _GUARD_UNAVAILABLE_REASONS:
+        return 'unavailable'
+    if reason == 'creator_history_too_short':
+        # 25-signature floor hit on the curve fee vault while a real event actor
+        # exists: that is identity uncertainty, not a young-wallet verdict.
+        data = probe or {}
+        if (
+            str(data.get('creator_identity_type') or '') == 'pump_curve_creator'
+            and data.get('pumpportal_event_actor')
+        ):
+            return 'unavailable'
+        return 'fail_risk'
+    return 'fail_risk'
+
+
 PROFILE_A = ABProfile(name='portfolio_a', require_creator_gate=False)
 PROFILE_B = ABProfile(name='portfolio_b', require_creator_gate=True)
 
@@ -163,7 +209,7 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
     """
     shared = {
         'v_sol_birth_min': float(getattr(settings, 'entry_birth_min_sol', 30.5)),
-        'v_sol_birth_max': float(getattr(settings, 'entry_birth_max_sol', 50.0)),
+        'v_sol_birth_max': float(getattr(settings, 'entry_birth_max_sol', 34.5)),
         'delta_min_sol': float(getattr(settings, 'entry_delta_min_sol', 0.10)),
         'delta_max_sol': float(getattr(settings, 'entry_delta_max_sol', 2.5)),
     }
@@ -385,6 +431,12 @@ class ABPaperSimulator:
         self.started_at_epoch = time.time()
         self.ended_at_epoch: Optional[float] = None
         self._last_rpc_error_logged = 0.0
+        # Creator-gate funnel for the manifest/SUMMARY (B arm only).
+        self.gate_status_counts: dict[str, int] = {
+            'pass': 0, 'fail_risk': 0, 'unavailable': 0,
+        }
+        self.gate_reason_counts: dict[str, int] = {}
+        self.probe_identity_counts: dict[str, int] = {}
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -646,8 +698,13 @@ class ABPaperSimulator:
         collector.record_decision(
             coin.mint, coin.source, 'entry_state', 'fresh_state_ok', [],
             {'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
-             'initial_buy_lamports': packet.get('initial_buy_lamports'),
-             'sol_amount_lamports': packet.get('sol_amount_lamports'),
+             'dev_buy_sol': packet.get('dev_buy_sol'),
+             'dev_buy_sol_raw': packet.get('dev_buy_sol_raw'),
+             'initial_buy_raw': packet.get('initial_buy_raw'),
+             'dev_bought_at_birth': (
+                 bool(packet.get('dev_buy_sol'))
+                 if packet.get('dev_buy_sol') is not None else None
+             ),
              'delta_sol': round(delta_sol, 6),
              'delta_bucket': delta_bucket(delta_sol),
              'delta_cap_used_sol': base_profile.delta_max_sol,
@@ -720,6 +777,12 @@ class ABPaperSimulator:
             guard_reason = str(probe.get('creator_guard_reason') or 'creator_guard_unavailable')
             censored = bool(probe.get('censored')) or not probe
             decision = 'pass' if guard_passed else ('censored' if censored else 'fail')
+            gate_class = gate_status(guard_passed, guard_reason, probe)
+            self.gate_status_counts[gate_class] = self.gate_status_counts.get(gate_class, 0) + 1
+            if not guard_passed:
+                self.gate_reason_counts[guard_reason] = self.gate_reason_counts.get(guard_reason, 0) + 1
+            identity_key = str(probe.get('creator_identity_type') or 'unknown')
+            self.probe_identity_counts[identity_key] = self.probe_identity_counts.get(identity_key, 0) + 1
             if collector is not None:
                 collector.record_decision(
                     coin.mint, coin.source, 'portfolio_b_creator_gate', decision,
@@ -742,6 +805,10 @@ class ABPaperSimulator:
                      'probe_latency_ms': probe.get('latency_ms'),
                      'probe_errors': probe.get('errors') or [],
                      'guard_reason': guard_reason,
+                     # pass / fail_risk / unavailable — never mix a blind spot
+                     # with a real risk verdict (run #1: 8 of 12 A-only mints
+                     # were telemetry failures, not gate signals).
+                     'gate_status': gate_class,
                      'censored': censored,
                      'decision_at_epoch': decision_epoch,
                      'paper_only': True},
@@ -1725,5 +1792,18 @@ class ABPaperSimulator:
             'jupiter_policy': 'GET ExactIn fallback only after on-chain complete=true; no active-curve entry/exit Jupiter quotes',
             'portfolio_a': portfolios['portfolio_a'],
             'portfolio_b': portfolios['portfolio_b'],
+            # B-arm gate funnel: a blind spot must never be counted as a risk
+            # signal (run #1: 8 of 12 A-only mints were telemetry failures).
+            'creator_gate': {
+                'status_counts': dict(sorted(self.gate_status_counts.items())),
+                'reason_counts': dict(sorted(self.gate_reason_counts.items())),
+                'probe_identity_counts': dict(sorted(self.probe_identity_counts.items())),
+                'unavailable_share': (
+                    round(
+                        self.gate_status_counts.get('unavailable', 0)
+                        / max(1, sum(self.gate_status_counts.values())), 4,
+                    )
+                ),
+            },
             'rpc_metrics': rpc_metrics_snapshot(),
         }

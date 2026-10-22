@@ -321,7 +321,7 @@ async def run(seconds: float) -> int:
     (run_dir / 'manifest.json').write_text(json.dumps({
         'run_id': run_id, 'status': 'completed', 'smoke': True, 'paper_only': True,
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
-        'entry': '30.5 <= v_sol_birth <= 50.0 and 0.10 <= delta <= 12.0',
+        'entry': '30.5 <= v_sol_birth <= 34.5 and 0.10 <= delta <= 2.5',
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},
     }, ensure_ascii=False, indent=2), encoding='utf-8')
 

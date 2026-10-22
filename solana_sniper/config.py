@@ -62,7 +62,8 @@ class Settings:
     creator_risk_policy: str    # block/warn/off для повторных независимых признаков риска
     # --- вход v3: живой импульс вместо статической дельты ---
     entry_birth_min_sol: float  # нижняя граница виртуальных SOL на рождении кривой
-    entry_birth_max_sol: float  # верхняя граница (было 38 — резало реальные ракеты)
+    entry_birth_max_sol: float  # верхняя граница: 34.5 = родовая покупка дева <= ~4.5 SOL
+                                # (замер прогона №1: v_sol_birth = 29.96 + dev_buy, corr 0.99988)
     entry_delta_min_sol: float  # минимум притока SOL после создания (0.0 = мёртвая приманка)
     entry_delta_max_sol: float  # верхний предохранитель: дельта, при которой вход ещё жив
     # --- creator guard (только портфель B) ---
@@ -159,7 +160,12 @@ def load_settings() -> Settings:
         db_path=os.getenv('DB_PATH', 'sniper.db'),
         creator_risk_policy=creator_risk_policy,
         entry_birth_min_sol=float(os.getenv('ENTRY_BIRTH_MIN_SOL', '30.5')),
-        entry_birth_max_sol=float(os.getenv('ENTRY_BIRTH_MAX_SOL', '50.0')),
+        # 34.5, а не 50: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145),
+        # то есть потолок 50 пускал монеты, где дев купил 4-6 SOL своего же
+        # токена. Из 50 таких кандидатов 36 падали <= -25% (медиана минимума
+        # -33.2%); в прогоне №1 это 4 монеты и -538.57 руб в A, -552.79 руб в B.
+        # 34.5 отсекает этот хвост, но НЕ выводит стратегию в плюс.
+        entry_birth_max_sol=float(os.getenv('ENTRY_BIRTH_MAX_SOL', '34.5')),
         entry_delta_min_sol=float(os.getenv('ENTRY_DELTA_MIN_SOL', '0.10')),
         # 2.5, а не 12: пересчёт 66 архивных entry_state x observations показал,
         # что при delta >= 2.5 SOL медианная просадка от точки входа -19.8% и
