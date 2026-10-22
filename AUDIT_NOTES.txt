@@ -1,0 +1,47 @@
+Solana Pump.fun Paper Sniper (A/B) — заметки аудитора
+=====================================================
+Создано: 2026-10-22
+Ветка: arena/613496cb-sniper-112 (рабочая ветка аудитора ИИ №2)
+
+Инварианты проекта (проверяются в каждом разборе)
+-------------------------------------------------
+- paper-only, никаких реальных подписей транзакций
+- РОВНО 1 процесс бота (Helius RPS в потолке, новые запросы только через in-memory кэш)
+- Банк 1 500 ₽ на портфель, сделка 500 ₽
+- MAX_POSITIONS = 3 на каждый портфель (Portfolio A и Portfolio B)
+- duplicate_symbol = false
+- A/B-изоляция: один фактор за раз
+
+Логика выхода (эталон 1-в-1)
+----------------------------
+- Hard SL: -10%
+- No progress 5.0s: best_pnl_pct < +4.0% и pnl_pct < +1.5% -> продать 100%
+- Плюсовой застой до TP1 (+1.5%..+30%), 4.5s без роста -> продать 100%
+- TP1 (+30%..<+50%): продать 50%, остаток по откату 0.85 * best_pnl_pct или застою 4.5s
+- Прострел >= +50%: держать 100% до 0.85 * best_pnl_pct или застоя 4.5s
+
+Правила расчёта
+---------------
+- PnL считать по реальному out_amount_raw (без штрафа -100 bps)
+- Комиссия сети Solana: 0.00008 / 0.00005 SOL (НЕ 0.0005 SOL)
+- В trades.created_at / trades.log / wallet.json лежит время CLOSE, buy_time = close_time - hold_sec
+- Миллисекунды только из telemetry.sqlite:
+  candidates.first_seen_at_utc, decisions(portfolio_a_entry/opened),
+  decisions(portfolio_a_position/closed), paper_fills, observations (+0/5/10/15/60/120s)
+- Ончейн всегда два интервала: MINT(blockTime) -> OPEN и OPEN -> CLOSE
+
+Открытия, взятые под контроль при приёмке
+-----------------------------------------
+1. Анти-отбор входа v_sol_now <= v_sol_birth + 0.8 и покупка мёртвых монет с delta == 0.0
+   (8 из 9 таких = мёртвые ловушки; при этом отсекаются Turtle, KCHAD, настоящий Shigure Ui, CAVELON и др.)
+2. program_creator != pumpportal_event_actor в 16.2% проверок -> учитывать event_actor через кэш
+3. Серийные раг-фермы пробивают sig_cnt == 25 -> резать по decision_epoch - oldest_block_time < 3600
+
+Состояние GitHub на 2026-10-22
+------------------------------
+- origin/Aksolot0l/sniper_112: единственный коммит e20911d в main, веток кроме main нет
+- PR и Issues: 0
+- В коммите: workspace-01a162cc-...zip (снапшот кода), sniper.db с пустой таблицей trades
+- Свежий telemetry.sqlite и trades для аудита PnL пока не предоставлены
+
+Статус: ожидаю архив/ответ ИИ-кодера. Код без разрешения не меняю.
