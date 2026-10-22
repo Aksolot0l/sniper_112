@@ -1,0 +1,6 @@
+audit/run1/
+audit/archive_logs/
+dropbox/
+workspace-*.zip
+*.venv/
+__pycache__/
