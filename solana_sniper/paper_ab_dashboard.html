@@ -32,8 +32,13 @@
              padding:6px 14px;border-radius:8px;cursor:pointer;font:inherit}
   nav button.active{color:var(--txt);border-color:#2b4b74;background:#12253a}
   main{padding:16px 18px 60px;max-width:1500px;margin:0 auto}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:16px}
+  /* Портфели A и B всегда рядом: слева A, справа B. */
+  .cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+         gap:16px;align-items:start}
+  @media (max-width:1100px){ .cols2{grid-template-columns:1fr} }
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .cardArmA{border-left:3px solid #2b4b74}
+  .cardArmB{border-left:3px solid #4a2f7a}
   .card h2{margin:0 0 10px;font-size:14px;display:flex;align-items:center;gap:8px}
   .tagA{background:#12253a;color:var(--blue);border:1px solid #2b4b74}
   .tagB{background:#1d1230;color:var(--violet);border:1px solid #4a2f7a}
@@ -95,11 +100,11 @@
 </nav>
 <main>
   <section id="view-portfolios">
-    <div class="grid" id="portfolioGrid"></div>
+    <div class="cols2" id="portfolioGrid"></div>
     <div class="section-title">A/B воронка решений</div>
     <div class="compare" id="compareBox"></div>
     <div class="section-title">Сделки</div>
-    <div class="grid" id="tradesGrid"></div>
+    <div class="cols2" id="tradesGrid"></div>
   </section>
   <section id="view-logs" hidden>
     <div class="row" style="margin-bottom:10px">
@@ -225,7 +230,7 @@ function renderPortfolio(portfolio) {
   const role = arm === 'A'
     ? 'контроль · вход по живому импульсу'
     : 'лечение · вход + creator_gate';
-  const card = el('div', 'card');
+  const card = el('div', arm === 'A' ? 'card cardArmA' : 'card cardArmB');
   const head = el('h2');
   head.appendChild(el('span', tagCls, `ПОРТФЕЛЬ ${arm}`));
   head.appendChild(el('span', 'muted', role));
