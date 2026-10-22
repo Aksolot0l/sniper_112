@@ -50,12 +50,13 @@ if "%HELIUS_API_KEY%"=="" (
 )
 
 :have_key
-rem Entry delta cap: 2.5 SOL (see config.py). 12 fitted the filter to one observation.
+rem Run #3: the only difference between arms is the delta cap: A 2.5, B 3.0.
 if "%ENTRY_DELTA_MAX_SOL%"=="" set "ENTRY_DELTA_MAX_SOL=2.5"
+if "%ENTRY_DELTA_MAX_SOL_B%"=="" set "ENTRY_DELTA_MAX_SOL_B=3.0"
 echo.
 echo Dashboard: http://127.0.0.1:8767/  - closed with Ctrl+C
 echo This window must stay open for the whole run.
-"%VPY%" run_local_session.py --duration 9000 --open-browser %*
+"%VPY%" run_local_session.py --duration 28800 --open-browser %*
 set "RC=%errorlevel%"
 echo.
 echo Session finished with code %RC%.

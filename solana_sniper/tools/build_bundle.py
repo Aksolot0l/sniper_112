@@ -59,6 +59,9 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
   на 127.0.0.1:8767).
   Данные прогона: runs/rocket2-ab-paper-<RUN_ID>/
       wallet_portfolio_a.json / wallet_portfolio_b.json  — состояние портфелей
+      wallet_shadow_gate.json / wallet_shadow_exit25.json — тени (капитал 0 ₽)
+      exports/ticks.csv          — своя лента тиков каждой позиции
+      exports/shadow_fills.csv   — закрытые сделки теней
       ab_summary.json                                    — итоги
       telemetry.sqlite                                   — вся воронка решений
       sniper.db                                          — закрытые сделки
@@ -68,8 +71,10 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
   1) В telemetry.sqlite (таблица decisions) стадии portfolio_a_signal и
      portfolio_b_signal: сколько раз сработало live_momentum_entry против
      no_live_momentum / birth_out_of_band / momentum_too_late.
-  2) portfolio_b_creator_gate: pass / fail / censored и причины
+  2) <portfolio>_creator_gate (прогон №3 — это shadow_gate_creator_gate):
+     pass / fail_history / fail_risk / unavailable и причины
      (creator_burst_activity = раг-ферма, creator_history_too_short и т.д.).
+     fail_history — прочитанная короткая история, это вердикт, а не слепая зона.
   3) Сравнить realized_pnl_rub портфелей A и B за один и тот же период.
 
 ОГРАНИЧЕНИЯ

@@ -13,9 +13,9 @@ Guarantees:
 - works on macOS/Linux and Windows (no fcntl, no POSIX-only signals).
 
 Examples
-    python run_local_session.py --duration 9000        # full 2h30m run
+    python run_local_session.py --duration 28800       # full 8h run (прогон №3)
     python run_local_session.py --smoke 150            # 2.5 min live check
-    python run_local_session.py --duration 9000 --no-dashboard
+    python run_local_session.py --duration 28800 --no-dashboard
 """
 from __future__ import annotations
 
@@ -85,6 +85,8 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'ENTRY_BIRTH_MAX_SOL': env.get('ENTRY_BIRTH_MAX_SOL', '34.5'),
         'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.10'),
         'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '2.5'),
+        # Run #3: B is A + 0.5 SOL of delta, nothing else.
+        'ENTRY_DELTA_MAX_SOL_B': env.get('ENTRY_DELTA_MAX_SOL_B', '3.0'),
         'CREATOR_GUARD_MIN_SIG': env.get('CREATOR_GUARD_MIN_SIG', '25'),
         'CREATOR_BURST_WINDOW_SEC': env.get('CREATOR_BURST_WINDOW_SEC', '3600'),
         'CREATOR_CACHE_TTL_SEC': env.get('CREATOR_CACHE_TTL_SEC', '300'),
@@ -207,8 +209,9 @@ def print_summary(run_dir: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='PAPER A/B local session runner')
-    parser.add_argument('--duration', type=int, default=9000,
-                        help='длительность сессии в секундах (по умолчанию 9000 = 2ч30м)')
+    parser.add_argument('--duration', type=int, default=28800,
+                        help='длительность сессии в секундах (по умолчанию 28800 = 8ч; '
+                             'для прогона №3 P2)')
     parser.add_argument('--smoke', type=int, default=0,
                         help='короткий проверочный прогон: --smoke 150')
     parser.add_argument('--port', type=int, default=8767)

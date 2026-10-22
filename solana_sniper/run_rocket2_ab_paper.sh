@@ -50,7 +50,8 @@ mkdir -p "$RUN_DIR/exports"
 # process environment only; no keyed URL is exported to disk or printed.
 unset SOLANA_HTTP_RPC_URL SOLANA_WSS_RPC_URL
 export RUN_ID RUN_DIR
-export RUN_DURATION_SEC="${RUN_DURATION_SEC:-9000}"
+# Прогон №3 (P2): 8 часов, один процесс.
+export RUN_DURATION_SEC="${RUN_DURATION_SEC:-28800}"
 export PAPER_ONLY='1'
 export MODE='portfolio'
 export SOURCES='pumpfun'
@@ -81,7 +82,8 @@ export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
 export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-34.5}"
 export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
-# --- creator guard: B-only treatment, in-memory wallet cache keeps RPS flat ---
+# --- creator guard: shadow-only (shadow_gate), in-memory wallet cache keeps RPS flat ---
+export ENTRY_DELTA_MAX_SOL_B="${ENTRY_DELTA_MAX_SOL_B:-3.0}"
 export CREATOR_GUARD_MIN_SIG="${CREATOR_GUARD_MIN_SIG:-25}"
 export CREATOR_BURST_WINDOW_SEC="${CREATOR_BURST_WINDOW_SEC:-3600}"
 export CREATOR_CACHE_TTL_SEC="${CREATOR_CACHE_TTL_SEC:-300}"
@@ -139,12 +141,24 @@ assert s.mode == 'portfolio' and s.honeypot_check is False
 assert PROFILE_A.initial_balance_rub == PROFILE_B.initial_balance_rub == 1500
 assert PROFILE_A.position_size_rub == PROFILE_B.position_size_rub == 500
 assert PROFILE_A.max_slots == PROFILE_B.max_slots == 3
-guarded = [p for p in profiles_from_settings(s).values() if not p.require_creator_gate]
-assert len(guarded) == 1
-assert {k: v for k, v in asdict(PROFILE_A).items() if k not in {'name', 'require_creator_gate'}} == {
-    k: v for k, v in asdict(PROFILE_B).items() if k not in {'name', 'require_creator_gate'}
+live = {name: p for name, p in profiles_from_settings(s).items() if not p.is_shadow}
+assert set(live) == {'portfolio_a', 'portfolio_b'}
+# Run #3 invariant: exactly one difference between the live arms.
+assert PROFILE_A.delta_max_sol == 2.5 and PROFILE_B.delta_max_sol == 3.0
+assert live['portfolio_a'].delta_max_sol == 2.5 and live['portfolio_b'].delta_max_sol == 3.0
+assert PROFILE_A.require_creator_gate is False and PROFILE_B.require_creator_gate is False
+assert {k: v for k, v in asdict(PROFILE_A).items() if k not in {'name', 'delta_max_sol'}} == {
+    k: v for k, v in asdict(PROFILE_B).items() if k not in {'name', 'delta_max_sol'}
 }
-assert PROFILE_A.require_creator_gate is False and PROFILE_B.require_creator_gate is True
+# The gate survives only as a zero-capital shadow mirrored from A.
+shadow = {name: p for name, p in profiles_from_settings(s).items() if p.is_shadow}
+assert set(shadow) == {'shadow_gate', 'shadow_exit25'}
+for profile in shadow.values():
+    assert profile.capital_rub == 0.0 and profile.mirror_of == 'portfolio_a'
+    assert profile.initial_balance_rub == 1500 and profile.position_size_rub == 500
+assert shadow['shadow_gate'].require_creator_gate is True
+assert shadow['shadow_exit25'].single_exit_pct == 25.0
+assert shadow['shadow_exit25'].require_creator_gate is False
 # Approved exit ladder must stay 1:1 with the spec.
 assert PROFILE_A.tp1_pct == 30.0 and PROFILE_A.rocket_bypass_pct == 50.0
 assert PROFILE_A.profit_retain_ratio == 0.85 and PROFILE_A.stop_loss_pct == 10.0
@@ -163,9 +177,12 @@ assert ok
 ok, reason = PROFILE_A.entry_check(39.88, 40.41)
 assert not ok and reason == 'birth_out_of_band'
 assert entry_shadow_flags(PROFILE_A, 33.0, 36.0) == {
-    'pass_if_cap_1': False, 'pass_if_cap_2.5': False,
+    'pass_if_cap_1': False, 'pass_if_cap_2.5': False, 'pass_if_cap_3': True,
     'pass_if_cap_4': True, 'pass_if_cap_12': True,
 }
+# delta 2.9 is where the two arms actually disagree: A rejects, B admits.
+assert PROFILE_A.entry_check(33.0, 35.9)[0] is False
+assert PROFILE_B.entry_check(33.0, 35.9) == (True, 'live_momentum_entry')
 assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
@@ -175,8 +192,8 @@ assert s.entry_delta_max_sol == 2.5
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
 print('A/B preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
-      'live-momentum entry; approved 4-mode exits; B creator guard only; '
-      'in-memory wallet cache enabled.')
+      'live-momentum entry; approved 4-mode exits; single difference delta_cap '
+      'A=2.5 / B=3.0 (creator gate is a shadow); in-memory wallet cache enabled.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.

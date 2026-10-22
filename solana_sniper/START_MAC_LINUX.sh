@@ -37,12 +37,13 @@ if [[ -z "${HELIUS_API_KEY:-}" ]]; then
     export HELIUS_API_KEY
 fi
 
-# Потолок входа по притоку SOL: 2.5 (см. config.py; 12 подгоняло фильтр под
-# одно наблюдение и пускало Turtle-подобные заходы в SL).
+# Прогон №3: единственное различие плеч — потолок delta. A = 2.5 (как раньше),
+# B = 3.0; гейт креатора вынесен в тень shadow_gate с нулевым капиталом.
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
+export ENTRY_DELTA_MAX_SOL_B="${ENTRY_DELTA_MAX_SOL_B:-3.0}"
 
-# --smoke 150 → короткая проверка; без аргументов → полные 9000 секунд.
+# --smoke 150 → короткая проверка; без аргументов → полные 8 часов.
 exec "$VENV_PY" run_local_session.py \
-    --duration "${DURATION:-9000}" \
+    --duration "${DURATION:-28800}" \
     --open-browser \
     "$@"

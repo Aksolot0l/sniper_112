@@ -242,13 +242,23 @@ async def run(seconds: float) -> int:
             )
             before_a = len(simulator.books['portfolio_a'].positions)
             before_b = len(simulator.books['portfolio_b'].positions)
+            # Live arms first, then the mirrors (they copy A's entries), the
+            # same order _on_candidate uses in production.
             await asyncio.gather(*(
                 simulator._consider_entry(
                     book, coin, snapshot, scenario.birth, v_now, SOL_USD, {},
                     time.time(),
                 )
-                for book in simulator.books.values()
+                for book in simulator.books.values() if not book.profile.mirror_of
             ))
+            await asyncio.gather(*(
+                simulator._consider_entry(
+                    book, coin, snapshot, scenario.birth, v_now, SOL_USD, {},
+                    time.time(),
+                )
+                for book in simulator.books.values() if book.profile.mirror_of
+            ))
+            shadow_names = [name for name in simulator.books if simulator.books[name].profile.is_shadow]
             for name, before in (('portfolio_a', before_a), ('portfolio_b', before_b)):
                 book = simulator.books[name]
                 if len(book.positions) > before:
@@ -256,6 +266,12 @@ async def run(seconds: float) -> int:
                     for pos in book.positions.values():
                         if pos.mint == mint:
                             kept.append((book, pos, scenario, _curve(v_now)))
+            # Shadows are marked and exited too; they are not A/B counters.
+            for name in shadow_names:
+                book = simulator.books[name]
+                for pos in book.positions.values():
+                    if pos.mint == mint:
+                        kept.append((book, pos, scenario, _curve(v_now)))
 
         # --- mark open positions every 0.5 s -------------------------------
         tick += 1
@@ -282,11 +298,15 @@ async def run(seconds: float) -> int:
                     if pos.remaining_cost_rub else 0.0
                 )
                 ABPaperSimulator._update_best_pnl(pos, book.profile, pnl_pct, time.time())
+                # Same instrumentation the live poller applies.
+                pos.mfe_pct = max(pos.mfe_pct, pnl_pct)
+                pos.mae_pct = min(pos.mae_pct, pnl_pct)
                 trigger = ABPaperSimulator._exit_trigger(
                     simulator, book.profile, pos, pnl_pct, time.time(),
                 )
                 if trigger is not None:
                     reason, amount = trigger
+                    pos.exit_trigger_pnl_pct = round(pnl_pct, 6)
                     executable, _ = _executable(curve, fees, min(amount, pos.remaining_tokens_raw))
                     await simulator._apply_sell_fill(
                         book, pos, min(amount, pos.remaining_tokens_raw), reason,
@@ -295,7 +315,8 @@ async def run(seconds: float) -> int:
                     )
                     book.save(run_id)
                     if pos.mint not in book.positions:
-                        counters['closed'] += 1
+                        if not book.profile.is_shadow:
+                            counters['closed'] += 1
                         kept = [row for row in kept if row[1] is not pos]
         await asyncio.sleep(0.1)
 
@@ -313,15 +334,20 @@ async def run(seconds: float) -> int:
             pnl_rub + pos.remaining_cost_rub,
         )
         book.save(run_id)
-        counters['closed'] += 1
+        if not book.profile.is_shadow:
+            counters['closed'] += 1
 
+    # Run #3 artefacts: own mark stream + shadow fills.
+    export_dir = run_dir / 'exports'
+    simulator.write_ticks(export_dir / 'ticks.csv')
+    simulator.write_shadow_fills(export_dir / 'shadow_fills.csv')
     summary = simulator.summary()
     (run_dir / 'ab_summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     (run_dir / 'manifest.json').write_text(json.dumps({
         'run_id': run_id, 'status': 'completed', 'smoke': True, 'paper_only': True,
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
-        'entry': '30.5 <= v_sol_birth <= 34.5 and 0.10 <= delta <= 2.5',
+        'entry': '30.5 <= v_sol_birth <= 34.5 and 0.10 <= delta <= A 2.5 / B 3.0',
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},
     }, ensure_ascii=False, indent=2), encoding='utf-8')
 
@@ -362,7 +388,7 @@ def _bucket_report(db_path: Path) -> list[str]:
     if not db_path.exists():
         return ['  бакеты delta: телеметрия недоступна']
     buckets: dict[str, list[int]] = {}
-    caps = ('pass_if_cap_1', 'pass_if_cap_2.5', 'pass_if_cap_4', 'pass_if_cap_12')
+    caps = ('pass_if_cap_1', 'pass_if_cap_2.5', 'pass_if_cap_3', 'pass_if_cap_4', 'pass_if_cap_12')
     cap_hits = {cap: 0 for cap in caps}
     total = 0
     try:

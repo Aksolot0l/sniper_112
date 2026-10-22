@@ -180,6 +180,54 @@ def _summary_markdown(
         f'{_money(BASELINE_RUN_1["portfolio_a"]["pnl_per_trade_rub"])} | '
         f'{_money(BASELINE_RUN_1["portfolio_b"]["pnl_per_trade_rub"])} |')
     add('')
+    # --- Run #3: distribution over trades, not just a sum ---------------------
+    add('## A / B / тени: распределение по сделкам')
+    add('')
+    add('| портфель | n | ₽/сделку | медиана | sd | CI95 среднего | сумма | '
+        'без топ-2 | без худших-2 | слотов занято | кэш < слота |')
+    add('|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|')
+    stat_names = [k for k in summary if (summary.get(k) or {}).get('stats') is not None]
+    for name in stat_names:
+        book = summary[name]
+        st = book.get('stats') or {}
+        ci = st.get('ci95_mean')
+        ci_text = f'[{ci[0]:.2f}, {ci[1]:.2f}]' if ci else '—'
+        tag = ' (тень)' if book.get('is_shadow') else ''
+        add(f"| {name}{tag} | {st.get('n')} | {_money(st.get('mean'))} | "
+            f"{_money(st.get('median'))} | {_money(st.get('sd'))} | {ci_text} | "
+            f"{_money(st.get('sum'))} | {_money(st.get('sum_without_top2'))} | "
+            f"{_money(st.get('sum_without_worst2'))} | "
+            f"{book.get('slots_full', 0)} | {book.get('cash_below_slot', 0)} |")
+    add('')
+    ab = summary.get('ab_test') or {}
+    diff = (ab.get('difference') or {})
+    add('## Предрегистрированный критерий (прогон №3)')
+    add('')
+    add(f"- решение: {ab.get('decision_rule')}")
+    add(f"- единственное различие плеч: `{ab.get('single_difference')}` "
+        f"A={((ab.get('portfolio_a') or {}).get('delta_max_sol'))} / "
+        f"B={((ab.get('portfolio_b') or {}).get('delta_max_sol'))}")
+    mean_diff = diff.get('mean_diff')
+    ci_diff = diff.get('ci95')
+    if mean_diff is None:
+        add('- вердикт: **нет данных** (нет закрытых сделок в одном из плеч)')
+    else:
+        ci_lo = ci_diff[0] if ci_diff else None
+        beat = mean_diff >= 10.0 and ci_lo is not None and ci_lo > 0
+        add(f"- фактически: mean(B) − mean(A) = {mean_diff:+.2f} ₽/сделку, "
+            f"CI95 {ci_diff}")
+        if beat:
+            add('- вердикт: **B лучше A по критерию** → в прогоне №4 `delta_cap 3.0` '
+                'становится конфигом A.')
+        else:
+            add('- вердикт: **критерий не выполнен** → следующий кандидат '
+                '`delta_min 0.6`, иначе честно фиксируем, что 5-секундный '
+                'скальп мёртв (без заявлений о прибыльности).')
+    add('')
+    add('Исправлено в этом прогоне: (1) одна разница между плечами — `delta_cap`; '
+        'гейт креатора вынесен в тень `shadow_gate`; (2) тайминг наблюдений '
+        '(P0-1) считается от абсолютной цели, а не от старта сборщика.')
+    add('')
     add('## Воронка')
     add('')
     add('```')
@@ -205,7 +253,7 @@ def _summary_markdown(
     add('')
     add(f"Бакеты delta: {funnel.get('delta_buckets')}")
     add('')
-    add('## Гейт B: риск против слепой зоны')
+    add('## Гейт креатора (тень `shadow_gate`): риск против слепой зоны')
     add('')
     add(f"- `gate_status`: {funnel.get('gate_status')}")
     add(f"- причины отказов: {funnel.get('gate_reasons')}")
@@ -220,12 +268,16 @@ def _summary_markdown(
     add('')
     add('## Как читать')
     add('')
-    add('1. `unavailable` — это сбой телеметрии, а не сигнал риска; если его доля '
-        'велика, сравнение A/B смещено.')
+    add('1. `unavailable` — это сбой телеметрии, а не сигнал риска; '
+        '`fail_history` — прочитанная, но короткая история (вердикт, не слепая '
+        'зона). Доля считается от всех гейтов, а не от отказов.')
     add('2. `admitted_by_current_cap` против `pass_if_cap_*` отвечает, режет ли '
         'поток потолок delta, или событий просто было меньше.')
-    add('3. PnL A против B имеет смысл только как проверка здравого смысла на '
-        'n ≈ 10–30; доказанного эджа нет.')
+    add('3. PnL A против B не доказывает эджа: решение принимается только по '
+        'предрегистрированному критерию выше (mean(B) − mean(A) ≥ +10 ₽ и CI95 '
+        'разницы не включает 0).')
+    add('4. Тени не торгуют: `capital_rub = 0`, входы зеркалят A, деньги '
+        'виртуальные.')
     add('')
     return '\n'.join(lines)
 
@@ -238,7 +290,7 @@ def _strategy_metadata() -> dict[str, Any]:
             'run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, '
             'B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics'
         ),
-        'strategy_version': 'entry_v3+guard_v2+delta_cap_2.5+birth_max_34.5',
+        'strategy_version': 'run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0',
         'fix_7': (
             'v_sol_birth_max 50.0 -> 34.5. Measured on run #1: '
             'v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the '
@@ -295,13 +347,34 @@ def _strategy_metadata() -> dict[str, Any]:
         ),
         'entry': (
             '30.5 <= v_sol_birth <= 34.5 and '
-            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5'
+            '0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0'
         ),
         'entry_note': (
-            'delta cap 2.5: 66 archived entry_state x observations give median '
-            '-19.8% drawdown and 10/15 stop-outs for delta >= 2.5 SOL; '
-            'the 12 SOL ceiling fitted the filter to one observation'
+            'run #3 keeps every entry/exit constant and moves exactly one '
+            'number: the delta cap (A 2.5, B 3.0). The creator gate is no '
+            'longer part of any live arm.'
         ),
+        'run3_single_difference': 'delta_max_sol',
+        'run3_decision_rule': (
+            'B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap '
+            'CI of the difference excludes 0 (20 000 resamples)'
+        ),
+        'run3_why': (
+            'at 8 h the resolvable difference is +/-12 RUB per trade at n=200 '
+            'and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth '
+            'about +1.5 RUB/trade, so it is unobservable and stays a shadow; '
+            'the delta band is worth about 29 RUB/trade, so it is the A/B arm. '
+            'Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, '
+            '0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28'
+        ),
+        'profiles': {
+            'portfolio_a': {'delta_cap': 2.5, 'creator_gate': False},
+            'portfolio_b': {'delta_cap': 3.0, 'creator_gate': False},
+            'shadow_gate': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
+                            'delta_cap': 2.5, 'creator_gate': True},
+            'shadow_exit25': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
+                              'delta_cap': 2.5, 'single_exit_pct': 25.0},
+        },
     }
 
 
@@ -349,11 +422,23 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             },
             'portfolio_b': {
                 **common, **strategy_meta,
+                'creator_gate': False,
+                'delta_max_sol': 3.0,
+            },
+            # Virtual books: 0 RUB of capital, entries mirrored from A.
+            'shadow_gate': {
+                **common, **strategy_meta,
+                'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
                 'creator_gate': (
                     'signature_count_0_25 >= 25 AND NOT burst (25+ sigs inside '
                     '1h) AND NOT repeat_deploy (>=2 tokens in 10m) AND '
                     'ata_exists AND token_balance_raw > 0'
                 ),
+            },
+            'shadow_exit25': {
+                **common, **strategy_meta,
+                'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
+                'single_exit_pct': 25.0, 'creator_gate': False,
             },
         },
         'rpc': {
@@ -383,8 +468,12 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             'freeze_authority_revoked': True, 'duplicate_symbol_gate': False,
             'creator_history_policy': 'advisory telemetry/warnings only',
             'portfolio_a_creator_gate': False,
-            'portfolio_b_creator_gate': 'signature_count_0_25 == 25 AND derived ATA exists AND ATA token balance > 0',
-            'creator_probe_failures': 'fail closed for B; do not gate A',
+            'portfolio_b_creator_gate': False,
+            'shadow_gate_creator_gate': (
+                'signature_count_0_25 == 25 AND derived ATA exists AND '
+                'ATA token balance > 0'
+            ),
+            'creator_probe_failures': 'fail closed for shadow_gate; never gate A or B',
         },
         'observations_sec': list(_observation_offsets()),
         'observation_policy': 'scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun',
@@ -399,6 +488,8 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'wallet_state_files': [
             str(run_dir / 'wallet_portfolio_a.json'),
             str(run_dir / 'wallet_portfolio_b.json'),
+            str(run_dir / 'wallet_shadow_gate.json'),
+            str(run_dir / 'wallet_shadow_exit25.json'),
         ],
         'data_files': {
             'sniper_db': str(run_dir / 'sniper.db'),

@@ -8,9 +8,11 @@ only after an on-chain curve read confirms `complete=true`.
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import math
 import os
+import random
 import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -104,9 +106,17 @@ class ABProfile:
     # Safety nets that are not part of the 4-mode ladder but prevent stuck slots.
     timeout_before_trailing_sec: float = 35.0
     timeout_after_trailing_sec: float = 90.0
-    # --- treatment (B only) ---
+    # --- treatment (run #3: B differs from A ONLY by the delta cap) ---
     require_creator_gate: bool = False
     guard_min_signatures: int = 25
+    # --- shadows (run #3): virtual books, 0 RUB of real capital ---
+    is_shadow: bool = False
+    capital_rub: float = 1_500.0
+    # Copy the entries of this arm instead of evaluating the entry rule again.
+    mirror_of: Optional[str] = None
+    # shadow_exit25: sell 100% on the first tick at >= this PnL; TP1/trailing/
+    # shelf/no-progress are disabled, SL and the 35 s timeout stay.
+    single_exit_pct: Optional[float] = None
     initial_balance_rub: float = 1_500.0
     position_size_rub: float = 500.0
     max_slots: int = 3
@@ -137,7 +147,7 @@ DELTA_BUCKETS: tuple[tuple[str, float, float], ...] = (
     ('4-12', 4.0, 12.0),
     ('>12', 12.0, float('inf')),
 )
-SHADOW_DELTA_CAPS: tuple[float, ...] = (1.0, 2.5, 4.0, 12.0)
+SHADOW_DELTA_CAPS: tuple[float, ...] = (1.0, 2.5, 3.0, 4.0, 12.0)
 
 
 def delta_bucket(delta_sol: float) -> str:
@@ -160,9 +170,7 @@ def entry_shadow_flags(
     }
 
 
-# Guard reasons that mean "we could not see the creator", not "the creator is
-# risky". Run #1 showed 8 of 12 A-only mints were dropped by these, not by a
-# risk signal, so the two classes must never be merged in the report.
+# Guard reasons that mean "we could not see the creator" (probe not ok).
 _GUARD_UNAVAILABLE_REASONS = frozenset({
     'creator_history_unavailable',
     'creator_token_ata_missing',
@@ -176,51 +184,86 @@ def gate_status(
     guard_reason: str,
     probe: Optional[dict[str, Any]] = None,
 ) -> str:
-    """Map one guard outcome to ``pass`` / ``fail_risk`` / ``unavailable``.
+    """Map one guard outcome to ``pass`` / ``fail_history`` / ``fail_risk`` /
+    ``unavailable``.
 
-    ``unavailable`` is a blind spot of the telemetry (RPC fail-closed or the
-    curve fee wallet read instead of the deployer); ``fail_risk`` is a real
-    negative signal about a creator we did identify.
+    Run #2 called every ``creator_history_too_short`` row "unavailable", which
+    produced ``unavailable_share = 46.15 %`` and a false "telemetry failure"
+    line in SUMMARY.md. A successfully read page with 1-2 signatures is a
+    *verdict* (``fail_history``), not a blind spot: ``unavailable`` is reserved
+    for ``probe_status != ok`` or a censored probe. The payload still comes
+    from the same read, so no extra RPC is involved.
     """
     if gate_passed:
         return 'pass'
     reason = str(guard_reason or '')
-    if reason in _GUARD_UNAVAILABLE_REASONS:
-        return 'unavailable'
+    data = probe or {}
+    status = str(data.get('status') or 'unknown')
+    censored = bool(data.get('censored'))
+    identity = str(data.get('creator_identity_type') or '')
+    resolved_actor = identity == 'pumpportal_event_actor' and bool(
+        data.get('pumpportal_event_actor')
+    )
     if reason == 'creator_history_too_short':
-        # 25-signature floor hit on the curve fee vault while a real event actor
-        # exists: that is identity uncertainty, not a young-wallet verdict.
-        data = probe or {}
-        if (
-            str(data.get('creator_identity_type') or '') == 'pump_curve_creator'
-            and data.get('pumpportal_event_actor')
-        ):
-            return 'unavailable'
-        return 'fail_risk'
+        if status == 'ok' and not censored:
+            # The page was read: 1-2 signatures is a verdict, not a blind spot.
+            return 'fail_history'
+        if status == 'unknown' and resolved_actor:
+            # Legacy rows without probe_status: a resolved deployer is still a
+            # real verdict, the curve fee vault is not.
+            return 'fail_risk'
+        return 'unavailable'
+    if censored or status != 'ok' or reason in _GUARD_UNAVAILABLE_REASONS:
+        # Unknown status can only happen on legacy rows; keep them fail-closed.
+        if status == 'unknown' and reason not in _GUARD_UNAVAILABLE_REASONS and not censored:
+            return 'fail_risk'
+        return 'unavailable'
     return 'fail_risk'
 
 
-PROFILE_A = ABProfile(name='portfolio_a', require_creator_gate=False)
-PROFILE_B = ABProfile(name='portfolio_b', require_creator_gate=True)
+PROFILE_A = ABProfile(name='portfolio_a', delta_max_sol=2.5)
+PROFILE_B = ABProfile(name='portfolio_b', delta_max_sol=3.0)
+
+# Virtual books: same 1 500 RUB / 500 RUB / 3 slots accounting, 0 RUB of real
+# capital, never fed into ab_summary's live arms.
+SHADOW_GATE = ABProfile(
+    name='shadow_gate', delta_max_sol=2.5, require_creator_gate=True,
+    is_shadow=True, capital_rub=0.0, mirror_of='portfolio_a',
+)
+SHADOW_EXIT25 = ABProfile(
+    name='shadow_exit25', delta_max_sol=2.5, is_shadow=True, capital_rub=0.0,
+    mirror_of='portfolio_a', single_exit_pct=25.0,
+)
+SHADOW_PROFILES = (SHADOW_GATE, SHADOW_EXIT25)
 
 
 def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
-    """Build the two arms from environment-driven settings.
+    """Build both live arms and both shadows from environment-driven settings.
 
-    Only ``require_creator_gate`` and the guard thresholds may differ between
-    the arms; every entry/exit number stays identical so the A/B comparison is
-    single-factor.
+    Run #3 invariant: the arms differ in exactly ONE number, ``delta_max_sol``
+    (A 2.5, B 3.0). Both creator gates are off, so a difference in the result
+    can only be attributed to the cap. The gate lives on as ``shadow_gate``.
     """
     shared = {
         'v_sol_birth_min': float(getattr(settings, 'entry_birth_min_sol', 30.5)),
         'v_sol_birth_max': float(getattr(settings, 'entry_birth_max_sol', 34.5)),
         'delta_min_sol': float(getattr(settings, 'entry_delta_min_sol', 0.10)),
-        'delta_max_sol': float(getattr(settings, 'entry_delta_max_sol', 2.5)),
     }
-    a = replace(PROFILE_A, **shared)
-    b = replace(PROFILE_B, **shared,
-                guard_min_signatures=int(getattr(settings, 'creator_guard_min_sig', 25)))
-    return {a.name: a, b.name: b}
+    guard_min_sig = int(getattr(settings, 'creator_guard_min_sig', 25))
+    a = replace(
+        PROFILE_A, **shared,
+        delta_max_sol=float(getattr(settings, 'entry_delta_max_sol', 2.5)),
+    )
+    b = replace(
+        PROFILE_B, **shared,
+        delta_max_sol=float(getattr(settings, 'entry_delta_max_sol_b', 3.0)),
+    )
+    shadow_gate = replace(SHADOW_GATE, **shared, guard_min_signatures=guard_min_sig)
+    shadow_exit25 = replace(SHADOW_EXIT25, **shared)
+    return {
+        a.name: a, b.name: b,
+        shadow_gate.name: shadow_gate, shadow_exit25.name: shadow_exit25,
+    }
 
 
 @dataclass
@@ -288,6 +331,12 @@ class SimPosition:
     last_poll_error_logged_epoch: float = 0.0
     exit_reasons: list[str] = field(default_factory=list)
     status: str = 'open'
+    # --- run #3 instrumentation (own mark stream, not observations.csv) ---
+    entry_lag_sec: float = 0.0
+    entry_premium_pct: Optional[float] = None
+    mfe_pct: float = 0.0
+    mae_pct: float = 0.0
+    exit_trigger_pnl_pct: Optional[float] = None
 
     @property
     def remaining_fraction(self) -> float:
@@ -328,6 +377,10 @@ class PortfolioBook:
     entry_count: int = 0
     closed_trade_count: int = 0
     poll_errors: int = 0
+    # Run #3: B may see twice as many signals; when slots, not the rule, cap
+    # the sample, the comparison must switch to RUB per trade.
+    slots_full_count: int = 0
+    cash_below_slot_count: int = 0
     positions: dict[str, SimPosition] = field(default_factory=dict)
     closed_mints: set[str] = field(default_factory=set)
     closed_trades: list[dict[str, Any]] = field(default_factory=list)
@@ -399,6 +452,88 @@ class ExecutableQuote:
     error_type: Optional[str] = None
 
 
+BOOTSTRAP_ITERATIONS = 20_000
+BOOTSTRAP_SEED = 20261022
+
+
+def trade_stats(pnls: list[float], *, iterations: int = BOOTSTRAP_ITERATIONS) -> dict[str, Any]:
+    """Distribution stats for one arm, including a bootstrap CI of the mean.
+
+    Run #3 asks for a decision ("B beats A by >= 10 RUB per trade with a CI that
+    excludes 0"), so the report has to carry the uncertainty, not just a sum.
+    """
+    values = [float(value) for value in pnls]
+    n = len(values)
+    if n == 0:
+        return {
+            'n': 0, 'sum': 0.0, 'mean': None, 'median': None, 'sd': None,
+            'ci95_mean': None, 'n_for_significance': None,
+            'sum_without_top2': 0.0, 'sum_without_worst2': 0.0,
+        }
+    total = sum(values)
+    mean = total / n
+    ordered = sorted(values)
+    median = (
+        ordered[n // 2] if n % 2
+        else (ordered[n // 2 - 1] + ordered[n // 2]) / 2.0
+    )
+    sd = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1)) if n > 1 else 0.0
+    ci95 = None
+    if n > 1:
+        rng = random.Random(BOOTSTRAP_SEED)
+        means = []
+        for _ in range(iterations):
+            sample = rng.choices(values, k=n)
+            means.append(sum(sample) / n)
+        means.sort()
+        ci95 = [round(means[int(0.025 * iterations)], 4),
+                round(means[min(iterations - 1, int(0.975 * iterations))], 4)]
+    # Per-arm n needed for 80% power at the observed effect (2.8 = 2*(1.96+0.84)).
+    n_for_sig = None
+    if n > 1 and mean and sd:
+        n_for_sig = int(math.ceil((2.8 * sd / abs(mean)) ** 2))
+    return {
+        'n': n,
+        'sum': round(total, 4),
+        'mean': round(mean, 4),
+        'median': round(median, 4),
+        'sd': round(sd, 4),
+        'ci95_mean': ci95,
+        'n_for_significance': n_for_sig,
+        'sum_without_top2': round(sum(ordered[:max(0, n - 2)]), 4),
+        'sum_without_worst2': round(sum(ordered[2:]) if n > 2 else 0.0, 4),
+    }
+
+
+def mean_difference_ci(
+    a_values: list[float], b_values: list[float],
+    *, iterations: int = BOOTSTRAP_ITERATIONS,
+) -> dict[str, Any]:
+    """Bootstrap CI of mean(B) - mean(A); the run #3 decision statistic."""
+    a = [float(v) for v in a_values]
+    b = [float(v) for v in b_values]
+    if not a or not b:
+        return {'mean_diff': None, 'ci95': None, 'n_a': len(a), 'n_b': len(b)}
+    mean_a = sum(a) / len(a)
+    mean_b = sum(b) / len(b)
+    rng = random.Random(BOOTSTRAP_SEED + 1)
+    diffs = []
+    for _ in range(iterations):
+        sample_a = rng.choices(a, k=len(a))
+        sample_b = rng.choices(b, k=len(b))
+        diffs.append(sum(sample_b) / len(b) - sum(sample_a) / len(a))
+    diffs.sort()
+    return {
+        'mean_a': round(mean_a, 4),
+        'mean_b': round(mean_b, 4),
+        'mean_diff': round(mean_b - mean_a, 4),
+        'ci95': [round(diffs[int(0.025 * iterations)], 4),
+                 round(diffs[min(iterations - 1, int(0.975 * iterations))], 4)],
+        'n_a': len(a),
+        'n_b': len(b),
+    }
+
+
 class ABPaperSimulator:
     def __init__(
         self,
@@ -437,10 +572,12 @@ class ABPaperSimulator:
         self._last_rpc_error_logged = 0.0
         # Creator-gate funnel for the manifest/SUMMARY (B arm only).
         self.gate_status_counts: dict[str, int] = {
-            'pass': 0, 'fail_risk': 0, 'unavailable': 0,
+            'pass': 0, 'fail_history': 0, 'fail_risk': 0, 'unavailable': 0,
         }
         self.gate_reason_counts: dict[str, int] = {}
         self.probe_identity_counts: dict[str, int] = {}
+        # Per-position tick stream (own marks, not observations.csv).
+        self.ticks: list[dict[str, Any]] = []
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -668,13 +805,24 @@ class ABPaperSimulator:
         self.record_entry_state(
             coin, snapshot, birth_v_sol, current_v_sol, decision_epoch,
         )
+        # Live arms decide first (concurrently); mirrors then copy A's entries,
+        # so a shadow can never hold a position that its source arm rejected.
         await asyncio.gather(*(
             self._consider_entry(
                 book, coin, snapshot, birth_v_sol, current_v_sol,
                 sol_usd, filter_metrics, decision_epoch,
             )
-            for book in self.books.values()
+            for book in self.books.values() if book.profile.mirror_of is None
         ))
+        mirrors = [book for book in self.books.values() if book.profile.mirror_of]
+        if mirrors:
+            await asyncio.gather(*(
+                self._consider_entry(
+                    book, coin, snapshot, birth_v_sol, current_v_sol,
+                    sol_usd, filter_metrics, decision_epoch,
+                )
+                for book in mirrors
+            ))
 
     def record_entry_state(
         self,
@@ -694,7 +842,12 @@ class ABPaperSimulator:
         collector = self._collector()
         if collector is None:
             return
-        base_profile = next(iter(self.books.values())).profile
+        # delta_cap_used_sol must be the cap of the arm that admits, not
+        # whatever book happens to be first (shadow books share A's cap).
+        a_book = self.books.get('portfolio_a')
+        base_profile = a_book.profile if a_book is not None else next(
+            book.profile for book in self.books.values() if not book.profile.is_shadow
+        )
         delta_sol = current_v_sol - birth_v_sol
         # Free create-message fields (no RPC): dev's own buy, used later to
         # discriminate rockets from corpses inside the wide delta buckets.
@@ -741,6 +894,10 @@ class ABPaperSimulator:
         self, book: PortfolioBook, coin: NewCoin, reason: str,
         birth_v_sol: Optional[float] = None, current_v_sol: Optional[float] = None,
     ) -> None:
+        if reason == 'three_slots_already_open_or_pending':
+            book.slots_full_count += 1
+        elif reason == 'cash_below_slot_size':
+            book.cash_below_slot_count += 1
         collector = self._collector()
         if collector is not None:
             collector.record_decision(
@@ -775,6 +932,14 @@ class ABPaperSimulator:
             )
         if not qualifies:
             return
+        if profile.mirror_of:
+            source = self.books.get(profile.mirror_of)
+            if source is None or coin.mint not in source.positions:
+                self._record_portfolio_skip(
+                    book, coin, f'mirror_not_open_in_{profile.mirror_of}',
+                    birth_v_sol, current_v_sol,
+                )
+                return
         if profile.require_creator_gate:
             probe = coin.creator_probe_result or {}
             guard_passed = bool(probe.get('creator_guard_passed'))
@@ -789,7 +954,7 @@ class ABPaperSimulator:
             self.probe_identity_counts[identity_key] = self.probe_identity_counts.get(identity_key, 0) + 1
             if collector is not None:
                 collector.record_decision(
-                    coin.mint, coin.source, 'portfolio_b_creator_gate', decision,
+                    coin.mint, coin.source, f'{profile.name}_creator_gate', decision,
                     [] if guard_passed else [guard_reason],
                     {'creator': probe.get('creator'),
                      'creator_identity_type': probe.get('creator_identity_type'),
@@ -902,6 +1067,20 @@ class ABPaperSimulator:
                 actual_cost_rub / fx / (received_tokens / TOKEN_SCALE)
                 if fx > 0 else 0.0
             )
+            # Premium paid over the curve mid at the same snapshot: entry price
+            # is always worse than observations t0, which is half of the
+            # "zero movement becomes -6..-8%" effect. Pure arithmetic, no RPC.
+            try:
+                v_tokens_ui = snapshot.curve.virtual_token_reserves / TOKEN_SCALE
+                mid_price_usd = (
+                    current_v_sol / v_tokens_ui * sol_usd if v_tokens_ui > 0 else 0.0
+                )
+            except (AttributeError, TypeError, ZeroDivisionError):
+                mid_price_usd = 0.0
+            entry_premium_pct = (
+                (entry_price_usd / mid_price_usd - 1.0) * 100.0
+                if mid_price_usd > 0 and entry_price_usd > 0 else None
+            )
             pos = SimPosition(
                 portfolio=profile.name, mint=coin.mint, source=coin.source,
                 curve=coin.curve or '', opened_at_epoch=decision_epoch,
@@ -928,12 +1107,18 @@ class ABPaperSimulator:
                 conservative_remaining_cost_rub=actual_cost_rub,
                 conservative_remaining_entry_fee_rub=entry_fee_rub,
                 best_pnl_updated_at=decision_epoch,
+                entry_lag_sec=round(max(0.0, decision_epoch - coin.found_at), 3),
+                entry_premium_pct=(
+                    round(entry_premium_pct, 4) if entry_premium_pct is not None else None
+                ),
             )
             book.cash_balance_rub -= actual_cost_rub
             book.fees_paid_rub += entry_fee_rub
             book.onchain_fees_paid_rub += onchain_entry_fee_rub
             book.entry_count += 1
             book.positions[coin.mint] = pos
+            # t=0 of this position's own tick stream.
+            self._record_tick(book, pos, 0.0, decision_epoch, entry_price_usd * fx, sol_usd, event='entry')
             book.save(self.run_id)
             values = {
                 'entry_rule': entry_rule,
@@ -985,7 +1170,9 @@ class ABPaperSimulator:
         depleted = all(
             not any(pos.status != 'closed' for pos in book.positions.values())
             and book.cash_balance_rub < book.profile.position_size_rub
-            for book in self.books.values()
+            # Shadows hold virtual money and never deplete; including them
+            # would disable the early stop entirely.
+            for book in self.books.values() if not book.profile.is_shadow
         )
         if depleted:
             self.early_stop_reason = 'both_portfolios_below_slot_size'
@@ -1096,7 +1283,12 @@ class ABPaperSimulator:
                     self._update_best_pnl(pos, book.profile, pnl_pct, mark_at)
                     if unit_price_rub > pos.ath_net_rub_per_token:
                         pos.ath_net_rub_per_token = unit_price_rub
+                    pos.mfe_pct = max(pos.mfe_pct, pnl_pct)
+                    pos.mae_pct = min(pos.mae_pct, pnl_pct)
+                    self._record_tick(book, pos, pnl_pct, mark_at, unit_price_rub, sol_usd)
                     trigger = self._exit_trigger(book.profile, pos, pnl_pct, mark_at)
+                    if trigger is not None:
+                        pos.exit_trigger_pnl_pct = round(pnl_pct, 6)
                     if trigger is None:
                         if pos.exit_pending_reason and not pos.exit_pending_reason.lower().startswith('timeout'):
                             pos.exit_pending_reason = None
@@ -1181,6 +1373,60 @@ class ABPaperSimulator:
             'Pump.fun bonding curve local exact quote',
         )
 
+    def _record_tick(
+        self,
+        book: PortfolioBook,
+        pos: SimPosition,
+        pnl_pct: float,
+        at_epoch: float,
+        unit_price_rub: float,
+        sol_usd: float,
+        event: str = 'mark',
+    ) -> None:
+        """One row of this position's own tick stream (exports/ticks.csv).
+
+        Marks come from the exit quote the bot actually sees, not from the
+        scheduled observations, so MFE/MAE and the trigger price are the ones
+        the ladder really acted on.
+        """
+        fx = max(1e-9, float(self.settings.usd_rub_rate))
+        price_usd = unit_price_rub / (sol_usd * fx) if sol_usd > 0 else None
+        self.ticks.append({
+            'portfolio': book.profile.name,
+            'mint': pos.mint,
+            't_sec': round(max(0.0, at_epoch - pos.opened_at_epoch), 3),
+            'price_usd': round(price_usd, 12) if price_usd else None,
+            'pnl_pct': round(pnl_pct, 4),
+            'event': event,
+        })
+
+    def write_ticks(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('w', encoding='utf-8-sig', newline='') as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=('portfolio', 'mint', 't_sec', 'price_usd', 'pnl_pct', 'event'),
+            )
+            writer.writeheader()
+            writer.writerows(self.ticks)
+
+    def write_shadow_fills(self, path: Path) -> None:
+        """Closed shadow trades only; the live arms stay in telemetry/paper_fills."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fields = (
+            'portfolio', 'mint', 'reason', 'pnl_rub', 'pnl_pct',
+            'entry_lag_sec', 'entry_premium_pct', 'mfe_pct', 'mae_pct',
+            'trigger_pct', 'fill_pct', 'conservative_100bps_pnl_rub',
+        )
+        with path.open('w', encoding='utf-8-sig', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+            writer.writeheader()
+            for book in self.books.values():
+                if not book.profile.is_shadow:
+                    continue
+                for trade in book.closed_trades:
+                    writer.writerow({'portfolio': book.profile.name, **trade})
+
     def _mark_position(
         self, pos: SimPosition, quote: SwapQuote, sol_usd: float,
     ) -> tuple[float, float, float]:
@@ -1234,6 +1480,23 @@ class ABPaperSimulator:
         now = time.time() if now is None else float(now)
         held = max(0.0, now - pos.opened_at_epoch)
         if pos.remaining_tokens_raw <= 0:
+            return None
+
+        # shadow_exit25: 100% on the first tick at or above the threshold.
+        # TP1, trailing, shelf and no-progress are disabled by design; SL and
+        # the 35 s timeout are kept exactly as in the live ladder.
+        if profile.single_exit_pct is not None:
+            if pnl_pct <= -profile.stop_loss_pct:
+                return f'SL (−{profile.stop_loss_pct:.1f}%)', pos.remaining_tokens_raw
+            if pnl_pct >= profile.single_exit_pct:
+                return (
+                    f'Exit{profile.single_exit_pct:.0f} '
+                    f'(+{profile.single_exit_pct:.1f}%; pnl={pnl_pct:+.1f}%)',
+                    pos.remaining_tokens_raw,
+                )
+            timeout = profile.timeout_before_trailing_sec
+            if held >= timeout:
+                return f'Timeout ({timeout:.1f}s)', pos.remaining_tokens_raw
             return None
 
         # Once a TP1 sell quote has failed, retry the same half-size paper fill
@@ -1549,6 +1812,13 @@ class ABPaperSimulator:
             pos.conservative_metrics_complete = False
             pos.conservative_incomplete_reason = shadow_reason or 'shadow_quote_unavailable'
 
+        # Fill tick: realized PnL of the position so far, at the real fill price.
+        realized_pct_now = pos.realized_pnl_rub / max(1e-9, pos.entry_cost_rub) * 100.0
+        fx_for_tick = max(1e-9, float(self.settings.usd_rub_rate))
+        self._record_tick(
+            book, pos, realized_pct_now, time.time(),
+            exit_price_usd * sol_usd * fx_for_tick, sol_usd, event='exit',
+        )
         pos.exit_reasons.append(reason)
         pos.exit_pending_reason = None
         pos.exit_pending_since_epoch = None
@@ -1619,6 +1889,13 @@ class ABPaperSimulator:
                 'average_exit_price_usd': average_exit_usd,
                 'entry_out_amount_raw': pos.entry_out_amount_raw,
                 'entry_min_out_raw': pos.entry_min_out_raw,
+                # Run #3 instrumentation, all from the position's own marks.
+                'entry_lag_sec': pos.entry_lag_sec,
+                'entry_premium_pct': pos.entry_premium_pct,
+                'mfe_pct': round(pos.mfe_pct, 6),
+                'mae_pct': round(pos.mae_pct, 6),
+                'trigger_pct': pos.exit_trigger_pnl_pct,
+                'fill_pct': round(total_pnl_pct, 6),
                 'network_fees_rub': round(pos.realized_fee_rub, 6),
                 'onchain_fees_rub': round(pos.onchain_fees_paid_rub, 6),
             }
@@ -1733,6 +2010,17 @@ class ABPaperSimulator:
         self.ended_at_epoch = time.time()
         for book in self.books.values():
             book.save(self.run_id)
+        # Run #3 artefacts: the per-position mark stream and the shadow books'
+        # fills, both plain files next to ab_summary.json.
+        export_dir = Path(os.getenv('TELEMETRY_EXPORT_DIR', str(self.run_dir / 'exports')))
+        try:
+            self.write_ticks(export_dir / 'ticks.csv')
+        except Exception as exc:  # never let an artefact kill the finalization
+            log(f'⚠️ ticks.csv не записан ({type(exc).__name__})', Color.YELLOW)
+        try:
+            self.write_shadow_fills(export_dir / 'shadow_fills.csv')
+        except Exception as exc:
+            log(f'⚠️ shadow_fills.csv не записан ({type(exc).__name__})', Color.YELLOW)
         summary = self.summary()
         summary_path = self.run_dir / 'ab_summary.json'
         tmp = summary_path.with_suffix('.json.tmp')
@@ -1781,6 +2069,16 @@ class ABPaperSimulator:
                 'closed_trades': book.closed_trades,
                 'max_slots': book.profile.max_slots,
                 'position_size_rub': book.profile.position_size_rub,
+                'is_shadow': book.profile.is_shadow,
+                'mirror_of': book.profile.mirror_of,
+                'single_exit_pct': book.profile.single_exit_pct,
+                'delta_max_sol': book.profile.delta_max_sol,
+                'delta_min_sol': book.profile.delta_min_sol,
+                'require_creator_gate': book.profile.require_creator_gate,
+                # The two counters that tell a rule failure from a capacity cap.
+                'slots_full': book.slots_full_count,
+                'cash_below_slot': book.cash_below_slot_count,
+                'stats': trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades]),
             }
         return {
             'run_id': self.run_id,
@@ -1791,11 +2089,38 @@ class ABPaperSimulator:
             'signed_transactions': 0,
             'submitted_transactions': 0,
             'portfolio_scope': ['portfolio_a', 'portfolio_b'],
+            'shadow_scope': [name for name, book in self.books.items()
+                             if book.profile.is_shadow],
             'early_stop_reason': self.early_stop_reason,
+            'profiles': {name: {
+                'delta_max_sol': book.profile.delta_max_sol,
+                'delta_min_sol': book.profile.delta_min_sol,
+                'require_creator_gate': book.profile.require_creator_gate,
+                'is_shadow': book.profile.is_shadow,
+                'mirror_of': book.profile.mirror_of,
+                'single_exit_pct': book.profile.single_exit_pct,
+                'capital_rub': book.profile.capital_rub,
+            } for name, book in self.books.items()},
             'fee_model': 'official @pump-fun/pump-sdk 4.1.0 exact integer curve quote; out_amount_raw is the snapshot fill; min_out_raw is the 100 bps conservative shadow; on-chain Global + FeeConfig + per-curve creator_fee_bps; fail-closed when unsupported',
             'jupiter_policy': 'GET ExactIn fallback only after on-chain complete=true; no active-curve entry/exit Jupiter quotes',
             'portfolio_a': portfolios['portfolio_a'],
             'portfolio_b': portfolios['portfolio_b'],
+            # Shadows: same entries as A, virtual capital, never traded.
+            **{name: book for name, book in portfolios.items()
+               if name not in ('portfolio_a', 'portfolio_b')},
+            'ab_test': {
+                'single_difference': 'delta_max_sol',
+                'portfolio_a': {'delta_max_sol': 2.5, 'require_creator_gate': False},
+                'portfolio_b': {'delta_max_sol': 3.0, 'require_creator_gate': False},
+                'decision_rule': (
+                    'B beats A iff mean(B) - mean(A) >= +10 RUB '
+                    'and the 95% CI of the difference excludes 0'
+                ),
+                'difference': mean_difference_ci(
+                    [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_a']['closed_trades']],
+                    [t.get('pnl_rub', 0.0) for t in portfolios['portfolio_b']['closed_trades']],
+                ),
+            },
             # B-arm gate funnel: a blind spot must never be counted as a risk
             # signal (run #1: 8 of 12 A-only mints were telemetry failures).
             'creator_gate': {

@@ -18,6 +18,8 @@ from portfolio_ab import (
     PROFILE_A,
     PROFILE_B,
     PortfolioBook,
+    SHADOW_GATE,
+    SHADOW_EXIT25,
     SimPosition,
     delta_bucket,
     entry_shadow_flags,
@@ -107,10 +109,11 @@ def make_settings():
     )
 
 
-def make_simulator(root: str | Path, *, trades_queue=None):
+def make_simulator(root: str | Path, *, trades_queue=None, profiles=None):
     return ABPaperSimulator(
         object(), make_settings(), 'run-test', root,
         trades_queue or asyncio.Queue(), creator_watch=object(), creator_probe=object(),
+        profiles=profiles,
     )
 
 
@@ -133,15 +136,16 @@ class ABProfileTests(unittest.TestCase):
             # PERFORMA was born at 39.88 — inside the old 50 SOL band, outside
             # the 34.5 one: the new ceiling is a dev-buy filter, not a delta one.
             self.assertEqual(profile.entry_check(39.88, 40.41)[1], 'birth_out_of_band')
-            # delta cap is 2.5: the "big rocket" deltas are now late chases.
-            self.assertEqual(profile.delta_max_sol, 2.5)
+            # Run #3: the arms differ ONLY in the delta cap (A 2.5, B 3.0).
+            self.assertEqual(profile.delta_max_sol, 2.5 if profile is PROFILE_A else 3.0)
             for birth, now in ((33.95, 45.51), (33.16, 38.59)):   # Turtle, Shigure
                 ok, reason = profile.entry_check(birth, now)
                 self.assertFalse(ok)
                 self.assertEqual(reason, 'momentum_too_late')
-            # Boundary of the cap itself.
-            self.assertTrue(profile.entry_check(32.0, 34.5)[0])
-            self.assertFalse(profile.entry_check(32.0, 34.5001)[0])
+            # Boundary of each arm's own cap.
+            cap = profile.delta_max_sol
+            self.assertTrue(profile.entry_check(32.0, 32.0 + cap)[0])
+            self.assertFalse(profile.entry_check(32.0, 32.0 + cap + 0.0001)[0])
             # Birth band still guards supply-shape outliers.
             self.assertFalse(profile.entry_check(30.49, 31.3)[0])
             self.assertFalse(profile.entry_check(35.01, 35.5)[0])
@@ -150,7 +154,7 @@ class ABProfileTests(unittest.TestCase):
         for profile in (PROFILE_A, PROFILE_B):
             self.assertEqual(profile.v_sol_birth_max, 34.5)
             self.assertEqual(profile.delta_min_sol, 0.10)
-            self.assertEqual(profile.delta_max_sol, 2.5)
+            self.assertEqual(profile.delta_max_sol, 2.5 if profile is PROFILE_A else 3.0)
             # Inclusive upper bound: 34.5 is admitted, 34.51 is not.
             self.assertEqual(profile.entry_check(34.49, 34.8), (True, 'live_momentum_entry'))
             self.assertEqual(profile.entry_check(34.5, 34.8), (True, 'live_momentum_entry'))
@@ -162,8 +166,11 @@ class ABProfileTests(unittest.TestCase):
             # Both bounds of the delta window are unchanged by fix #7.
             self.assertEqual(profile.entry_check(33.0, 33.09)[1], 'no_live_momentum')
             self.assertEqual(profile.entry_check(33.0, 33.10), (True, 'live_momentum_entry'))
-            self.assertEqual(profile.entry_check(33.0, 35.5), (True, 'live_momentum_entry'))
-            self.assertEqual(profile.entry_check(33.0, 35.51)[1], 'momentum_too_late')
+            cap = profile.delta_max_sol
+            self.assertEqual(profile.entry_check(33.0, 33.0 + cap), (True, 'live_momentum_entry'))
+            self.assertEqual(
+                profile.entry_check(33.0, 33.0 + cap + 0.01)[1], 'momentum_too_late',
+            )
 
     def test_gate_status_separates_blind_spot_from_risk(self) -> None:
         from portfolio_ab import gate_status
@@ -173,6 +180,24 @@ class ABProfileTests(unittest.TestCase):
         for reason in ('creator_history_unavailable', 'creator_token_ata_missing',
                        'creator_guard_unavailable', 'creator_guard_censored'):
             self.assertEqual(gate_status(False, reason, {}), 'unavailable', reason)
+        # Run #3 P0-2: a successfully read page with < 25 signatures is a
+        # verdict (fail_history), not a blind spot.
+        self.assertEqual(
+            gate_status(False, 'creator_history_too_short',
+                        {'status': 'ok', 'signature_count': 2}),
+            'fail_history',
+        )
+        # A failed/censored read of the same reason stays unavailable.
+        self.assertEqual(
+            gate_status(False, 'creator_history_too_short',
+                        {'status': 'error', 'signature_count': None}),
+            'unavailable',
+        )
+        self.assertEqual(
+            gate_status(False, 'creator_history_too_short',
+                        {'status': 'ok', 'signature_count': 2, 'censored': True}),
+            'unavailable',
+        )
         # 25-signature floor hit on the curve fee vault while a real actor
         # exists = identity uncertainty (run #1: 4 of 12 A-only mints).
         self.assertEqual(
@@ -206,10 +231,12 @@ class ABProfileTests(unittest.TestCase):
 
         flags = entry_shadow_flags(PROFILE_A, 33.0, 33.0 + 3.0)
         self.assertEqual(
-            sorted(flags), ['pass_if_cap_1', 'pass_if_cap_12', 'pass_if_cap_2.5', 'pass_if_cap_4'],
+            sorted(flags),
+            ['pass_if_cap_1', 'pass_if_cap_12', 'pass_if_cap_2.5', 'pass_if_cap_3', 'pass_if_cap_4'],
         )
         self.assertFalse(flags['pass_if_cap_1'])
         self.assertFalse(flags['pass_if_cap_2.5'])
+        self.assertTrue(flags['pass_if_cap_3'])    # delta = 3.0, cap is inclusive
         self.assertTrue(flags['pass_if_cap_4'])
         self.assertTrue(flags['pass_if_cap_12'])
 
@@ -265,20 +292,42 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(profiles['portfolio_a'].v_sol_birth_max, 44.0)
         self.assertEqual(profiles['portfolio_a'].delta_min_sol, 0.5)
         self.assertEqual(profiles['portfolio_a'].delta_max_sol, 6.0)
-        self.assertEqual(profiles['portfolio_b'].guard_min_signatures, 30)
+        # The cap override applies to A only; B keeps the fixed +0.5 gap that
+        # makes it the single-difference arm, unless its own knob is set.
+        self.assertEqual(profiles['portfolio_b'].delta_max_sol, 3.0)
         self.assertFalse(profiles['portfolio_a'].require_creator_gate)
-        self.assertTrue(profiles['portfolio_b'].require_creator_gate)
+        self.assertFalse(profiles['portfolio_b'].require_creator_gate)
+        # The gate now lives on the shadow only.
+        self.assertTrue(profiles['shadow_gate'].require_creator_gate)
+        self.assertEqual(profiles['shadow_gate'].guard_min_signatures, 30)
+        self.assertEqual(profiles['shadow_gate'].capital_rub, 0.0)
+        self.assertEqual(profiles['shadow_gate'].mirror_of, 'portfolio_a')
+        self.assertEqual(profiles['shadow_exit25'].single_exit_pct, 25.0)
+        for shadow in (profiles['shadow_gate'], profiles['shadow_exit25']):
+            self.assertTrue(shadow.is_shadow)
+            self.assertEqual(shadow.initial_balance_rub, 1500.0)
+        # B's own cap knob exists but shares everything else with A.
+        b_settings = SimpleNamespace(**{**vars(base), 'entry_delta_max_sol_b': 4.0})
+        self.assertEqual(
+            profiles_from_settings(b_settings)['portfolio_b'].delta_max_sol, 4.0,
+        )
 
-    def test_profiles_differ_only_in_name_and_b_creator_gate(self) -> None:
+    def test_arms_differ_only_in_delta_cap(self) -> None:
         a, b = asdict(PROFILE_A), asdict(PROFILE_B)
-        self.assertFalse(a.pop('require_creator_gate'))
-        self.assertTrue(b.pop('require_creator_gate'))
+        self.assertEqual(a.pop('delta_max_sol'), 2.5)
+        self.assertEqual(b.pop('delta_max_sol'), 3.0)
         a.pop('name')
         b.pop('name')
+        # One difference, nothing else: no gate flag, no guard threshold.
         self.assertEqual(a, b)
+        self.assertFalse(PROFILE_A.require_creator_gate)
+        self.assertFalse(PROFILE_B.require_creator_gate)
         self.assertEqual((PROFILE_A.initial_balance_rub, PROFILE_B.initial_balance_rub), (1500, 1500))
         self.assertEqual((PROFILE_A.position_size_rub, PROFILE_B.position_size_rub), (500, 500))
         self.assertEqual((PROFILE_A.max_slots, PROFILE_B.max_slots), (3, 3))
+        # Exits stay identical between the live arms.
+        self.assertIsNone(PROFILE_A.single_exit_pct)
+        self.assertIsNone(PROFILE_B.single_exit_pct)
 
     def test_books_use_isolated_wallet_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -292,9 +341,114 @@ class ABProfileTests(unittest.TestCase):
             self.assertEqual(json.loads(b.state_path.read_text())['portfolio'], 'portfolio_b')
 
 
+class RunThreeShadowTests(unittest.IsolatedAsyncioTestCase):
+    """Run #3 invariants: one live difference, shadows are isolated."""
+
+    async def _open(self, simulator, mint, delta, decision_epoch):
+        coin = NewCoin(
+            mint=mint, source='Pump.fun', signature=f'sig-{mint}',
+            curve='curve-test', packet={'v_sol': 32.0},
+        )
+        coin.creator_probe_result = {
+            'signature_count': 25, 'ata_exists': True, 'token_balance_raw': '1',
+            'creator_guard_passed': True, 'creator_guard_reason': 'creator_guard_met',
+            'censored': False, 'status': 'ok',
+        }
+        snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+        with patch('portfolio_ab.get_collector', return_value=None):
+            for name in ('portfolio_a', 'portfolio_b'):
+                await simulator._consider_entry(
+                    simulator.books[name], coin, snapshot,
+                    32.0, 32.0 + delta, 200.0, {}, decision_epoch,
+                )
+            # Mirrors are evaluated after the live arms, exactly as in
+            # _on_candidate.
+            for name, book in simulator.books.items():
+                if book.profile.mirror_of:
+                    await simulator._consider_entry(
+                        book, coin, snapshot,
+                        32.0, 32.0 + delta, 200.0, {}, decision_epoch,
+                    )
+        return coin
+
+    async def test_per_profile_delta_cap_splits_the_2_5_to_3_band(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(tmp)
+            await self._open(simulator, 'mint-cap-split', 2.9, time.time())
+            self.assertNotIn('mint-cap-split', simulator.books['portfolio_a'].positions)
+            self.assertIn('mint-cap-split', simulator.books['portfolio_b'].positions)
+            # Inside A's own cap both arms trade the same coin.
+            await self._open(simulator, 'mint-cap-inside', 2.4, time.time())
+            self.assertIn('mint-cap-inside', simulator.books['portfolio_a'].positions)
+            self.assertIn('mint-cap-inside', simulator.books['portfolio_b'].positions)
+
+    async def test_shadow_exit25_sells_everything_on_the_first_tick_at_25(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        pos = SimpleNamespace(remaining_tokens_raw=1_000, opened_at_epoch=100.0)
+        now = 103.0
+        # Exactly at the threshold: 100% out on this very tick.
+        trigger = simulator._exit_trigger(SHADOW_EXIT25, pos, 25.0, now)
+        self.assertIsNotNone(trigger)
+        self.assertTrue(trigger[0].startswith('Exit25'))
+        self.assertEqual(trigger[1], 1_000)
+        # Just below: hold.
+        self.assertIsNone(simulator._exit_trigger(SHADOW_EXIT25, pos, 24.9, now))
+        # Overshooting the threshold still exits 100%, never a half TP1.
+        trigger = simulator._exit_trigger(SHADOW_EXIT25, pos, 80.0, now)
+        self.assertEqual(trigger[1], 1_000)
+        self.assertNotIn('TP1', trigger[0])
+        # SL and the 35 s timeout stay exactly as in the live ladder.
+        self.assertTrue(simulator._exit_trigger(SHADOW_EXIT25, pos, -10.0, now)[0].startswith('SL'))
+        self.assertIsNone(simulator._exit_trigger(SHADOW_EXIT25, pos, 3.0, 134.0, ))
+        self.assertTrue(
+            simulator._exit_trigger(SHADOW_EXIT25, pos, 3.0, 135.1)[0].startswith('Timeout')
+        )
+        # The live arms keep the unchanged 4-mode ladder.
+        live = SimpleNamespace(
+            remaining_tokens_raw=1_000, opened_at_epoch=100.0, tp1_done=False,
+            tp1_rocket_bypass=False, tp1_partial_pending=False, tp1_pending_sell_raw=0,
+            best_pnl_pct=0.0, best_pnl_updated_at=100.0, no_progress_checked=False,
+        )
+        self.assertTrue(
+            simulator._exit_trigger(PROFILE_A, live, 30.0, 101.0)[0].startswith('TP1')
+        )
+
+    async def test_disabling_shadows_does_not_change_the_live_arms(self) -> None:
+        epoch = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmp:
+            full = make_simulator(
+                Path(tmp) / 'with-shadows',
+                profiles={
+                    'portfolio_a': PROFILE_A, 'portfolio_b': PROFILE_B,
+                    'shadow_gate': SHADOW_GATE, 'shadow_exit25': SHADOW_EXIT25,
+                },
+            )
+            live_only = make_simulator(
+                Path(tmp) / 'without-shadows',
+                profiles={'portfolio_a': PROFILE_A, 'portfolio_b': PROFILE_B},
+            )
+            for mint in ('mint-iso-1', 'mint-iso-2'):
+                await self._open(full, mint, 0.4, epoch + 1.0)
+                await self._open(live_only, mint, 0.4, epoch + 1.0)
+            for name in ('portfolio_a', 'portfolio_b'):
+                a, b = full.books[name], live_only.books[name]
+                self.assertEqual(round(a.cash_balance_rub, 6), round(b.cash_balance_rub, 6))
+                self.assertEqual(sorted(a.positions), sorted(b.positions))
+                self.assertEqual(a.entry_count, b.entry_count)
+                self.assertEqual(a.closed_trades, b.closed_trades)
+            # The shadows really did mirror A, with zero real capital.
+            for name in ('shadow_gate', 'shadow_exit25'):
+                self.assertEqual(sorted(full.books[name].positions),
+                                 sorted(full.books['portfolio_a'].positions))
+                self.assertEqual(full.books[name].profile.capital_rub, 0.0)
+
+
 class ABEntryGateAndAccountingTests(unittest.IsolatedAsyncioTestCase):
     async def _consider_both(self, root, creator_probe_result):
-        simulator = make_simulator(root)
+        # Run #3: the gate is a shadow now, so "both" = portfolio_a + shadow_gate.
+        simulator = make_simulator(
+            root, profiles={'portfolio_a': PROFILE_A, 'shadow_gate': SHADOW_GATE},
+        )
         coin = NewCoin(
             mint='mint-entry-test', source='Pump.fun', signature='sig-test',
             curve='curve-test', packet={'v_sol': 32.0},
@@ -303,16 +457,16 @@ class ABEntryGateAndAccountingTests(unittest.IsolatedAsyncioTestCase):
         snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
         decision_epoch = time.time()
         with patch('portfolio_ab.get_collector', return_value=None):
-            await asyncio.gather(*(
-                simulator._consider_entry(
+            # A first: the shadow mirrors an existing A position, so the two
+            # calls must be sequential (the mirror checks A's book).
+            for name in ('portfolio_a', 'shadow_gate'):
+                await simulator._consider_entry(
                     simulator.books[name], coin, snapshot,
                     32.0, 32.4, 200.0, {}, decision_epoch,
                 )
-                for name in ('portfolio_a', 'portfolio_b')
-            ))
         return simulator, coin
 
-    async def test_a_does_not_gate_b_requires_all_three_creator_conditions(self) -> None:
+    async def test_gate_lives_in_shadow_so_b_is_never_filtered_by_creator(self) -> None:
         cases = (
             ({'signature_count': 24, 'ata_exists': True, 'token_balance_raw': '1',
               'creator_guard_passed': False, 'creator_guard_reason': 'creator_history_too_short',
@@ -341,9 +495,23 @@ class ABEntryGateAndAccountingTests(unittest.IsolatedAsyncioTestCase):
                 simulator, _coin = await self._consider_both(Path(tmp) / f'case-{index}', probe)
                 self.assertIn('mint-entry-test', simulator.books['portfolio_a'].positions)
                 self.assertEqual(
-                    'mint-entry-test' in simulator.books['portfolio_b'].positions,
+                    'mint-entry-test' in simulator.books['shadow_gate'].positions,
                     b_should_open,
                 )
+                # The live B arm never looks at the creator: one difference only.
+                self.assertFalse(PROFILE_B.require_creator_gate)
+
+    async def test_b_enters_the_same_coin_a_does_even_for_bad_creator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # A rug-farm creator that the shadow gate rejects: B still trades.
+            simulator, coin = await self._consider_both(
+                Path(tmp),
+                {'signature_count': 25, 'ata_exists': True, 'token_balance_raw': '1',
+                 'creator_guard_passed': False, 'creator_guard_reason': 'creator_burst_activity',
+                 'creator_burst_activity': True, 'censored': False},
+            )
+            self.assertIn('mint-entry-test', simulator.books['portfolio_a'].positions)
+            self.assertNotIn('mint-entry-test', simulator.books['shadow_gate'].positions)
 
     async def test_one_snapshot_timestamp_and_out_amount_entry_fill_with_min_out_shadow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

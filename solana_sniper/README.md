@@ -66,7 +66,23 @@ Exits — approved 4-mode ladder, 1:1 (unchanged this run; next experiment): SL 
 TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`; rocket bypass at +50%
 keeps 100%. Timeouts 35 s / 90 s remain as slot-safety nets.
 
-Treatment (B only) — creator guard v2: identity resolved to
+**Run #3 arms.** The live arms differ in exactly one number, `delta_max_sol`:
+`portfolio_a = 2.5`, `portfolio_b = 3.0`; both have the creator gate switched
+off. Everything else (birth band 30.5–34.5, `delta_min 0.10`, the 4-mode exit
+ladder, 3 × 500 ₽, 1500 ₽) is identical. The creator guard (below) now lives on
+a zero-capital shadow `shadow_gate` that mirrors A's entries, and a second
+shadow `shadow_exit25` mirrors the same entries but sells 100 % at the first
+tick with `pnl_pct >= +25 %` (TP1, trailing, shelf and no-progress disabled; SL
+and the 35 s timeout kept). Shadows never touch real capital and are reported
+separately in `ab_summary.json`, `exports/shadow_fills.csv` and `SUMMARY.md`.
+
+The pre-registered decision rule for run #3 is: B beats A iff
+`mean(B) − mean(A) >= +10 ₽` per trade **and** the 95 % bootstrap CI of the
+difference excludes 0 (20 000 resamples). Otherwise the next candidate is
+`delta_min 0.6`, and if that fails too the honest conclusion is that the 5-second
+scalp is dead — not that it "became profitable".
+
+Creator guard v2 (now `shadow_gate` only): identity resolved to
 `pumpportal_event_actor` when the curve creator is an empty fee wallet,
 `creator_burst_activity` rejects 25+ signatures inside one hour,
 `creator_repeat_deploy_in_session` rejects a wallet already launching 2+ other

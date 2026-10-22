@@ -151,6 +151,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
 
 
+def _observation_target_monotonic(
+    target_epoch: float, offset: float, now_epoch: float, now_monotonic: float,
+) -> float:
+    """Absolute monotonic deadline for one scheduled observation (P0-1).
+
+    The deadline is anchored to *now*, never to the moment the collector task
+    was spawned: anchoring to the spawn time added the collector's own startup
+    latency to every offset, which is exactly the 5.06 / 50.06 s drift run #2
+    showed. Pure arithmetic, so it is unit-testable without sleeping.
+    """
+    return float(now_monotonic) + max(0.0, float(target_epoch) + float(offset) - float(now_epoch))
+
+
 def _utc_from_epoch(value: float) -> str:
     try:
         return datetime.fromtimestamp(float(value), timezone.utc).isoformat(timespec='milliseconds')
@@ -238,6 +251,27 @@ def _summarize_error_detail(details: Any) -> Optional[str]:
     if not parts:
         return None
     return _redact_text('; '.join(parts))[:MAX_ERROR_DETAIL_CHARS]
+
+
+def _fallback_error_detail(
+    status: str, error_type: Optional[str], values: dict[str, Any],
+) -> str:
+    """Never write a failed probe without a detail line (P0-3, run #3).
+
+    Run #2 left 21 of 75 failed probes with ``error_detail = NULL`` — precisely
+    the rows that would explain a 429 or a timeout. The fallback is built from
+    data already in the row, so it costs no RPC and can never be empty.
+    """
+    for key in ('errors', 'error_detail', 'error', 'message', 'error_message'):
+        summary = _summarize_error_detail(values.get(key))
+        if summary:
+            return summary
+    for key in ('http_status', 'code', 'rpc_error_code'):
+        if values.get(key) is not None:
+            return _redact_text(f'{key}={values[key]} status={status}')[:MAX_ERROR_DETAIL_CHARS]
+    return _redact_text(
+        f'error_type={error_type or "unknown"} status={status}'
+    )[:MAX_ERROR_DETAIL_CHARS]
 
 
 def _float_or_none(value: Any) -> Optional[float]:
@@ -475,6 +509,9 @@ class CandidateCollector:
                 error_detail if error_detail is not None
                 else values.get('error_detail')
             )
+        if not error_detail and str(status) != 'ok':
+            # A failed probe without a detail is a blind spot by construction.
+            error_detail = _fallback_error_detail(str(status), error_type, values)
         self._put('creator_probe', (
             event_id, candidate_id_for(mint), mint, source,
             program_creator, tx_payer, status, requested_at, observed_at_utc,
@@ -540,9 +577,13 @@ class CandidateCollector:
         target_at_utc: str, status: str, price_usd: Optional[float] = None,
         price_source: Optional[str] = None, latency_ms: Optional[float] = None,
         error_type: Optional[str] = None,
+        observed_at_utc: Optional[str] = None,
     ) -> None:
         event_id = uuid.uuid4().hex
-        observed_at = utc_now()
+        # `observed_at` must be the sampling instant, not the writer's: the
+        # collector stamps it when the scheduled wait ends (RPC latency is
+        # already reported separately in latency_ms).
+        observed_at = observed_at_utc or utc_now()
         self._put('observation', (
             event_id, candidate_id_for(mint), mint, source,
             int(target_offset_sec), target_at_utc, observed_at, status,
@@ -694,11 +735,18 @@ class CandidateCollector:
     ) -> None:
         try:
             for offset in self.observation_offsets_sec:
-                target_mono = started_monotonic + max(0.0, target_epoch + offset - time.time())
+                # Absolute target in the monotonic clock. The old form added
+                # the remaining wall-clock delay to the moment the collector
+                # started, so offsets drifted by the collector's own latency
+                # (run #2: 5.06 / 50.06 / 70.00 s observed instead of 5/50/70).
+                target_mono = _observation_target_monotonic(
+                    target_epoch, offset, time.time(), time.monotonic(),
+                )
                 wait = target_mono - time.monotonic()
                 if wait > 0:
                     await asyncio.sleep(wait)
                 target_utc = _utc_from_epoch(target_epoch + offset)
+                observed_utc = _utc_from_epoch(time.time())
                 started = time.monotonic()
                 try:
                     async with self._observation_sem:
@@ -718,6 +766,7 @@ class CandidateCollector:
                         'ok' if price and price > 0 else 'no_price', price,
                         origin or None, (time.monotonic() - started) * 1000,
                         None if price and price > 0 else 'price_unavailable',
+                        observed_at_utc=observed_utc,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -726,6 +775,7 @@ class CandidateCollector:
                         coin.mint, coin.source, offset, target_utc, 'error',
                         latency_ms=(time.monotonic() - started) * 1000,
                         error_type=type(exc).__name__,
+                        observed_at_utc=observed_utc,
                     )
                 completed.add(offset)
         except asyncio.CancelledError:
@@ -904,28 +954,35 @@ _GATE_UNAVAILABLE_REASONS = frozenset({
 
 
 def gate_status_from_values(values: dict[str, Any]) -> str:
-    """Gate class of one ``portfolio_b_creator_gate`` row.
+    """Gate class of one creator-gate row, recomputed from its raw evidence.
 
-    New runs store ``gate_status`` explicitly. Databases from earlier builds do
-    not, and reading only ``guard_reason`` there put ``creator_guard_met`` into
-    "reasons for rejection" (17 false rejects when replaying run #1). The rule
-    mirrors ``portfolio_ab.gate_status``; a blind spot is never a risk verdict.
+    The class is derived, never taken from a stored ``gate_status``: run #2
+    wrote every ``creator_history_too_short`` row as ``unavailable`` (46.15 %
+    of all gates) even though the probe had succeeded — a 1-2 signature page is
+    a verdict (``fail_history``), not a blind spot.
+
+    The rule mirrors ``portfolio_ab.gate_status``; the two are covered by a
+    cross-check test so replay and live telemetry cannot drift apart.
     """
-    status = str(values.get('gate_status') or '').strip()
-    if status:
-        return status
     reason = str(values.get('guard_reason') or '').strip()
     if values.get('creator_guard_passed') or reason in _GATE_PASS_REASONS:
         return 'pass'
-    if reason in _GATE_UNAVAILABLE_REASONS:
-        return 'unavailable'
+    status = str(values.get('status') or values.get('probe_status') or 'unknown').strip()
+    censored = bool(values.get('censored'))
+    identity = str(values.get('creator_identity_type') or '')
+    resolved_actor = identity == 'pumpportal_event_actor' and bool(
+        values.get('pumpportal_event_actor')
+    )
     if reason == 'creator_history_too_short':
-        if (
-            str(values.get('creator_identity_type') or '') == 'pump_curve_creator'
-            and values.get('pumpportal_event_actor')
-        ):
-            return 'unavailable'
-        return 'fail_risk'
+        if status == 'ok' and not censored:
+            return 'fail_history'
+        if status == 'unknown' and resolved_actor:
+            return 'fail_risk'
+        return 'unavailable'
+    if censored or status != 'ok' or reason in _GATE_UNAVAILABLE_REASONS:
+        if status == 'unknown' and reason not in _GATE_UNAVAILABLE_REASONS and not censored:
+            return 'fail_risk'
+        return 'unavailable'
     return 'fail_risk'
 
 
@@ -1052,7 +1109,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
         gate_reason: dict[str, int] = {}
         identity: dict[str, int] = {}
         for (values_json,) in rows_of(
-            "SELECT values_json FROM decisions WHERE stage='portfolio_b_creator_gate'"
+            "SELECT values_json FROM decisions WHERE stage LIKE '%_creator_gate'"
         ):
             try:
                 values = json.loads(values_json or '{}')
@@ -1078,7 +1135,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                      WHERE b.mint = a.mint AND b.stage = 'portfolio_b_entry'
                        AND b.decision = 'opened') AS b_opened,
                    (SELECT values_json FROM decisions g
-                     WHERE g.mint = a.mint AND g.stage = 'portfolio_b_creator_gate'
+                     WHERE g.mint = a.mint AND g.stage LIKE '%_creator_gate'
                      LIMIT 1) AS gate_values
             FROM decisions a
             WHERE a.stage = 'portfolio_a_entry' AND a.decision = 'opened'
@@ -1113,5 +1170,46 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
                 'pnl_leg_sum_rub': slot['pnl_leg_sum_rub'],
             }
             for klass, slot in sorted(a_only.items())
+        }
+
+        # P0-1 acceptance: |observed_at - target_at| <= 250 ms per offset for
+        # >= 99% of rows. Anything worse means the schedule, not the market,
+        # is being measured.
+        timing: dict[str, Any] = {}
+        for offset, total, within in rows_of(
+            """
+            SELECT target_offset_sec, COUNT(*),
+                   SUM(CASE WHEN ABS(
+                       (julianday(observed_at_utc) - julianday(target_at_utc)) * 86400.0
+                   ) <= 0.25 THEN 1 ELSE 0 END)
+            FROM observations GROUP BY target_offset_sec ORDER BY target_offset_sec
+            """
+        ):
+            timing[str(int(offset))] = {
+                'rows': int(total or 0),
+                'within_250ms': int(within or 0),
+                'share': round(int(within or 0) / max(1, int(total or 0)), 4),
+            }
+        report['observation_timing'] = timing
+
+        # P0-3 acceptance: error_detail must be present on every failed probe.
+        probe_total, probe_failed, probe_with_detail = (
+            rows_of(
+                """
+                SELECT COUNT(*),
+                       SUM(CASE WHEN status != 'ok' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN status != 'ok' AND error_detail IS NOT NULL
+                                AND error_detail != '' THEN 1 ELSE 0 END)
+                FROM creator_probes
+                """
+            )[0]
+            if scalar('SELECT COUNT(*) FROM creator_probes')
+            else (0, 0, 0)
+        )
+        report['error_detail_coverage'] = {
+            'probes': int(probe_total or 0),
+            'failed': int(probe_failed or 0),
+            'with_detail': int(probe_with_detail or 0),
+            'share': round(int(probe_with_detail or 0) / max(1, int(probe_failed or 0)), 4),
         }
     return report

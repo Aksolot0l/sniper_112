@@ -4,14 +4,20 @@ import asyncio
 import os
 import sqlite3
 import tempfile
+import time
 import uuid
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from models import NewCoin, SwapQuote
-from telemetry import CandidateCollector
+from telemetry import (
+    CandidateCollector,
+    _observation_target_monotonic,
+    _utc_from_epoch as telemetry_utc_from_epoch,
+)
 
 
 class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
@@ -232,8 +238,96 @@ class CandidateTelemetryTests(unittest.IsolatedAsyncioTestCase):
                     'SELECT mint,error_detail FROM creator_probes'
                 ).fetchall())
         self.assertEqual(got['MintStr'], 'rpc_http_500 body')
-        self.assertIsNone(got['MintNone'])
+        # P0-3 (run #3): a failed probe can no longer be written without a
+        # detail line — run #2 left 21 of 75 failures NULL, i.e. unexplained.
+        self.assertIsNotNone(got['MintNone'])
+        self.assertIn('status=unavailable', got['MintNone'])
         self.assertEqual(collector.stats()['write_errors'], 0)
+
+    async def test_failed_probe_without_detail_derives_one_from_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = CandidateCollector(
+                str(root / 'telemetry.sqlite'), str(root / 'exports'),
+                observation_offsets_sec=(),
+            )
+            await collector.start()
+            collector.record_creator_probe(
+                mint='MintErrors', source='Pump.fun', program_creator=None, tx_payer=None,
+                status='error',
+                values={'status': 'error', 'errors': [
+                    {'label': 'getSignaturesForAddress', 'method': 'getSignaturesForAddress',
+                     'http_status': 429, 'message': 'Too Many Requests'},
+                ]},
+                signature_count=None, oldest_block_time=None, ata_exists=None,
+                token_balance_raw=None, token_balance_ui=None, latency_ms=83.0,
+                observed_at_utc='2023-11-14T22:13:20Z',
+                error_type='RuntimeError',
+            )
+            # A working probe keeps its detail empty: coverage only applies to
+            # failures.
+            collector.record_creator_probe(
+                mint='MintOk', source='Pump.fun', program_creator=None, tx_payer=None,
+                status='ok', values={'status': 'ok'}, signature_count=40,
+                oldest_block_time=None, ata_exists=True, token_balance_raw='1',
+                token_balance_ui=1.0, latency_ms=120.0,
+                observed_at_utc='2023-11-14T22:13:20Z',
+            )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                got = dict(db.execute(
+                    'SELECT mint,error_detail FROM creator_probes'
+                ).fetchall())
+        self.assertIsNotNone(got['MintErrors'])
+        self.assertIn('429', got['MintErrors'])
+        self.assertIn('getSignaturesForAddress', got['MintErrors'])
+        self.assertIsNone(got['MintOk'])
+
+    async def test_observations_are_stamped_at_the_scheduled_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = CandidateCollector(
+                str(root / 'telemetry.sqlite'), str(root / 'exports'),
+                observation_offsets_sec=(0, 5),
+            )
+            await collector.start()
+            now = time.time()
+            collector.record_observation(
+                'MintObs', 'Pump.fun', 5,
+                telemetry_utc_from_epoch(now + 5), 'ok', 1e-6,
+                'on_chain_pump_curve', 180.0, None,
+                observed_at_utc=telemetry_utc_from_epoch(now + 5 + 0.12),
+            )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                target, observed = db.execute(
+                    'SELECT target_at_utc, observed_at_utc FROM observations'
+                ).fetchone()
+        delta = abs(
+            datetime.fromisoformat(observed.replace('Z', '+00:00'))
+            - datetime.fromisoformat(target.replace('Z', '+00:00'))
+        ).total_seconds()
+        self.assertLessEqual(delta, 0.25)
+
+    def test_observation_deadlines_use_absolute_target_not_task_start(self) -> None:
+        """P0-1: six offsets must not inherit the collector's startup delay."""
+        found_at = 1_700_000_000.0
+        # The collector task starts 0.4 s after the shared candidate timestamp
+        # and this call happens 3.5 s later still (queue + semaphore wait).
+        now_epoch = found_at + 3.9
+        now_monotonic = 1_000.0
+        started_monotonic = now_monotonic - 3.5
+        for offset in (0, 5, 10, 15, 60, 120):
+            target = _observation_target_monotonic(
+                found_at, offset, now_epoch, now_monotonic,
+            )
+            remaining = found_at + offset - now_epoch
+            # Absolute: now + remaining, i.e. exactly on the schedule.
+            self.assertAlmostEqual(target - now_monotonic, max(0.0, remaining), places=9)
+            # The old form (spawn time + remaining) fired 3.5 s EARLY for every
+            # future offset — the drift that made run #2 rows unusable.
+            old_form = started_monotonic + max(0.0, remaining)
+            self.assertAlmostEqual(target - old_form, 3.5, places=9)
 
     async def test_legacy_candidates_table_gets_dev_buy_columns_added(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

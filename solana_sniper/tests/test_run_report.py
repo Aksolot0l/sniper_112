@@ -168,6 +168,67 @@ class FunnelReportTests(unittest.TestCase):
         self.assertEqual(funnel['a_only']['unavailable']['mints'], 1)
         self.assertEqual(funnel['a_only']['unavailable']['pnl_leg_sum_rub'], -41.5)
 
+    def test_summary_renders_shadow_table_and_preregistered_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / 'telemetry.sqlite'
+            _build_db(db_path)
+            funnel = funnel_from_db(db_path)
+        manifest = {'run_id': 'run-3', 'build': 'x', 'entry': 'e',
+                    'actual_duration_sec': 28800, 'planned_duration_sec': 28800,
+                    'paper_only': True, 'signed_transactions': 0}
+        summary = {
+            'portfolio_a': {'entry_count': 12, 'realized_pnl_rub': -240.0,
+                            'stats': {'n': 12, 'mean': -20.0, 'median': -21.0,
+                                      'sd': 40.0, 'ci95_mean': [-42.0, 2.0],
+                                      'sum': -240.0, 'sum_without_top2': -300.0,
+                                      'sum_without_worst2': -100.0}},
+            'portfolio_b': {'entry_count': 15, 'realized_pnl_rub': -150.0,
+                            'stats': {'n': 15, 'mean': -10.0, 'median': -11.0,
+                                      'sd': 38.0, 'ci95_mean': [-30.0, 10.0],
+                                      'sum': -150.0, 'sum_without_top2': -210.0,
+                                      'sum_without_worst2': -20.0}},
+            'shadow_exit25': {'is_shadow': True, 'entry_count': 12,
+                              'stats': {'n': 12, 'mean': -18.0, 'median': -19.0,
+                                        'sd': 30.0, 'ci95_mean': [-35.0, -2.0],
+                                        'sum': -216.0, 'sum_without_top2': -270.0,
+                                        'sum_without_worst2': -90.0}},
+            'ab_test': {
+                'single_difference': 'delta_max_sol',
+                'decision_rule': 'B beats A iff ...',
+                'portfolio_a': {'delta_max_sol': 2.5},
+                'portfolio_b': {'delta_max_sol': 3.0},
+                'difference': {'mean_a': -20.0, 'mean_b': -10.0,
+                               'mean_diff': 10.0, 'ci95': [1.0, 19.0],
+                               'n_a': 12, 'n_b': 15},
+            },
+        }
+        text = _summary_markdown(manifest, funnel, summary)
+        self.assertIn('shadow_exit25 (тень)', text)
+        self.assertIn('CI95 среднего', text)
+        self.assertIn('Предрегистрированный критерий', text)
+        self.assertIn('B лучше A по критерию', text)
+        # The shadow row must not leak into the A/B comparison columns.
+        self.assertIn('| portfolio_a | 12 |', text)
+
+    def test_summary_reports_failure_of_the_criterion_without_spin(self) -> None:
+        manifest = {'run_id': 'run-4', 'paper_only': True, 'signed_transactions': 0}
+        summary = {
+            'portfolio_a': {'stats': {'n': 10, 'mean': -20.0, 'median': -20.0,
+                                      'sd': 30.0, 'ci95_mean': [-40.0, 0.0],
+                                      'sum': -200.0}},
+            'portfolio_b': {'stats': {'n': 10, 'mean': -18.0, 'median': -18.0,
+                                      'sd': 30.0, 'ci95_mean': [-38.0, 2.0],
+                                      'sum': -180.0}},
+            'ab_test': {'single_difference': 'delta_max_sol',
+                        'portfolio_a': {'delta_max_sol': 2.5},
+                        'portfolio_b': {'delta_max_sol': 3.0},
+                        'difference': {'mean_diff': 2.0, 'ci95': [-9.0, 13.0]}},
+        }
+        text = _summary_markdown(manifest, {}, summary)
+        self.assertIn('критерий не выполнен', text)
+        self.assertIn('5-секундный', text)
+        self.assertNotIn('стало прибыльно', text.lower())
+
     def test_missing_db_is_reported_not_raised(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             funnel = funnel_from_db(Path(tmp) / 'nope.sqlite')
@@ -332,8 +393,16 @@ class FunnelReportTests(unittest.TestCase):
         )
         with patch.dict(os.environ, {'RUN_DURATION_SEC': '1800'}, clear=True):
             manifest = _safe_manifest(settings, 'run-2', Path('/tmp/run-2'))
+        # Run #3: the band is per arm, one difference only.
         self.assertEqual(manifest['entry'], '30.5 <= v_sol_birth <= 34.5 and '
-                                           '0.10 <= (v_sol_now - v_sol_birth) <= 2.5')
+                                           '0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0')
+        self.assertEqual(manifest['profiles']['portfolio_a'],
+                         {'delta_cap': 2.5, 'creator_gate': False})
+        self.assertEqual(manifest['profiles']['portfolio_b'],
+                         {'delta_cap': 3.0, 'creator_gate': False})
+        self.assertEqual(manifest['run3_single_difference'], 'delta_max_sol')
+        self.assertFalse(manifest['strategies']['portfolio_b']['creator_gate'])
+        self.assertTrue(manifest['strategies']['shadow_gate']['creator_gate'])
         self.assertIn('does NOT create profit', manifest['fix_7'])
         self.assertIn('fix #8', manifest['open_question_cap'])
         common = manifest['strategies']['portfolio_a']

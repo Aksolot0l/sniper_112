@@ -80,10 +80,14 @@ def telemetry_funnel(path: Path) -> dict:
                 out['stages'].setdefault(str(stage), {})[str(decision)] = int(count)
             for stage, reasons in db.execute(
                 "SELECT stage, reasons_json FROM decisions WHERE stage IN "
-                "('portfolio_a_signal','portfolio_b_signal','portfolio_b_creator_gate')"
+                "('portfolio_a_signal','portfolio_b_signal') "
+                "OR stage LIKE '%_creator_gate'"
             ):
                 bucket = None
-                if stage == 'portfolio_b_creator_gate':
+                stage = str(stage)
+                # Run #3 moved the creator gate into the shadow_gate book, so
+                # the stage name is dynamic ('shadow_gate_creator_gate').
+                if stage.endswith('_creator_gate'):
                     bucket = out['guard_reasons']
                 elif stage == 'portfolio_a_signal':
                     bucket = out['entry_reasons']['portfolio_a']
