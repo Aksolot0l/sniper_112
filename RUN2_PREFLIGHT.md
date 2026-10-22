@@ -26,7 +26,7 @@
 |---|---|---|---|
 | `v_sol_birth_max` | `manifest.json` → `strategies.portfolio_a` | `34.5` | конфиг не подхватился (env override) |
 | `birth_reject` | `manifest.json` → `funnel.chain` | ~140 вместо 102 | тот же override |
-| `admits` / `opened` A | там же | ~33 / 22–26 | >30 входов = фильтр не работает |
+| `admits` / `opened` A | там же | ~24 / 21–24 | >26 входов = фильтр не работает |
 | `dev_buy_presence` | `funnel` | `bought` ≈ 35–40% | `unknown` = 100% → сломан парсер `solAmount` |
 | `gate_status.unavailable` | `funnel` / `creator_gate` | ~27% (8–12 монет) | >35% = RPC деградировал |
 | `error_detail` | `exports/creator_probes.csv` | впервые покажет причину (429 / bad request / RPC code) | — |
