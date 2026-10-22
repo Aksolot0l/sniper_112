@@ -186,7 +186,10 @@ def _summary_markdown(
     add('| портфель | n | ₽/сделку | медиана | sd | CI95 среднего | сумма | '
         'без топ-2 | без худших-2 | слотов занято | кэш < слота |')
     add('|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|')
-    stat_names = [k for k in summary if (summary.get(k) or {}).get('stats') is not None]
+    stat_names = [
+        k for k, book in summary.items()
+        if isinstance(book, dict) and book.get('stats') is not None
+    ]
     for name in stat_names:
         book = summary[name]
         st = book.get('stats') or {}

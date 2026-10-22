@@ -210,6 +210,19 @@ class FunnelReportTests(unittest.TestCase):
         # The shadow row must not leak into the A/B comparison columns.
         self.assertIn('| portfolio_a | 12 |', text)
 
+    def test_summary_tolerates_scalar_top_level_summary_keys(self) -> None:
+        # A real ab_summary.json mixes books with scalars (run_id, duration,
+        # fee_model); iterating it blindly crashed the run's last artefact.
+        summary = {
+            'run_id': 'run-5', 'duration_sec': 28800.0, 'fee_model': 'x',
+            'portfolio_a': {'stats': {'n': 1, 'mean': -1.0, 'median': -1.0,
+                                      'sd': 0.0, 'ci95_mean': None, 'sum': -1.0}},
+            'portfolio_b': {'stats': {'n': 0}},
+        }
+        text = _summary_markdown({'run_id': 'run-5'}, {}, summary)
+        self.assertIn('| portfolio_a | 1 |', text)
+        self.assertIn('| portfolio_b | 0 |', text)
+
     def test_summary_reports_failure_of_the_criterion_without_spin(self) -> None:
         manifest = {'run_id': 'run-4', 'paper_only': True, 'signed_transactions': 0}
         summary = {
