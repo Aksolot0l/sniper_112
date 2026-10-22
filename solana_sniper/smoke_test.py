@@ -374,6 +374,15 @@ async def run(seconds: float) -> int:
     funnel = snapshot_view.get('funnel', {})
     print('  A вход:', funnel.get('entry_reasons', {}).get('portfolio_a'))
     print('  B guard:', funnel.get('guard_reasons'))
+    # Bank addendum: top-ups and the moment a real 1500 RUB bank would die.
+    for name, book in summary.items():
+        if not isinstance(book, dict) or 'top_ups' not in book:
+            continue
+        bust = book.get('bust_at_trade')
+        print(f"  банк {name}: пополнений={book['top_ups']}, "
+              f"влито={book.get('capital_injected_rub')} ₽, "
+              f"equity без пополнений={book.get('equity_no_topups')} ₽, "
+              f"умер бы={'нет' if bust is None else '№' + str(bust)}")
     for line in _bucket_report(run_dir / 'telemetry.sqlite'):
         print(line)
     print(f'  run_dir: {run_dir}')

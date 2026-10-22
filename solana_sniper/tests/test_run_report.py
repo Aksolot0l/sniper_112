@@ -210,6 +210,49 @@ class FunnelReportTests(unittest.TestCase):
         # The shadow row must not leak into the A/B comparison columns.
         self.assertIn('| portfolio_a | 12 |', text)
 
+    def test_summary_renders_bank_top_ups_and_bust(self) -> None:
+        summary = {
+            'portfolio_a': {'stats': {'n': 5, 'mean': -20.0, 'median': -20.0,
+                                      'sd': 1.0, 'ci95_mean': None, 'sum': -100.0},
+                            'top_ups': 2, 'capital_injected_rub': 1_400.0,
+                            'pnl_with_topups': -1_260.0, 'equity_no_topups': 240.0,
+                            'bust_at_trade': 7,
+                            'bust_at_utc': '2026-10-22T10:00:00Z'},
+            'portfolio_b': {'stats': {'n': 4, 'mean': -10.0, 'median': -10.0,
+                                      'sd': 1.0, 'ci95_mean': None, 'sum': -40.0},
+                            'top_ups': 0, 'capital_injected_rub': 0.0,
+                            'pnl_with_topups': -40.0, 'equity_no_topups': 1_460.0,
+                            'bust_at_trade': None, 'bust_at_utc': None},
+            'ab_test': {'single_difference': 'delta_max_sol',
+                        'portfolio_a': {'delta_max_sol': 2.5},
+                        'portfolio_b': {'delta_max_sol': 3.0},
+                        'difference': {'mean_diff': 10.0, 'ci95': [1.0, 19.0]}},
+        }
+        text = _summary_markdown({'run_id': 'run-6'}, {}, summary)
+        self.assertIn('## Банк 1 500 ₽', text)
+        self.assertIn('| portfolio_a | 2 | 1400.00 | -1260.00 | 240.00 | №7 | '
+                      '2026-10-22T10:00:00Z |', text)
+        self.assertIn('не умирал', text)
+        self.assertIn('Пополнение — только бухгалтерия', text)
+
+    def test_summary_shows_early_stop_reason(self) -> None:
+        text = _summary_markdown(
+            {'run_id': 'run-7',
+             'early_stop_reason': 'rpc_error_rate (failed=40/2000 = 2.00%)'},
+            {}, {},
+        )
+        self.assertIn('досрочная остановка', text)
+        self.assertIn('rpc_error_rate', text)
+
+    def test_duration_is_a_parameter_not_a_constant(self) -> None:
+        from run_local_session import build_parser
+
+        parser = build_parser()
+        self.assertEqual(parser.parse_args(['--duration-sec', '10800']).duration, 10_800)
+        self.assertEqual(parser.parse_args(['--duration', '10800']).duration, 10_800)
+        # The 8 h default is a default, not a hard-coded run length.
+        self.assertEqual(parser.parse_args([]).duration, 28_800)
+
     def test_summary_tolerates_scalar_top_level_summary_keys(self) -> None:
         # A real ab_summary.json mixes books with scalars (run_id, duration,
         # fee_model); iterating it blindly crashed the run's last artefact.

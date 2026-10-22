@@ -13,11 +13,14 @@ import json
 import math
 import os
 import random
+import shutil
 import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from telemetry import CandidateCollector, get_collector, utc_now
 
 import aiohttp
 
@@ -120,6 +123,10 @@ class ABProfile:
     initial_balance_rub: float = 1_500.0
     position_size_rub: float = 500.0
     max_slots: int = 3
+    # Run #3 addendum: when the cash can no longer fund one 500 RUB slot, the
+    # book is topped back up to `initial_balance_rub` and the trade proceeds.
+    # Accounting only: no entry/exit decision reads the injected capital.
+    auto_top_up: bool = True
 
     def entry_check(
         self,
@@ -381,10 +388,78 @@ class PortfolioBook:
     # the sample, the comparison must switch to RUB per trade.
     slots_full_count: int = 0
     cash_below_slot_count: int = 0
+    # --- run #3 addendum: bank accounting (never touches decisions) ---
+    top_ups: int = 0
+    capital_injected_rub: float = 0.0
+    top_up_events: list[dict[str, Any]] = field(default_factory=list)
+    # First moment the REAL 1500 RUB bank could no longer fund a slot, i.e.
+    # initial_balance_rub + realized PnL < position_size_rub.
+    bust_at_trade: Optional[int] = None
+    bust_at_utc: Optional[str] = None
+    bust_equity_rub: Optional[float] = None
     positions: dict[str, SimPosition] = field(default_factory=dict)
     closed_mints: set[str] = field(default_factory=set)
     closed_trades: list[dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    # --- run #3 addendum: bank accounting --------------------------------
+    def equity_no_topups(self) -> float:
+        """What the untouched 1500 RUB bank would hold in cash right now.
+
+        Realized PnL only: open positions are not marked here, because the
+        question is "could the bank still fund the next 500 RUB slot".
+        """
+        return float(self.profile.initial_balance_rub) + float(self.realized_pnl_rub)
+
+    def note_bust(self, at_epoch: Optional[float] = None) -> bool:
+        """Record the first moment the real bank could not fund a slot."""
+        if self.bust_at_trade is not None:
+            return False
+        equity = self.equity_no_topups()
+        if equity >= self.profile.position_size_rub:
+            return False
+        self.bust_at_trade = int(self.closed_trade_count)
+        self.bust_at_utc = _utc_from_epoch(
+            time.time() if at_epoch is None else float(at_epoch)
+        )
+        self.bust_equity_rub = round(equity, 6)
+        return True
+
+    def maybe_top_up(self, at_epoch: Optional[float] = None) -> Optional[dict[str, Any]]:
+        """Top the book back up to 1500 RUB when cash < one slot.
+
+        Returns the event dict (also appended to `top_up_events`) or None when
+        no top-up is needed. Only the cash floor changes; a trade that fits the
+        unchanged 500 RUB slot size is never resized.
+        """
+        if not self.profile.auto_top_up:
+            return None
+        if self.cash_balance_rub >= self.profile.position_size_rub:
+            return None
+        cash_before = float(self.cash_balance_rub)
+        target = float(self.profile.initial_balance_rub)
+        amount = target - cash_before
+        if amount <= 0:
+            return None
+        self.cash_balance_rub = target
+        self.top_ups += 1
+        self.capital_injected_rub += amount
+        event = {
+            'profile': self.profile.name,
+            'amount_rub': round(amount, 6),
+            'cash_before': round(cash_before, 6),
+            'cash_after': round(self.cash_balance_rub, 6),
+            'cumulative_injected_rub': round(self.capital_injected_rub, 6),
+            # Transparency: cash can be below one slot simply because capital
+            # is deployed, not because the bank is dying.
+            'equity_no_topups_at_event': round(self.equity_no_topups(), 6),
+            'at_utc': _utc_from_epoch(
+                time.time() if at_epoch is None else float(at_epoch)
+            ),
+            'at_trade_no': int(self.closed_trade_count),
+        }
+        self.top_up_events.append(event)
+        return event
 
     def save(self, run_id: str) -> None:
         data = {
@@ -418,6 +493,14 @@ class PortfolioBook:
             'entry_count': self.entry_count,
             'closed_trade_count': self.closed_trade_count,
             'poll_errors': self.poll_errors,
+            'top_ups': self.top_ups,
+            'capital_injected_rub': round(self.capital_injected_rub, 8),
+            'pnl_with_topups': round(self.realized_pnl_rub, 8),
+            'equity_no_topups': round(self.equity_no_topups(), 8),
+            'bust_at_trade': self.bust_at_trade,
+            'bust_at_utc': self.bust_at_utc,
+            'bust_equity_rub': self.bust_equity_rub,
+            'top_up_events': self.top_up_events,
             'max_slots': self.profile.max_slots,
             'position_size_rub': self.profile.position_size_rub,
             'open_positions': [p.to_dict() for p in self.positions.values() if p.status == 'open'],
@@ -450,6 +533,25 @@ class ExecutableQuote:
     fee_tier_index: Optional[int]
     route: str
     error_type: Optional[str] = None
+
+
+# --- run #3 addendum: early-stop policy thresholds (checked every cycle) ---
+STOP_RPC_ERROR_RATE = 0.01          # > 1 % failed requests over the window
+STOP_RPC_WINDOW_SEC = 600.0         # ... last 10 minutes
+STOP_RPC_MIN_REQUESTS = 20          # never judge a rate on 3 calls
+STOP_RPC_LATENCY_MS = 1_000.0       # p95 above this ...
+STOP_RPC_LATENCY_HOLD_SEC = 300.0   # ... for five minutes straight
+STOP_RPC_LATENCY_WINDOW_SEC = 330.0
+STOP_STALL_SEC = 1_800.0            # 30 minutes without a single entry
+STOP_DISK_FREE_BYTES = 2 * 1024 ** 3
+STOP_HELIUS_QUOTA_PCT = 10.0
+
+
+def _utc_from_epoch(value: float) -> str:
+    """ISO-8601 Z timestamp from an epoch, without pulling in telemetry internals."""
+    return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(
+        timespec='milliseconds',
+    ).replace('+00:00', 'Z')
 
 
 BOOTSTRAP_ITERATIONS = 20_000
@@ -578,6 +680,19 @@ class ABPaperSimulator:
         self.probe_identity_counts: dict[str, int] = {}
         # Per-position tick stream (own marks, not observations.csv).
         self.ticks: list[dict[str, Any]] = []
+        # --- run #3 addendum: early-stop bookkeeping (no new RPC) ---
+        self._entry_state_total = 0
+        self._book_last_entry_epoch: dict[str, float] = {
+            name: self.started_at_epoch for name in self.books
+        }
+        self._entry_state_at_last_entry: dict[str, int] = {
+            name: 0 for name in self.books
+        }
+        self._rpc_samples: list[tuple[float, int, int, Optional[float]]] = []
+        self._rpc_latency_high_since: Optional[float] = None
+        self.stop_policy_state: dict[str, Any] = {
+            'reason': None, 'telemetry': {}, 'rpc': {}, 'stall': {}, 'resources': {},
+        }
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -840,6 +955,9 @@ class ABPaperSimulator:
         offline smoke test so its funnel matches production semantics.
         """
         collector = self._collector()
+        # Counted even without a collector: the stall check compares candidates
+        # seen against entries opened, and it must not depend on telemetry.
+        self._entry_state_total += 1
         if collector is None:
             return
         # delta_cap_used_sol must be the cap of the arm that admits, not
@@ -906,6 +1024,25 @@ class ABPaperSimulator:
                  'cash_balance_rub': round(book.cash_balance_rub, 4),
                  'open_positions': len(book.positions), 'max_slots': book.profile.max_slots},
             )
+
+    def _record_top_up(
+        self, book: PortfolioBook, coin: NewCoin, event: dict[str, Any],
+    ) -> None:
+        """One row per injection: the bank metric must be auditable per trade."""
+        collector = self._collector()
+        if collector is not None:
+            collector.record_decision(
+                coin.mint, coin.source, f'{book.profile.name}_top_up', 'applied',
+                ['cash_below_slot_size'],
+                {**event, 'paper_only': True,
+                 'capital_is_virtual': book.profile.capital_rub == 0.0},
+            )
+        log(
+            f'🏦 [{book.profile.name}] TOP-UP +{event["amount_rub"]:.2f} ₽ '
+            f'(cash {event["cash_before"]:.2f} -> {event["cash_after"]:.2f}; '
+            f'injected total {event["cumulative_injected_rub"]:.2f} ₽)',
+            Color.CYAN,
+        )
 
     async def _consider_entry(
         self,
@@ -997,8 +1134,16 @@ class ABPaperSimulator:
                 self._record_portfolio_skip(book, coin, 'three_slots_already_open_or_pending', birth_v_sol, current_v_sol)
                 return
             if book.cash_balance_rub < profile.position_size_rub:
-                self._record_portfolio_skip(book, coin, 'cash_below_slot_size', birth_v_sol, current_v_sol)
-                return
+                # Run #3 addendum: the bank is topped back up instead of the
+                # trade being skipped. Decisions above this line are untouched.
+                book.note_bust(decision_epoch)
+                top_up = book.maybe_top_up(decision_epoch)
+                if top_up is None:
+                    self._record_portfolio_skip(
+                        book, coin, 'cash_below_slot_size', birth_v_sol, current_v_sol,
+                    )
+                    return
+                self._record_top_up(book, coin, top_up)
             fx = max(0.0, float(self.settings.usd_rub_rate))
             sol_rub = sol_usd * fx
             if sol_rub <= 0:
@@ -1117,6 +1262,8 @@ class ABPaperSimulator:
             book.onchain_fees_paid_rub += onchain_entry_fee_rub
             book.entry_count += 1
             book.positions[coin.mint] = pos
+            self._book_last_entry_epoch[book.profile.name] = decision_epoch
+            self._entry_state_at_last_entry[book.profile.name] = self._entry_state_total
             # t=0 of this position's own tick stream.
             self._record_tick(book, pos, 0.0, decision_epoch, entry_price_usd * fx, sol_usd, event='entry')
             book.save(self.run_id)
@@ -1164,15 +1311,205 @@ class ABPaperSimulator:
                 Color.CYAN,
             )
 
+    # --- run #3 addendum: stop-list --------------------------------------
+    def _helius_quota_remaining_pct(self) -> Optional[float]:
+        """Remaining Helius quota, when the operator publishes it.
+
+        There is no read-only RPC that reports credits, so the value comes from
+        `HELIUS_QUOTA_REMAINING_PCT` or `<RUN_DIR>/helius_quota.json`
+        (`{"remaining_pct": 42.0}`). Without either, the check is reported as
+        unavailable instead of silently passing.
+        """
+        raw = os.getenv('HELIUS_QUOTA_REMAINING_PCT', '').strip()
+        if raw:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and math.isfinite(value):
+                return max(0.0, min(100.0, value))
+        path = self.run_dir / 'helius_quota.json'
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+            value = float(payload.get('remaining_pct'))
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        return max(0.0, min(100.0, value)) if math.isfinite(value) else None
+
+    def _rpc_error_rate_reason(self, now: float) -> Optional[str]:
+        """> 1 % failed RPC requests over the last 10 minutes."""
+        self._rpc_samples = [
+            sample for sample in self._rpc_samples
+            if now - sample[0] <= STOP_RPC_WINDOW_SEC
+        ]
+        if len(self._rpc_samples) < 2:
+            return None
+        first, last = self._rpc_samples[0], self._rpc_samples[-1]
+        delta_requests = last[1] - first[1]
+        delta_failed = last[2] - first[2]
+        if delta_requests < STOP_RPC_MIN_REQUESTS:
+            return None
+        rate = delta_failed / delta_requests
+        self.stop_policy_state['rpc'].update({
+            'window_requests': delta_requests, 'window_failed': delta_failed,
+            'error_rate': round(rate, 6),
+        })
+        if rate > STOP_RPC_ERROR_RATE:
+            return (
+                f'rpc_error_rate (failed={delta_failed}/{delta_requests} '
+                f'= {rate:.2%} over {int(STOP_RPC_WINDOW_SEC)}s > '
+                f'{STOP_RPC_ERROR_RATE:.0%})'
+            )
+        return None
+
+    def _rpc_latency_reason(
+        self, now: float, p95: Optional[float],
+    ) -> Optional[str]:
+        """p95 > 1000 ms for five minutes straight."""
+        if p95 is None or p95 <= STOP_RPC_LATENCY_MS:
+            self._rpc_latency_high_since = None
+            return None
+        if self._rpc_latency_high_since is None:
+            self._rpc_latency_high_since = now
+        held = now - self._rpc_latency_high_since
+        self.stop_policy_state['rpc'].update({
+            'latency_p95_ms': round(float(p95), 2),
+            'latency_high_for_sec': round(held, 1),
+        })
+        if held >= STOP_RPC_LATENCY_HOLD_SEC:
+            return (
+                f'rpc_latency_p95 (p95={float(p95):.0f}ms > '
+                f'{STOP_RPC_LATENCY_MS:.0f}ms for {held:.0f}s >= '
+                f'{STOP_RPC_LATENCY_HOLD_SEC:.0f}s)'
+            )
+        return None
+
+    def _stall_reason(self, now: float) -> Optional[str]:
+        """A live arm opened nothing for 30 min while candidates keep coming."""
+        for name, book in self.books.items():
+            if book.profile.is_shadow:
+                continue
+            last = self._book_last_entry_epoch.get(name, self.started_at_epoch)
+            quiet = now - last
+            new_states = self._entry_state_total - self._entry_state_at_last_entry.get(name, 0)
+            self.stop_policy_state['stall'][name] = {
+                'sec_without_entry': round(quiet, 1),
+                'entry_state_since_last_entry': new_states,
+            }
+            if quiet >= STOP_STALL_SEC and new_states > 0:
+                return (
+                    f'portfolio_stalled ({name}: 0 entries for {quiet:.0f}s >= '
+                    f'{STOP_STALL_SEC:.0f}s while entry_state grew by {new_states})'
+                )
+        return None
+
+    def _resource_reason(
+        self, disk_free_bytes: Optional[int], quota_pct: Optional[float],
+    ) -> Optional[str]:
+        self.stop_policy_state['resources'] = {
+            'disk_free_bytes': disk_free_bytes,
+            'disk_free_gb': (
+                round(disk_free_bytes / 1024 ** 3, 3)
+                if disk_free_bytes is not None else None
+            ),
+            'helius_quota_remaining_pct': quota_pct,
+        }
+        if disk_free_bytes is not None and disk_free_bytes < STOP_DISK_FREE_BYTES:
+            return (
+                f'disk_low (free={disk_free_bytes / 1024 ** 3:.2f}GB < '
+                f'{STOP_DISK_FREE_BYTES / 1024 ** 3:.0f}GB)'
+            )
+        if quota_pct is not None and quota_pct < STOP_HELIUS_QUOTA_PCT:
+            return (
+                f'helius_quota_low (remaining={quota_pct:.1f}% < '
+                f'{STOP_HELIUS_QUOTA_PCT:.0f}%)'
+            )
+        return None
+
+    def _evaluate_stop_reason(
+        self,
+        *,
+        now: Optional[float] = None,
+        telemetry: Optional[dict[str, Any]] = None,
+        rpc: Optional[dict[str, Any]] = None,
+        disk_free_bytes: Optional[int] = None,
+        quota_pct: Optional[float] = None,
+    ) -> Optional[str]:
+        """The stop-list, in the order the addendum declares it.
+
+        Every input can be injected, so the policy is testable without a live
+        session; nothing here issues an RPC.
+        """
+        now = time.time() if now is None else float(now)
+        if self.early_stop_reason is not None:
+            return self.early_stop_reason
+
+        stats = telemetry
+        if stats is None:
+            collector = self._collector()
+            stats = collector.stats() if collector is not None else {}
+        dropped = int(stats.get('dropped_events') or 0)
+        errors = int(stats.get('write_errors') or 0)
+        self.stop_policy_state['telemetry'] = {
+            'dropped_events': dropped, 'write_errors': errors,
+        }
+
+        reason: Optional[str] = None
+        if dropped or errors:
+            reason = (
+                f'telemetry_loss (dropped_events={dropped}, '
+                f'write_errors={errors})'
+            )
+        if reason is None:
+            metrics = rpc if rpc is not None else rpc_metrics_snapshot()
+            self._rpc_samples.append((
+                now, int(metrics.get('requests') or 0),
+                int(metrics.get('failed_requests') or 0),
+                metrics.get('latency_ms_p95'),
+            ))
+            if len(self._rpc_samples) > 4_000:
+                self._rpc_samples = self._rpc_samples[-4_000:]
+            reason = self._rpc_error_rate_reason(now)
+            if reason is None:
+                reason = self._rpc_latency_reason(now, metrics.get('latency_ms_p95'))
+        if reason is None:
+            reason = self._stall_reason(now)
+        if reason is None:
+            free = disk_free_bytes
+            if free is None:
+                try:
+                    free = int(shutil.disk_usage(self.run_dir).free)
+                except OSError:
+                    free = None
+            quota = quota_pct if quota_pct is not None else self._helius_quota_remaining_pct()
+            reason = self._resource_reason(free, quota)
+        return reason
+
     def _maybe_early_stop(self) -> None:
         if self.early_stop_reason is not None:
             return
-        depleted = all(
+        # Run #3 addendum: only the four declared reasons may stop the run;
+        # a PnL-based stop would be result fitting. The bank never ends the
+        # session any more, because the book tops itself back up.
+        stop_reason = self._evaluate_stop_reason()
+        if stop_reason:
+            self.early_stop_reason = stop_reason
+            self.stop_policy_state['reason'] = stop_reason
+            self.early_stop_event.set()
+            log(f'⏹ Stop-list fired: {stop_reason}', Color.YELLOW)
+            return
+        # Shadows hold virtual money and never deplete; including them would
+        # disable the early stop entirely. With top-ups enabled a depleted book
+        # refills itself, so this legacy net only applies to books that opted
+        # out of the addendum's top-up (never the case in run #3).
+        eligible = [
+            book for book in self.books.values()
+            if not book.profile.is_shadow and not book.profile.auto_top_up
+        ]
+        depleted = bool(eligible) and all(
             not any(pos.status != 'closed' for pos in book.positions.values())
             and book.cash_balance_rub < book.profile.position_size_rub
-            # Shadows hold virtual money and never deplete; including them
-            # would disable the early stop entirely.
-            for book in self.books.values() if not book.profile.is_shadow
+            for book in eligible
         )
         if depleted:
             self.early_stop_reason = 'both_portfolios_below_slot_size'
@@ -1844,6 +2181,7 @@ class ABPaperSimulator:
             book.closed_trade_count += 1
             book.closed_mints.add(pos.mint)
             book.positions.pop(pos.mint, None)
+            book.note_bust(time.time())
             if not pos.conservative_metrics_complete and not pos.conservative_incomplete_counted:
                 book.conservative_100bps_incomplete_trades += 1
                 pos.conservative_incomplete_counted = True
@@ -2078,6 +2416,15 @@ class ABPaperSimulator:
                 # The two counters that tell a rule failure from a capacity cap.
                 'slots_full': book.slots_full_count,
                 'cash_below_slot': book.cash_below_slot_count,
+                # --- run #3 addendum: bank metrics ---
+                'top_ups': book.top_ups,
+                'capital_injected_rub': round(book.capital_injected_rub, 6),
+                'pnl_with_topups': round(book.realized_pnl_rub, 6),
+                'equity_no_topups': round(book.equity_no_topups(), 6),
+                'bust_at_trade': book.bust_at_trade,
+                'bust_at_utc': book.bust_at_utc,
+                'bust_equity_rub': book.bust_equity_rub,
+                'top_up_events': book.top_up_events,
                 'stats': trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades]),
             }
         return {
@@ -2092,6 +2439,19 @@ class ABPaperSimulator:
             'shadow_scope': [name for name, book in self.books.items()
                              if book.profile.is_shadow],
             'early_stop_reason': self.early_stop_reason,
+            'stop_policy': {
+                **self.stop_policy_state,
+                'thresholds': {
+                    'rpc_error_rate': STOP_RPC_ERROR_RATE,
+                    'rpc_window_sec': STOP_RPC_WINDOW_SEC,
+                    'rpc_latency_ms': STOP_RPC_LATENCY_MS,
+                    'rpc_latency_hold_sec': STOP_RPC_LATENCY_HOLD_SEC,
+                    'stall_sec': STOP_STALL_SEC,
+                    'disk_free_gb': round(STOP_DISK_FREE_BYTES / 1024 ** 3, 2),
+                    'helius_quota_pct': STOP_HELIUS_QUOTA_PCT,
+                },
+                'pnl_never_stops_the_run': True,
+            },
             'profiles': {name: {
                 'delta_max_sol': book.profile.delta_max_sol,
                 'delta_min_sol': book.profile.delta_min_sol,

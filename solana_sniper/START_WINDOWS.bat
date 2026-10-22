@@ -56,7 +56,7 @@ if "%ENTRY_DELTA_MAX_SOL_B%"=="" set "ENTRY_DELTA_MAX_SOL_B=3.0"
 echo.
 echo Dashboard: http://127.0.0.1:8767/  - closed with Ctrl+C
 echo This window must stay open for the whole run.
-"%VPY%" run_local_session.py --duration 28800 --open-browser %*
+"%VPY%" run_local_session.py --duration-sec 28800 --open-browser %*
 set "RC=%errorlevel%"
 echo.
 echo Session finished with code %RC%.

@@ -82,6 +82,31 @@ difference excludes 0 (20 000 resamples). Otherwise the next candidate is
 `delta_min 0.6`, and if that fails too the honest conclusion is that the 5-second
 scalp is dead — not that it "became profitable".
 
+**Bank (addendum to run #3).** Every book keeps its own cash. If cash is below
+one 500 ₽ slot at the moment a trade would open, the book is topped back up to
+1500 ₽ and the trade opens; nothing else changes (500 ₽ stake, 3 slots, every
+entry and exit). Each injection is recorded as a `top_up` telemetry row and in
+`ab_summary.json` per profile: `top_ups`, `capital_injected_rub`,
+`pnl_with_topups`, `equity_no_topups = 1500 + PnL`, `bust_at_trade`,
+`bust_at_utc`. `bust_at_trade` answers "would the real 1500 ₽ bank have
+survived": it is the closed-trade number at which `equity_no_topups` first fell
+below 500 ₽. `top_ups` is the second metric — a bank that dies twice costs
+roughly two injections.
+
+**Stop-list (addendum to run #3).** The run may stop early for exactly four
+reasons, checked every cycle: telemetry loss (`dropped_events`/`write_errors`
+> 0); RPC error rate above 1 % over 10 minutes or p95 above 1000 ms for five
+minutes straight; a live arm with no entries for 30 minutes while
+`entry_state` keeps growing; Helius quota below 10 % or less than 2 GB of free
+disk. The reason is written to `manifest.early_stop_reason`, `SUMMARY.md` and
+`ab_summary.json`, and the artefacts are finalized — never zeroed. PnL is not a
+reason to stop. The Helius quota is read from `HELIUS_QUOTA_REMAINING_PCT` or
+`<RUN_DIR>/helius_quota.json`; with neither, that check is reported as
+unavailable rather than silently passing.
+
+Session length is a parameter, not a constant: `run_local_session.py
+--duration-sec 28800` (8 h default), e.g. `--duration-sec 10800` for 3 h.
+
 Creator guard v2 (now `shadow_gate` only): identity resolved to
 `pumpportal_event_actor` when the curve creator is an empty fee wallet,
 `creator_burst_activity` rejects 25+ signatures inside one hour,

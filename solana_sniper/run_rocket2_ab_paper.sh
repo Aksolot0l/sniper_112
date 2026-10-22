@@ -183,6 +183,25 @@ assert entry_shadow_flags(PROFILE_A, 33.0, 36.0) == {
 # delta 2.9 is where the two arms actually disagree: A rejects, B admits.
 assert PROFILE_A.entry_check(33.0, 35.9)[0] is False
 assert PROFILE_B.entry_check(33.0, 35.9) == (True, 'live_momentum_entry')
+# --- addendum: bank top-up accounting and the four-reason stop-list ---
+import tempfile
+from pathlib import Path
+from portfolio_ab import (
+    PortfolioBook, STOP_DISK_FREE_BYTES, STOP_HELIUS_QUOTA_PCT,
+    STOP_RPC_ERROR_RATE, STOP_RPC_LATENCY_HOLD_SEC, STOP_STALL_SEC,
+)
+assert PROFILE_A.auto_top_up is True and PROFILE_B.auto_top_up is True
+assert PROFILE_A.initial_balance_rub == PROFILE_A.position_size_rub * 3
+_bank_dir = Path(tempfile.mkdtemp())
+_book = PortfolioBook(PROFILE_A, _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
+_event = _book.maybe_top_up(at_epoch=1_700_000_000.0)
+assert _event is not None and _event['cash_before'] == 300.0
+assert _event['cash_after'] == 1500.0 and _event['amount_rub'] == 1200.0
+assert _book.top_ups == 1 and _book.capital_injected_rub == 1200.0
+assert _book.maybe_top_up() is None
+assert STOP_RPC_ERROR_RATE == 0.01 and STOP_RPC_LATENCY_HOLD_SEC == 300.0
+assert STOP_STALL_SEC == 1800.0 and STOP_HELIUS_QUOTA_PCT == 10.0
+assert STOP_DISK_FREE_BYTES == 2 * 1024 ** 3
 assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
@@ -193,7 +212,8 @@ assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
 print('A/B preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
       'live-momentum entry; approved 4-mode exits; single difference delta_cap '
-      'A=2.5 / B=3.0 (creator gate is a shadow); in-memory wallet cache enabled.')
+      'A=2.5 / B=3.0 (creator gate is a shadow); bank top-up at cash<500 up to '
+      '1500; four-reason stop-list; in-memory wallet cache enabled.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.

@@ -42,8 +42,9 @@ fi
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
 export ENTRY_DELTA_MAX_SOL_B="${ENTRY_DELTA_MAX_SOL_B:-3.0}"
 
-# --smoke 150 → короткая проверка; без аргументов → полные 8 часов.
+# --smoke 150 → короткая проверка; без аргументов → 8 часов.
+# Длительность задаётся переменной DURATION_SEC (например, 10800 для 3 часов).
 exec "$VENV_PY" run_local_session.py \
-    --duration "${DURATION:-28800}" \
+    --duration-sec "${DURATION_SEC:-28800}" \
     --open-browser \
     "$@"

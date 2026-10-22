@@ -76,6 +76,11 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
      (creator_burst_activity = раг-ферма, creator_history_too_short и т.д.).
      fail_history — прочитанная короткая история, это вердикт, а не слепая зона.
   3) Сравнить realized_pnl_rub портфелей A и B за один и тот же период.
+  4) Банк: top_ups / capital_injected_rub / equity_no_topups / bust_at_trade
+     по каждому профилю в ab_summary.json (и строка «Банк» в SUMMARY.md).
+     bust_at_trade — на какой сделке реальный банк 1500 ₽ умер бы без пополнений.
+  5) Досрочная остановка: manifest.early_stop_reason — одна из четырёх причин
+     stop-list с численным условием; PnL остановкой не является.
 
 ОГРАНИЧЕНИЯ
   * Один процесс за раз (лимит Helius RPS). Второй запуск будет отклонён.

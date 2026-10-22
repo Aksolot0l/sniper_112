@@ -13,7 +13,7 @@ Guarantees:
 - works on macOS/Linux and Windows (no fcntl, no POSIX-only signals).
 
 Examples
-    python run_local_session.py --duration 28800       # full 8h run (прогон №3)
+    python run_local_session.py --duration-sec 28800   # full 8h run (прогон №3)
     python run_local_session.py --smoke 150            # 2.5 min live check
     python run_local_session.py --duration 28800 --no-dashboard
 """
@@ -207,18 +207,25 @@ def print_summary(run_dir: Path) -> None:
     print(f"  файлы: {run_dir}", flush=True)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """CLI, kept separate so `--duration-sec` is covered by tests."""
     parser = argparse.ArgumentParser(description='PAPER A/B local session runner')
-    parser.add_argument('--duration', type=int, default=28800,
-                        help='длительность сессии в секундах (по умолчанию 28800 = 8ч; '
-                             'для прогона №3 P2)')
+    parser.add_argument(
+        '--duration', '--duration-sec', dest='duration', type=int, default=28800,
+        help='длительность сессии в секундах (алиас --duration-sec; по умолчанию '
+             '28800 = 8 ч. После 10-минутной проверки ставится 10800 = 3 ч)',
+    )
     parser.add_argument('--smoke', type=int, default=0,
                         help='короткий проверочный прогон: --smoke 150')
     parser.add_argument('--port', type=int, default=8767)
     parser.add_argument('--no-dashboard', action='store_true')
     parser.add_argument('--open-browser', action='store_true')
     parser.add_argument('--run-id', default='')
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     duration = args.smoke if args.smoke > 0 else args.duration
     if duration < 10:

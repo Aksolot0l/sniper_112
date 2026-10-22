@@ -6,7 +6,7 @@ import struct
 import tempfile
 import time
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -443,6 +443,284 @@ class RunThreeShadowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(full.books[name].profile.capital_rub, 0.0)
 
 
+class RunThreeBankAndStopListTests(unittest.IsolatedAsyncioTestCase):
+    """Addendum: bank top-ups, bust metric and the four-reason stop-list."""
+
+    def _live_profiles(self, **overrides):
+        a = replace(PROFILE_A, **overrides)
+        return {'portfolio_a': a, 'portfolio_b': replace(PROFILE_B, **overrides)}
+
+    async def _consider(self, simulator, coin, delta=0.4, epoch=None):
+        snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+        epoch = time.time() if epoch is None else epoch
+        with patch('portfolio_ab.get_collector', return_value=None):
+            for name in ('portfolio_a', 'portfolio_b'):
+                await simulator._consider_entry(
+                    simulator.books[name], coin, snapshot,
+                    32.0, 32.0 + delta, 200.0, {}, epoch,
+                )
+
+    def _coin(self, mint):
+        coin = NewCoin(
+            mint=mint, source='Pump.fun', signature=f'sig-{mint}',
+            curve='curve-test', packet={'v_sol': 32.0},
+        )
+        coin.creator_probe_result = {
+            'signature_count': 25, 'ata_exists': True, 'token_balance_raw': '1',
+            'creator_guard_passed': True, 'creator_guard_reason': 'creator_guard_met',
+            'censored': False, 'status': 'ok',
+        }
+        return coin
+
+    async def test_minus_1200_realized_gives_exactly_one_top_up_and_the_trade_opens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp) / 'bank')
+            book = simulator.books['portfolio_a']
+            # cumPnL = -1200 -> cash 300, below one 500 RUB slot.
+            book.realized_pnl_rub = -1_200.0
+            book.cash_balance_rub = 300.0
+            await self._consider(simulator, self._coin('mint-bank-1'))
+            self.assertIn('mint-bank-1', book.positions)
+            self.assertEqual(book.top_ups, 1)
+            self.assertEqual(len(book.top_up_events), 1)
+            event = book.top_up_events[0]
+            self.assertLess(event['cash_before'], 500)
+            self.assertEqual(event['cash_after'], 1_500.0)
+            self.assertAlmostEqual(event['amount_rub'], 1_200.0, places=6)
+            self.assertAlmostEqual(book.capital_injected_rub, 1_200.0, places=6)
+            # The trade itself is a normal 500 RUB slot: 1500 - 500 = 1000.
+            self.assertAlmostEqual(book.cash_balance_rub, 1_000.0, places=3)
+            # No second injection until the cash drops below the slot again.
+            self.assertIsNone(book.maybe_top_up())
+            # The real 1500 RUB bank would have died here (equity 300 < 500).
+            self.assertEqual(book.bust_at_trade, 0)
+            self.assertIsNotNone(book.bust_at_utc)
+            self.assertAlmostEqual(book.equity_no_topups(), 300.0, places=6)
+
+    async def test_top_up_changes_only_availability_not_a_single_fill(self) -> None:
+        epoch = 1_700_000_000.0
+        coins = [self._coin('mint-iso-a'), self._coin('mint-iso-b')]
+        with tempfile.TemporaryDirectory() as tmp:
+            topped = make_simulator(
+                Path(tmp) / 'topped', profiles=self._live_profiles(auto_top_up=True),
+            )
+            plain = make_simulator(
+                Path(tmp) / 'plain', profiles=self._live_profiles(auto_top_up=False),
+            )
+            # Only A is drained; B keeps its normal 1500 RUB as the twin whose
+            # fills the topped-up A must reproduce exactly.
+            for simulator in (topped, plain):
+                simulator.books['portfolio_a'].cash_balance_rub = 300.0
+            for coin in coins:
+                await self._consider(topped, coin, epoch=epoch)
+                await self._consider(plain, coin, epoch=epoch)
+            # Without the top-up both arms are stuck at 300 RUB.
+            self.assertEqual(plain.books['portfolio_a'].positions, {})
+            self.assertEqual(plain.books['portfolio_a'].top_ups, 0)
+            self.assertEqual(plain.books['portfolio_a'].cash_below_slot_count, 2)
+            # With the top-up the same coins open, at the unchanged slot size.
+            self.assertEqual(sorted(topped.books['portfolio_a'].positions),
+                             ['mint-iso-a', 'mint-iso-b'])
+            for mint in ('mint-iso-a', 'mint-iso-b'):
+                pos = topped.books['portfolio_a'].positions[mint]
+                self.assertAlmostEqual(pos.entry_cost_rub, 500.0, places=3)
+                # Identical inputs give an identical fill at the same slot size:
+                # B never needed a top-up, so compare A against B.
+                twin = topped.books['portfolio_b'].positions[mint]
+                self.assertGreater(pos.initial_tokens_raw, 0)
+                self.assertEqual(pos.entry_amount_lamports, twin.entry_amount_lamports)
+                self.assertEqual(pos.initial_tokens_raw, twin.initial_tokens_raw)
+                self.assertEqual(pos.entry_price_usd, twin.entry_price_usd)
+            # Only the A book got injections; B was never short.
+            self.assertEqual(topped.books['portfolio_b'].top_ups, 0)
+            self.assertEqual(topped.books['portfolio_a'].top_ups, 1)
+            # ...and the actual paper_fills are byte-identical to the twin's.
+            fills = await self._sell_both_topped_and_twin(topped, 'mint-iso-a')
+            a_args, a_kwargs = fills['portfolio_a']
+            b_args, b_kwargs = fills['portfolio_b']
+            self.assertEqual(a_args, b_args)
+            self.assertEqual(
+                {k: v for k, v in a_kwargs.items() if k != 'portfolio'},
+                {k: v for k, v in b_kwargs.items() if k != 'portfolio'},
+            )
+            self.assertEqual(a_kwargs.get('portfolio'), 'portfolio_a')
+            self.assertEqual(b_kwargs.get('portfolio'), 'portfolio_b')
+
+    async def _sell_both_topped_and_twin(self, simulator, mint):
+        """Sell the same position out of A (topped) and B (never short).
+
+        Returns the `record_fill` argument tuple per book minus the portfolio,
+        which is what "paper_fills are unchanged" actually means.
+        """
+        collector = SimpleNamespace(record_fill=Mock(), record_decision=Mock(),
+                                    record_quote=Mock(return_value='q'))
+        captured = {}
+        curve = make_curve()
+        fees = make_fee_context_for_test()
+        with patch('portfolio_ab.get_collector', return_value=collector):
+            for name in ('portfolio_a', 'portfolio_b'):
+                book = simulator.books[name]
+                pos = book.positions[mint]
+                local = quote_sell_exact_tokens(
+                    curve, fees, pos.remaining_tokens_raw,
+                    slippage_bps=100, context_slot=12,
+                )
+                swap = SwapQuote(
+                    input_mint=mint, output_mint=WSOL_MINT,
+                    in_amount_raw=pos.remaining_tokens_raw,
+                    out_amount_raw=local.out_amount_raw,
+                    min_out_raw=local.min_out_raw,
+                    price_impact_pct=local.price_impact_pct,
+                    route_labels=local.route_labels(), context_slot=12,
+                )
+                executable = ExecutableQuote(
+                    swap, local.protocol_fee_raw, local.creator_fee_raw,
+                    local.protocol_fee_bps, local.creator_fee_bps,
+                    local.market_cap_lamports, local.tier_index,
+                    'Pump.fun bonding curve local exact quote',
+                )
+                await simulator._apply_sell_fill(
+                    book, pos, pos.remaining_tokens_raw, 'Timeout (35s)',
+                    executable, curve, fees, 12, 200.0, -5.0, 490.0,
+                )
+                call = collector.record_fill.call_args
+                captured[name] = (call.args, call.kwargs)
+                collector.record_fill.reset_mock()
+        return captured
+
+    async def test_summary_reports_bank_fields_per_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp) / 'summary')
+            book = simulator.books['portfolio_b']
+            book.realized_pnl_rub = -1_150.0
+            book.cash_balance_rub = 350.0
+            await self._consider(simulator, self._coin('mint-bank-2'))
+            summary = simulator.summary()
+        for name in ('portfolio_a', 'portfolio_b', 'shadow_gate', 'shadow_exit25'):
+            entry = summary[name]
+            for key in ('top_ups', 'capital_injected_rub', 'pnl_with_topups',
+                        'equity_no_topups', 'bust_at_trade', 'bust_at_utc'):
+                self.assertIn(key, entry, (name, key))
+        b = summary['portfolio_b']
+        self.assertEqual(b['top_ups'], 1)
+        self.assertAlmostEqual(b['capital_injected_rub'], 1_150.0, places=6)
+        self.assertAlmostEqual(b['pnl_with_topups'], -1_150.0, places=6)
+        self.assertAlmostEqual(b['equity_no_topups'], 350.0, places=6)
+        self.assertEqual(b['bust_at_trade'], 0)
+        self.assertIsNotNone(b['bust_at_utc'])
+        self.assertIn('stop_policy', summary)
+
+    def test_stop_list_telemetry_loss_stops_and_is_recorded(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        reason = simulator._evaluate_stop_reason(
+            now=1_000.0, telemetry={'dropped_events': 3, 'write_errors': 0},
+        )
+        self.assertTrue(reason.startswith('telemetry_loss'), reason)
+        self.assertIn('dropped_events=3', reason)
+        # The event is what the main loop waits on; artifacts are written by
+        # close(), which is covered below.
+        simulator.early_stop_reason = None
+        with patch.object(simulator, '_evaluate_stop_reason', return_value=reason):
+            simulator._maybe_early_stop()
+        self.assertTrue(simulator.early_stop_event.is_set())
+        self.assertEqual(simulator.early_stop_reason, reason)
+        self.assertEqual(simulator.summary()['early_stop_reason'], reason)
+        self.assertEqual(simulator.summary()['stop_policy']['reason'], reason)
+
+    def test_stop_list_rpc_stall_and_resource_reasons(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        base = {'requests': 0, 'failed_requests': 0, 'latency_ms_p95': 100.0}
+        self.assertIsNone(simulator._evaluate_stop_reason(
+            now=100.0, telemetry={}, rpc=dict(base), disk_free_bytes=10 ** 12,
+            quota_pct=50.0,
+        ))
+        # 2 % failures over the 10-minute window.
+        self.assertIsNone(simulator._evaluate_stop_reason(
+            now=200.0, telemetry={}, rpc={**base, 'requests': 100}, disk_free_bytes=10 ** 12,
+        ))
+        reason = simulator._evaluate_stop_reason(
+            now=700.0, telemetry={},
+            rpc={'requests': 2_000, 'failed_requests': 40, 'latency_ms_p95': 100.0},
+            disk_free_bytes=10 ** 12,
+        )
+        self.assertTrue(reason.startswith('rpc_error_rate'), reason)
+        # Latency must hold for five minutes, not one sample.
+        slow = make_simulator(tempfile.mkdtemp())
+        self.assertIsNone(slow._evaluate_stop_reason(
+            now=1_000.0, telemetry={},
+            rpc={'requests': 1, 'failed_requests': 0, 'latency_ms_p95': 2_500.0},
+            disk_free_bytes=10 ** 12,
+        ))
+        reason = slow._evaluate_stop_reason(
+            now=1_400.0, telemetry={},
+            rpc={'requests': 2, 'failed_requests': 0, 'latency_ms_p95': 2_500.0},
+            disk_free_bytes=10 ** 12,
+        )
+        self.assertTrue(reason.startswith('rpc_latency_p95'), reason)
+        # Stall: 30 min without an entry while entry_state keeps growing.
+        stalled = make_simulator(tempfile.mkdtemp())
+        stalled._entry_state_total = 40
+        reason = stalled._evaluate_stop_reason(
+            now=stalled.started_at_epoch + 1_801.0, telemetry={},
+            rpc={'requests': 0, 'failed_requests': 0, 'latency_ms_p95': None},
+            disk_free_bytes=10 ** 12,
+        )
+        self.assertTrue(reason.startswith('portfolio_stalled'), reason)
+        # A quiet market (no new candidates) is not a reason to stop.
+        quiet = make_simulator(tempfile.mkdtemp())
+        self.assertIsNone(quiet._evaluate_stop_reason(
+            now=quiet.started_at_epoch + 1_801.0, telemetry={},
+            rpc={'requests': 0, 'failed_requests': 0, 'latency_ms_p95': None},
+            disk_free_bytes=10 ** 12,
+        ))
+        # Resources.
+        self.assertTrue(make_simulator(tempfile.mkdtemp())._evaluate_stop_reason(
+            now=1.0, telemetry={}, rpc={'requests': 0, 'failed_requests': 0,
+                                        'latency_ms_p95': None},
+            disk_free_bytes=1024 ** 3,
+        ).startswith('disk_low'))
+        self.assertTrue(make_simulator(tempfile.mkdtemp())._evaluate_stop_reason(
+            now=1.0, telemetry={}, rpc={'requests': 0, 'failed_requests': 0,
+                                        'latency_ms_p95': None},
+            disk_free_bytes=10 ** 12, quota_pct=4.0,
+        ).startswith('helius_quota_low'))
+
+    async def test_close_after_stop_keeps_artifacts_and_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / 'stop-run'
+            simulator = make_simulator(run_dir)
+            with patch.object(simulator, 'write_ticks'), \
+                    patch.object(simulator, 'write_shadow_fills'):
+                simulator.early_stop_reason = 'telemetry_loss (dropped_events=1, write_errors=0)'
+                simulator.stop_policy_state['reason'] = simulator.early_stop_reason
+                summary = await simulator.close()
+            self.assertEqual(summary['early_stop_reason'],
+                             'telemetry_loss (dropped_events=1, write_errors=0)')
+            written = json.loads((run_dir / 'ab_summary.json').read_text())
+            self.assertEqual(written['early_stop_reason'],
+                             'telemetry_loss (dropped_events=1, write_errors=0)')
+            self.assertEqual(written['stop_policy']['reason'],
+                             'telemetry_loss (dropped_events=1, write_errors=0)')
+            # The run is not zeroed out: wallets and per-profile books remain.
+            self.assertIn('portfolio_a', written)
+
+    async def test_pnl_alone_never_stops_the_run(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        for book in simulator.books.values():
+            if not book.profile.is_shadow:
+                book.realized_pnl_rub = -5_000.0
+                book.cash_balance_rub = 0.0
+        simulator._entry_state_total = 0
+        simulator._rpc_samples = []
+        self.assertIsNone(simulator._evaluate_stop_reason(
+            now=1_000.0, telemetry={},
+            rpc={'requests': 1, 'failed_requests': 0, 'latency_ms_p95': 90.0},
+            disk_free_bytes=10 ** 12, quota_pct=90.0,
+        ))
+        simulator._maybe_early_stop()
+        self.assertIsNone(simulator.early_stop_reason)
+
+
 class ABEntryGateAndAccountingTests(unittest.IsolatedAsyncioTestCase):
     async def _consider_both(self, root, creator_probe_result):
         # Run #3: the gate is a shadow now, so "both" = portfolio_a + shadow_gate.
@@ -841,7 +1119,12 @@ class ABExitRuleTests(unittest.IsolatedAsyncioTestCase):
 class ABEarlyStopAndPollingTests(unittest.IsolatedAsyncioTestCase):
     async def test_early_stop_requires_both_books_empty_and_below_500(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            simulator = make_simulator(tmp)
+            # The legacy depleted net now applies only to books that opted out
+            # of the run #3 top-up; with it on, a book refills and never stops.
+            simulator = make_simulator(tmp, profiles={
+                'portfolio_a': replace(PROFILE_A, auto_top_up=False),
+                'portfolio_b': replace(PROFILE_B, auto_top_up=False),
+            })
             a = simulator.books['portfolio_a']
             b = simulator.books['portfolio_b']
             a.cash_balance_rub = 499.99

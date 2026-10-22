@@ -139,6 +139,9 @@ def _summary_markdown(
             add('')
             add('> ⚠️ Часть строк телеметрии не записалась: воронка и гейт ниже '
                 'построены по усечённым данным.')
+    if manifest.get('early_stop_reason'):
+        add(f"- досрочная остановка: `{manifest.get('early_stop_reason')}` "
+            '(stop-list, не PnL; артефакты дописаны)')
     add('')
     add('## A / B')
     add('')
@@ -201,6 +204,30 @@ def _summary_markdown(
             f"{_money(st.get('sum'))} | {_money(st.get('sum_without_top2'))} | "
             f"{_money(st.get('sum_without_worst2'))} | "
             f"{book.get('slots_full', 0)} | {book.get('cash_below_slot', 0)} |")
+    add('')
+    # --- addendum: bank / top-ups / bust --------------------------------
+    add('## Банк 1 500 ₽: пополнения и момент смерти без них')
+    add('')
+    add('| портфель | пополнений | влито, ₽ | PnL сделок, ₽ | equity без пополнений | '
+        'банк умер бы на сделке | время |')
+    add('|---|---:|---:|---:|---:|---:|---|')
+    for name in stat_names:
+        book = summary.get(name) or {}
+        bust_trade = book.get('bust_at_trade')
+        if bust_trade is None:
+            bust_text = 'не умирал'
+            bust_utc = '—'
+        else:
+            bust_text = f'№{bust_trade}'
+            bust_utc = str(book.get('bust_at_utc') or '—')
+        add(f"| {name} | {book.get('top_ups', 0)} | "
+            f"{_money(book.get('capital_injected_rub'))} | "
+            f"{_money(book.get('pnl_with_topups'))} | "
+            f"{_money(book.get('equity_no_topups'))} | {bust_text} | {bust_utc} |")
+    add('')
+    add('Пополнение — только бухгалтерия: ставка 500 ₽, 3 слота и все входы/выходы '
+        'не меняются, пополнение срабатывает лишь когда cash < 500 ₽ перед входом. '
+        '`equity_no_topups = 1500 + PnL`; «умер бы» = впервые стало < 500 ₽.')
     add('')
     ab = summary.get('ab_test') or {}
     diff = (ab.get('difference') or {})
@@ -369,6 +396,20 @@ def _strategy_metadata() -> dict[str, Any]:
             'the delta band is worth about 29 RUB/trade, so it is the A/B arm. '
             'Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, '
             '0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28'
+        ),
+        'bank_rule': (
+            'каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, '
+            'книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, '
+            '3 слота и все входы/выходы не меняются — пополнение влияет только '
+            'на «торговать / не торговать». Счётчик top_ups остаётся метрикой: '
+            'пополнение срабатывает лишь при cash < 500, а не после каждого убытка'
+        ),
+        'stop_list': (
+            'прогон останавливается только по четырём причинам: telemetry '
+            'dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или '
+            'p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при '
+            'растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. '
+            'PnL не является причиной остановки'
         ),
         'profiles': {
             'portfolio_a': {'delta_cap': 2.5, 'creator_gate': False},
@@ -830,6 +871,7 @@ async def main() -> None:
                 funnel = {'available': False, 'reason': type(exc).__name__}
             manifest['funnel'] = funnel
             manifest['creator_gate'] = summary.get('creator_gate', {})
+            manifest['stop_policy'] = summary.get('stop_policy', {})
             _write_json(run_dir / 'manifest.json', manifest)
             try:
                 (run_dir / 'SUMMARY.md').write_text(
