@@ -119,25 +119,6 @@ def _build_commit() -> str:
     return 'unknown'
 
 
-# Reference numbers from run #1 (build 9f2cd08, 30 min, 1800 s). Reported by
-# the operator; kept only so SUMMARY.md can put run #2 next to run #1 without
-# pretending the two were measured in one process.
-BASELINE_RUN_1 = {
-    'build': '9f2cd08',
-    'duration_sec': 1800,
-    'entry_birth_max_sol': 50.0,
-    'portfolio_a': {
-        'entries': 26, 'closed_trade_count': 26, 'realized_pnl_rub': -1035.56,
-        'pnl_per_trade_rub': -39.83, 'conservative_100bps_pnl_rub': -1274.11,
-    },
-    'portfolio_b': {
-        'entries': 16, 'closed_trade_count': 16, 'realized_pnl_rub': -672.77,
-        'pnl_per_trade_rub': -42.05, 'conservative_100bps_pnl_rub': -818.87,
-    },
-    'source': 'run #1 report (30-min PAPER_ONLY run on the operator machine)',
-}
-
-
 def _enrich_host_status(stats: Any) -> str:
     """'ok' | 'enrich_unavailable' | 'no_rows' from the collector counters."""
     data = stats if isinstance(stats, dict) else {}

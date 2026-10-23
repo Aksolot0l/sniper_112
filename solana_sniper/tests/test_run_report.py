@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from main_ab import BASELINE_RUN_1, _safe_manifest, _summary_markdown
+from main_ab import _safe_manifest, _summary_markdown
 from telemetry import funnel_from_db
 
 
