@@ -107,6 +107,7 @@ class ShippedScriptDefaultsTests(unittest.TestCase):
 
     def test_linux_launcher(self) -> None:
         script = self._text('START_MAC_LINUX.sh')
+        self.assertIn('export RUN_NUMBER="${RUN_NUMBER:-run10}"', script)
         self.assertIn('export ARMS="${ARMS:-portfolio_s0,portfolio_s2}"', script)
         self.assertIn('export ENTRY_BIRTH_MIN_S0="${ENTRY_BIRTH_MIN_S0:-30.50}"', script)
         self.assertIn('export MAX_NAME_COPIES_S0="${MAX_NAME_COPIES_S0:-off}"', script)
@@ -132,6 +133,7 @@ class ShippedScriptDefaultsTests(unittest.TestCase):
 
     def test_windows_launcher(self) -> None:
         script = self._text('START_WINDOWS.bat')
+        self.assertIn('set "RUN_NUMBER=run10"', script)
         self.assertIn('set "ARMS=portfolio_s0,portfolio_s2"', script)
         self.assertIn('set "ENTRY_BIRTH_MIN_S0=30.50"', script)
         self.assertIn('set "MAX_NAME_COPIES_S0=off"', script)
@@ -160,7 +162,8 @@ class ShippedScriptDefaultsTests(unittest.TestCase):
         self.assertIn('MARK_POLL_SEC:-0.25', script)
         self.assertIn('TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5}', script)
         self.assertIn('wallet_portfolio_s0.json', script)
-        self.assertIn('run #9 preflight OK', script)
+        self.assertIn('run #10 preflight OK', script)
+        self.assertIn('RUN_NUMBER:-run10', script)
 
 
 class BundleReadMeTests(unittest.TestCase):

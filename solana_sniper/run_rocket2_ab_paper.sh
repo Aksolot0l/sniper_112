@@ -74,6 +74,8 @@ export RPC_BATCH_WINDOW_SEC='0.008'
 export CREATOR_RISK_POLICY='warn'
 export CREATOR_HISTORY_DIR="$PROJECT/runs"
 export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
+# --- run #10: the number is declared, both stages (1 h and 12 h) share it ------
+export RUN_NUMBER="${RUN_NUMBER:-run10}"
 # --- entry v3: live momentum; the arm name is the ONLY thing that differs ---
 export ARMS="${ARMS:-portfolio_s0,portfolio_s2}"
 export ALLOW_SINGLE_ARM="${ALLOW_SINGLE_ARM:-1}"
@@ -311,15 +313,17 @@ assert _book.maybe_top_up() is None
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
-print('run #9 preflight OK: Helius host only; read-only; paper-only; one pumpfun '
+assert os.getenv('RUN_NUMBER') == 'run10'
+print('run #10 preflight OK: Helius host only; read-only; paper-only; one pumpfun '
       'source; two books S0 (run #8 verbatim) and S2 (birth floor 31.96 = dev buy '
       '>= 2 SOL, zero name copies in 120 s), no A in this run; one unchanged '
       'fee_cover exit for both (hard stop -10 %, cover +3.5 %, else 5 s, always '
       '100 %); ENTRY_LATENCY_MS=0; MARK_POLL_SEC=0.25 with the 2.5 rps window; '
-      'post-exit ghost 10 s at no extra RPC; price_at_5s on every trade; offsets '
-      '0/5; enrich on; each book tops itself up to 1500 at cash<500; stop-list '
-      'RPC floor 2 % not raised; the only money stop is negative_edge_S2 at '
-      'hour 8 with its CI95 entirely below zero.')
+      'post-exit ghost read on the 8-point schedule (0.5/1/1.5/2/3/5/7/10 s) at '
+      'no extra RPC; price_at_5s on every trade; offsets 0/5; enrich on; each '
+      'book tops itself up to 1500 at cash<500; stop-list RPC floor 2 % not '
+      'raised; the only money stop is negative_edge_S2 at hour 8 with its CI95 '
+      'entirely below zero.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.
