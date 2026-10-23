@@ -714,6 +714,11 @@ MARK_POLL_SEC_MIN = 0.05
 MARK_POLL_RPS_LIMIT = 2.2
 MARK_POLL_ADAPTED_SEC = 0.25
 MARK_POLL_RPS_CHECK_SEC = 10.0
+# Run #8 acceptance: 0 open positions when the run ends. A position opened in
+# the last seconds before the deadline still has to leave by its own rule (the
+# 5 s clock, a fee cover or a stop), so shutdown waits for the live poll loop
+# for at most one time exit plus a few polls. It never books a synthetic fill.
+DRAIN_OPEN_POSITIONS_MAX_SEC = 6.0
 
 
 def mark_poll_sec_from_env() -> float:
@@ -1094,6 +1099,8 @@ class ABPaperSimulator:
         self.mark_poll_adapted = False
         self.mark_poll_rps_at_check: Optional[float] = None
         self._last_rps_check_epoch = 0.0
+        self.drain_left_open: Optional[int] = None
+        self.drain_waited_sec = 0.0
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -3041,7 +3048,42 @@ class ABPaperSimulator:
         """exports/enrich.csv — collected features, never read by a rule."""
         self.enrich.write_csv(path)
 
+    async def drain_open_positions(
+        self, max_wait_sec: Optional[float] = None,
+    ) -> int:
+        """Let the real poll loop close what is still open; return the leftovers.
+
+        Waiting is not an exit: no fill is fabricated here. The caller either
+        gets 0 (every position left by fee_cover / time_exit / hard_stop) or the
+        honest count of positions that outlived the wait, which the report
+        prints as-is.
+        """
+        limit = (
+            DRAIN_OPEN_POSITIONS_MAX_SEC if max_wait_sec is None
+            else float(max_wait_sec)
+        )
+        deadline = time.time() + max(0.0, limit)
+        while time.time() < deadline:
+            if not any(book.positions for book in self.books.values()):
+                break
+            await asyncio.sleep(max(0.01, self.mark_poll_sec))
+        self.drain_left_open = sum(len(book.positions) for book in self.books.values())
+        self.drain_waited_sec = max(0.0, limit - max(0.0, deadline - time.time()))
+        if self.drain_left_open:
+            log(
+                f'⚠️ {self.drain_left_open} positions still open after the '
+                f'{limit:.1f} s drain; they are reported as open, not closed.',
+                Color.YELLOW,
+            )
+        return self.drain_left_open
+
     async def close(self) -> dict[str, Any]:
+        # Run #8: give the live rules a bounded moment to finish their trade
+        # before the poll loop is stopped.
+        try:
+            await self.drain_open_positions()
+        except Exception as exc:  # never block finalization on the drain
+            log(f'⚠️ drain open positions failed ({type(exc).__name__})', Color.YELLOW)
         self._stopping.set()
         try:
             await self.enrich.close()
@@ -3726,4 +3768,9 @@ class ABPaperSimulator:
             },
             # --- run #8 §3(7): the one line a reviewer reads first ---
             'run_line': self._run_line(rpc_metrics_snapshot()),
+            'drain': {
+                'max_wait_sec': DRAIN_OPEN_POSITIONS_MAX_SEC,
+                'waited_sec': round(self.drain_waited_sec, 3),
+                'left_open': self.drain_left_open,
+            },
         }

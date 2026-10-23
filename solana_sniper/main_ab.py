@@ -449,9 +449,16 @@ def _run8_summary_markdown(
     rpc = manifest.get('rpc_metrics') or {}
     telemetry = manifest.get('telemetry') or {}
     poll = summary.get('mark_poll') or {}
-    open_positions = sum(
-        int((summary.get(name) or {}).get('open_position_count') or 0)
-        for name in arms
+    # The drain count is the honest one: the simulator waited (bounded) for its
+    # own exit rules to finish, then reported whatever was left.
+    drain = summary.get('drain') or {}
+    open_positions = (
+        drain.get('left_open')
+        if drain.get('left_open') is not None
+        else sum(
+            int((summary.get(name) or {}).get('open_position_count') or 0)
+            for name in arms
+        )
     )
     duration = float(manifest.get('actual_duration_sec') or 0.0)
     peak = rpc.get('requests_per_sec_max_10min')
@@ -476,7 +483,9 @@ def _run8_summary_markdown(
          int(telemetry.get('dropped_events') or 0)),
         ('write_errors = 0', int(telemetry.get('write_errors') or 0) == 0,
          int(telemetry.get('write_errors') or 0)),
-        ('0 открытых позиций в конце', open_positions == 0, open_positions),
+        ('0 открытых позиций в конце (после паузы на закрытие)',
+         open_positions == 0,
+         f"{open_positions} (ждали {drain.get('waited_sec')} c)"),
         ('fee_cover сработал ≥ 1 раза в каждой книге',
          all(bool(((summary.get(name) or {}).get('exit_shares') or {})
                   .get('fee_cover_fired')) for name in arms),

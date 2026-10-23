@@ -232,7 +232,8 @@ class Run8MarkdownTests(unittest.TestCase):
         # 7. the acceptance table
         self.assertIn('## Приёмка прогона #8', text)
         for check in ('early_stop_reason = null', 'dropped_events = 0',
-                      'write_errors = 0', 'fee_cover сработал', 'медиана t_total_ms'):
+                      'write_errors = 0', 'fee_cover сработал', 'медиана t_total_ms',
+                      '0 открытых позиций в конце'):
             self.assertIn(check, text)
 
     def test_report_refuses_the_money_verdict(self) -> None:
@@ -266,3 +267,45 @@ class Run8MarkdownTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DrainTests(unittest.IsolatedAsyncioTestCase):
+    """0 open positions at the end must be earned by the real exit rules."""
+
+    async def test_drain_returns_immediately_when_flat(self) -> None:
+        from tests.test_portfolio_ab import make_simulator
+
+        simulator = make_simulator(tempfile.mkdtemp())
+        self.assertEqual(await simulator.drain_open_positions(max_wait_sec=5.0), 0)
+        self.assertEqual(simulator.drain_left_open, 0)
+
+    async def test_drain_waits_for_a_close_then_reports_zero(self) -> None:
+        import asyncio
+
+        from tests.test_portfolio_ab import make_position, make_simulator
+
+        simulator = make_simulator(tempfile.mkdtemp())
+        book = simulator.books['portfolio_s1']
+        book.positions['mint-drain'] = make_position()
+
+        async def closer():
+            await asyncio.sleep(0.05)
+            # The book closes it through its own path; nothing synthetic here.
+            book.positions.pop('mint-drain', None)
+
+        task = asyncio.create_task(closer())
+        left = await simulator.drain_open_positions(max_wait_sec=2.0)
+        await task
+        self.assertEqual(left, 0)
+        self.assertEqual(simulator.drain_left_open, 0)
+
+    async def test_drain_gives_up_and_reports_the_leftover(self) -> None:
+        from tests.test_portfolio_ab import make_position, make_simulator
+
+        simulator = make_simulator(tempfile.mkdtemp())
+        simulator.books['portfolio_s1'].positions['mint-stuck'] = make_position()
+        left = await simulator.drain_open_positions(max_wait_sec=0.05)
+        self.assertEqual(left, 1)
+        self.assertEqual(simulator.drain_left_open, 1)
+        # And the summary reports it as open rather than pretending it closed.
+        self.assertEqual(simulator.summary()['drain']['left_open'], 1)
