@@ -156,8 +156,8 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
 - Tests: `tests/` (`python -m unittest discover -s tests`). Bundle builder: `tools/build_bundle.py`
 - Report template: `../run-logs/run7-TEMPLATE/RUN_NOTES.md` (run #7 comparison table);
-  run #9 writes its own page (`_run9_summary_markdown` in `main_ab.py`), template in
-  `../run-logs/run9-12h/RUN_NOTES.md`
+  run #9/#10 write their own page (`_run9_summary_markdown` in `main_ab.py`, kept
+  under the old name), template in `../run-logs/run10-TEMPLATE/RUN_NOTES.md`
 
 ## Strategy state (2026-10-22)
 
