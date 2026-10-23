@@ -1,18 +1,18 @@
 run_id: run7-8h-20261023T062048Z
-snapshot_utc: 2026-10-23T06:49:31Z
+snapshot_utc: 2026-10-23T07:17:45Z
 mode: light
-run_dir_size: 14M
-opens: 57
-closes: 57
-[06:47:44] 🛑 F7XC…pF63 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (PreweJYECqtQwBtpxHL171nL2K6umo692gTm7Q3rpgF)
-[06:47:46] 👁️ Новая монета: 96ujzd8DAcVTU6Hd2mRudHWY2JPX7XV6ufwGGzy8pump (Pump.fun | Unicorn)
-[06:47:46] 👁️ Новая монета: FeL2gZKAmz3MHsdmVFDhHtfgyQ1mxJNfYnJ6Whd8Bwc4 (Pump.fun | TIT)
-[06:47:46] 🛑 FeL2…Bwc4 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[06:48:07] 👁️ Новая монета: Cwf5FUJJ2X2v2TZLnQ5YRcz27Gri1e2g8iAXNYXWqW8 (Pump.fun | smol)
-[06:48:08] 🛑 Cwf5…WqW8 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[06:48:19] 👁️ Новая монета: 2faaWsECmEPZwQiErWRY5F87d3QuWVAsyvVvJMZupump (Pump.fun | RAG3)
-[06:48:20] 🛑 2faa…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_supply_outside_standard_range (2000000000000000; expected 990000000000000..1000000000000000); pump_supply_mismatch_curve_token_total_supply (mint=2000000000000000, curve=1000000000000000); Pump.fun: кривая торгуется только за SOL; pump_mayhem_mode_excluded
-[06:48:27] 👁️ Новая монета: 6EtkyMJTdxghMRsZrSQ7y9rKXtsLFW9BszMDrhcvpump (Pump.fun | TRENCH)
-[06:48:39] 👁️ Новая монета: nC9EyGWAojEn3cNCLdt9d7GVHKMXBssQP6QcMqjX2UE (Pump.fun | TRENCH)
-[06:48:40] 🛑 nC9E…X2UE — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
-[06:48:41] 👁️ Новая монета: 5BrvBRFtkawuku8pzwmtZaFmEc5hRgyjN5ZuQ8QHpump (Pump.fun | 96)
+run_dir_size: 24M
+opens: 131
+closes: 131
+[07:17:15] 🛑 C1Jq…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_supply_outside_standard_range (2000000000000000; expected 990000000000000..1000000000000000); pump_supply_mismatch_curve_token_total_supply (mint=2000000000000000, curve=1000000000000000); Pump.fun: кривая торгуется только за SOL; pump_mayhem_mode_excluded
+[07:17:27] 👁️ Новая монета: FsnkQhTYRej6oT5DKvSTwA7kmxZBbFDZrrbJuZoSpump (Pump.fun | MID)
+[07:17:27] 👁️ Новая монета: CAYY9tLc8zP67qD1EjyxPxxRXRLYwik3aicaRXKpump (Pump.fun | CTO)
+[07:17:28] 🧪 [portfolio_b3_t0] OPEN CAYY…pump | birth=32.92 now=32.92 delta=+0.00 SOL | cost≈500.00 ₽ | tokens(out)=1557985632882 | fee=95+30 bps | slots=1/3
+[07:17:30] 👁️ Новая монета: 3naURzr5BtDnoQA2o8G5kGkgrHdpDNCxtJ5v5zUStxdH (Pump.fun | MID)
+[07:17:30] 🛑 3naU…txdH — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[07:17:32] 👁️ Новая монета: 8mp9bhjqi1E6bhoKSX7noB5qk4gAKozXrodvMq8wpump (Pump.fun | C&M)
+[07:17:32] 👁️ Новая монета: 3BoGx2aXLp3wDPbSnQ3He1X7jAMoGoQXjZ7FZyqXJ8sA (Pump.fun | MID)
+[07:17:32] 👁️ Новая монета: DHPMQbFnSotNEPL8XopEbeeAp9uf3twSzyewZtYmtAtg (Pump.fun | C&M)
+[07:17:32] 🛑 3BoG…J8sA — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[07:17:32] 🛑 DHPM…tAtg — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[07:17:33] ✅ [portfolio_b3_t0] CLOSE CAYY…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-1.02 ₽ (-0.2%) | cash=2133.03 ₽
