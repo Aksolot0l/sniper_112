@@ -269,6 +269,20 @@ if __name__ == '__main__':
     unittest.main()
 
 
+def _s1_simulator():
+    """A simulator whose books are the run #8 pair, declared explicitly.
+
+    The default ARMS is the run #7 quartet, so a test that needs S1 must say
+    so instead of relying on a registry order.
+    """
+    with patch.dict(os.environ, {
+        'ARMS': 'portfolio_s1,portfolio_s0', 'ALLOW_SINGLE_ARM': '1',
+        'EXIT_MODE': 'fee_cover',
+    }, clear=False):
+        profiles = profiles_from_settings(object())
+    return make_simulator(Path(tempfile.mkdtemp()), profiles=profiles)
+
+
 class DrainTests(unittest.IsolatedAsyncioTestCase):
     """0 open positions at the end must be earned by the real exit rules."""
 
@@ -284,7 +298,7 @@ class DrainTests(unittest.IsolatedAsyncioTestCase):
 
         from tests.test_portfolio_ab import make_position, make_simulator
 
-        simulator = make_simulator(tempfile.mkdtemp())
+        simulator = _s1_simulator()
         book = simulator.books['portfolio_s1']
         book.positions['mint-drain'] = make_position()
 
@@ -302,7 +316,7 @@ class DrainTests(unittest.IsolatedAsyncioTestCase):
     async def test_drain_gives_up_and_reports_the_leftover(self) -> None:
         from tests.test_portfolio_ab import make_position, make_simulator
 
-        simulator = make_simulator(tempfile.mkdtemp())
+        simulator = _s1_simulator()
         simulator.books['portfolio_s1'].positions['mint-stuck'] = make_position()
         left = await simulator.drain_open_positions(max_wait_sec=0.05)
         self.assertEqual(left, 1)

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from portfolio_ab import (
     ARM_DEFAULTS,
+    DEFAULT_ARMS,
     ARM_ENV_KEYS,
     ARM_IDS,
     ARM_LABELS,
@@ -257,6 +258,7 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(ARM_REFERENCE['portfolio_s0'], 'portfolio_s1')
         self.assertEqual(ARM_REFERENCE['portfolio_s1'], 'portfolio_a')
         with patch.dict(os.environ, {
+            'ARMS': 'portfolio_s1,portfolio_s0', 'ALLOW_SINGLE_ARM': '1',
             'ENTRY_DELTA_MAX_SOL_S1': '0.75', 'ENTRY_DELTA_MIN_SOL_S0': '0.05',
         }, clear=False):
             env_profiles = profiles_from_settings(SimpleNamespace())
@@ -428,7 +430,8 @@ class ABProfileTests(unittest.TestCase):
             'entry_delta_max_sol_b1': 1.5, 'entry_birth_max_sol_b2': 33.0,
             'entry_delta_min_sol_b3': 0.25,
         })
-        profiles = profiles_from_settings(settings)
+        with patch.dict(os.environ, {'ARMS': ','.join(ARM_IDS)}, clear=True):
+            profiles = profiles_from_settings(settings)
         self.assertEqual(profiles['portfolio_a'].v_sol_birth_max, 44.0)
         self.assertEqual(profiles['portfolio_a'].delta_min_sol, 0.5)
         self.assertEqual(profiles['portfolio_a'].delta_max_sol, 6.0)
@@ -446,13 +449,15 @@ class ABProfileTests(unittest.TestCase):
         # No creator gate anywhere and no shadow books at all.
         for name in profiles:
             self.assertNotIn('shadow', name)
+        # Every known arm, because this test declares ARMS above.
         self.assertEqual(len(profiles), len(ARM_IDS))
         # The latency model is configurable and lands in every profile.
         latency_settings = SimpleNamespace(**{**vars(base), 'entry_latency_ms': 250.0})
         for name in profiles:
-            self.assertEqual(
-                profiles_from_settings(latency_settings)[name].entry_latency_ms, 250.0,
-            )
+            with patch.dict(os.environ, {'ARMS': ','.join(ARM_IDS)}, clear=True):
+                self.assertEqual(
+                    profiles_from_settings(latency_settings)[name].entry_latency_ms, 250.0,
+                )
         self.assertEqual(PROFILE_B1.entry_latency_ms, 150.0)
 
     def test_all_arms_share_one_exit_ladder(self) -> None:
@@ -664,7 +669,7 @@ class RunThreeBankAndStopListTests(unittest.IsolatedAsyncioTestCase):
             book.cash_balance_rub = 350.0
             await self._consider(simulator, self._coin('mint-bank-2'))
             summary = simulator.summary()
-        for name in ARM_IDS:
+        for name in summary['portfolio_scope']:
             entry = summary[name]
             for key in ('top_ups', 'capital_injected_rub', 'pnl_with_topups',
                         'equity_no_topups', 'bust_at_trade', 'bust_at_utc'):
@@ -1600,11 +1605,11 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
     def test_summary_reports_four_arms_with_the_run7_blocks(self) -> None:
         simulator = make_simulator(tempfile.mkdtemp())
         summary = simulator.summary()
-        self.assertEqual(summary['portfolio_scope'], list(ARM_IDS))
-        self.assertEqual(summary['arms'], [ARM_LABELS[name] for name in ARM_IDS])
+        self.assertEqual(summary['portfolio_scope'], list(DEFAULT_ARMS))
+        self.assertEqual(summary['arms'], [ARM_LABELS[name] for name in DEFAULT_ARMS])
         self.assertEqual(summary['ab_test']['single_difference'], 'entry_band')
         self.assertEqual(summary['ab_test']['reference_arm'], 'portfolio_a')
-        for name in ARM_IDS:
+        for name in DEFAULT_ARMS:
             entry = summary[name]
             self.assertIn('paired_vs_a', entry, name)
             self.assertIn('blocks', entry)
@@ -2117,7 +2122,9 @@ class RunEightFeeCoverExitTests(unittest.TestCase):
         self.assertEqual(kind('Timeout (35.0s)'), 'timeout')
 
     def test_exit_breakdown_only_the_three_run8_kinds(self) -> None:
-        simulator = self._simulator()
+        simulator = make_simulator(
+            tempfile.mkdtemp(), profiles={'portfolio_s1': ARMS['portfolio_s1']},
+        )
         book = simulator.books['portfolio_s1']
         book.closed_trades.extend([
             {'reason': 'Fee cover (+3.5%)', 'pnl_rub': 10.0, 'held_sec': 4.0},
@@ -2133,7 +2140,9 @@ class RunEightFeeCoverExitTests(unittest.TestCase):
         self.assertEqual(breakdown['hard_stop']['n'], 1)
 
     def test_profile_validation_and_label(self) -> None:
-        with patch.dict(os.environ, {'EXIT_MODE': 'fee_cover'}, clear=False):
+        with patch.dict(os.environ, {
+            'EXIT_MODE': 'fee_cover', 'ARMS': 'portfolio_s1', 'ALLOW_SINGLE_ARM': '1',
+        }, clear=False):
             profile = profiles_from_settings(SimpleNamespace())['portfolio_s1']
             self.assertEqual(profile.exit_mode, 'fee_cover')
             label = ABPaperSimulator._exit_rule_label(profile)
@@ -2167,7 +2176,9 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_arms_enter_the_same_coin_at_the_same_price(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            simulator = make_simulator(Path(tmp))
+            # Every declared arm in one process: that is what the isolation
+            # rule is about, and it must not depend on the default ARMS.
+            simulator = make_simulator(Path(tmp), profiles=arm_profiles())
             coin = NewCoin(
                 mint='mint-parity', source='Pump.fun', signature='sig-parity',
                 curve='curve-test', packet={'v_sol': 30.8},

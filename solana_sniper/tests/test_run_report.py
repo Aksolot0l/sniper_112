@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from main_ab import _safe_manifest, _summary_markdown
-from portfolio_ab import ARM_IDS
+from portfolio_ab import ARM_IDS, DEFAULT_ARMS
 from telemetry import funnel_from_db
 
 
@@ -398,7 +398,9 @@ class FunnelReportTests(unittest.TestCase):
         manifest = self._manifest()
         self.assertEqual(manifest['ab_test']['single_difference'], 'entry_band')
         self.assertEqual(manifest['ab_test']['reference_arm'], 'portfolio_a')
-        self.assertEqual(manifest['portfolio_scope'], list(ARM_IDS))
+        # A launch with no ARMS named runs the declared run #7 default, not
+        # every arm in the registry (run #9 added S0/S1/S2 to it).
+        self.assertEqual(manifest['portfolio_scope'], list(DEFAULT_ARMS))
         self.assertEqual(manifest['observations_sec'], [0, 5, 15, 60])
         self.assertEqual(manifest['entry_latency_ms'], 150.0)
         self.assertIn('+8', manifest['ab_test']['decision_rule'])
@@ -415,7 +417,7 @@ class FunnelReportTests(unittest.TestCase):
             self.assertIn('entry_band_label', strategy)
         self.assertFalse(manifest['filters']['creator_gate_in_live_arms'])
         self.assertIn('not used anywhere', manifest['filters']['creator_gate_note'])
-        self.assertEqual(len(manifest['wallet_state_files']), len(ARM_IDS))
+        self.assertEqual(len(manifest['wallet_state_files']), len(DEFAULT_ARMS))
         # Fix #7's ladder numbers are untouched in every arm.
         for name, strategy in manifest['strategies'].items():
             self.assertEqual(strategy['timeout_before_trailing_sec'], 35, name)

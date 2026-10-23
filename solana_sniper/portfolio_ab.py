@@ -268,6 +268,12 @@ ARM_DEFAULTS: dict[str, dict[str, float]] = {
     'portfolio_s2': {'v_sol_birth_min': 31.96, 'delta_max_sol': 1.00,
                      'delta_min_sol': 0.00, 'max_name_copies_120s': 0},
 }
+# What a launch with no ARMS named runs. It is deliberately NOT every arm in
+# the registry: since run #9 the registry also holds the S-books, and starting
+# all of them by accident would triple the RPC bill and mix three experiments.
+DEFAULT_ARMS: tuple[str, ...] = (
+    'portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0',
+)
 ARM_LABELS: dict[str, str] = {
     'portfolio_a': 'A',
     'portfolio_b1_narrow': 'B1',
@@ -452,7 +458,7 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
             overrides.setdefault(arm, {})[field] = value
     wanted = [
         name.strip() for name in
-        os.getenv('ARMS', ','.join(ARM_IDS)).split(',') if name.strip()
+        os.getenv('ARMS', ','.join(DEFAULT_ARMS)).split(',') if name.strip()
     ]
     if 'portfolio_a' not in wanted and not allow_single_arm():
         # A is the reference every other arm is compared to; without it the
@@ -839,6 +845,20 @@ MARK_POLL_RPS_CHECK_SEC = 10.0
 DRAIN_OPEN_POSITIONS_MAX_SEC = 6.0
 
 
+def mark_poll_rps_limit_from_env() -> float:
+    """10-minute rps ceiling at which the cadence is slowed (default 2.2)."""
+    raw = (os.getenv('MARK_POLL_RPS_LIMIT') or '').strip()
+    if not raw:
+        return MARK_POLL_RPS_LIMIT
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f'MARK_POLL_RPS_LIMIT must be a number, got {raw!r}') from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f'MARK_POLL_RPS_LIMIT must be > 0, got {raw!r}')
+    return value
+
+
 def mark_poll_sec_from_env() -> float:
     raw = (os.getenv('MARK_POLL_SEC') or '').strip()
     if not raw:
@@ -965,6 +985,101 @@ def _env_flag(name: str, *, default: bool = False) -> bool:
     if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def minute_pairs(
+    reference_trades: list[dict[str, Any]], arm_trades: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Run #9 §5(4): the two books compared minute by minute, not per coin.
+
+    Both books read the same candidates at the same moment, so a minute is the
+    natural block: the sum each book earned inside that minute. Minutes where
+    only one book traded are counted separately and never enter the paired
+    mean — an empty minute is not a zero.
+    """
+    def by_minute(trades: list[dict[str, Any]]) -> dict[int, float]:
+        buckets: dict[int, float] = {}
+        for trade in trades:
+            at = trade.get('opened_at_epoch')
+            if at is None:
+                continue
+            minute = int(float(at) // 60)
+            buckets[minute] = buckets.get(minute, 0.0) + float(trade.get('pnl_rub') or 0.0)
+        return buckets
+
+    ref = by_minute(reference_trades)
+    arm = by_minute(arm_trades)
+    shared = sorted(set(ref) & set(arm))
+    diffs = [arm[m] - ref[m] for m in shared]
+    if not shared:
+        return {
+            'minutes_with_trades': {'reference': len(ref), 'arm': len(arm)},
+            'minutes_paired': 0, 'share_arm_better': None,
+            'mean_diff_rub': None, 'mean_reference_rub': None,
+            'mean_arm_rub': None, 'n_better': 0, 'n_worse': 0, 'n_tie': 0,
+        }
+    better = sum(1 for d in diffs if d > 1e-9)
+    worse = sum(1 for d in diffs if d < -1e-9)
+    return {
+        'unit': 'minute of the trade opening; sum of PnL inside the minute',
+        'minutes_with_trades': {'reference': len(ref), 'arm': len(arm)},
+        'minutes_paired': len(shared),
+        'share_arm_better': round(better / len(shared), 4),
+        'n_better': better,
+        'n_worse': worse,
+        'n_tie': len(shared) - better - worse,
+        'mean_diff_rub': round(sum(diffs) / len(diffs), 4),
+        'mean_reference_rub': round(sum(ref[m] for m in shared) / len(shared), 4),
+        'mean_arm_rub': round(sum(arm[m] for m in shared) / len(shared), 4),
+    }
+
+
+def selection_decomposition(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    """Run #9 §5(5): the effect of each edit, inside ONE book's trades.
+
+    `dev_buy_sol` is `v_sol_birth - 29.96`. The three cells are exactly the
+    ones the decision rule names: dev 2-4.5 SOL with no copies, dev 2-4.5 SOL
+    with copies, and dev below 2 SOL.
+    """
+    cells: dict[str, list[dict[str, Any]]] = {
+        'dev_2_4.5_copies_0': [], 'dev_2_4.5_copies_pos': [],
+        'dev_lt_2': [], 'unknown': [],
+    }
+    for trade in trades:
+        dev = trade.get('dev_buy_sol')
+        copies = trade.get('name_copies_120s')
+        if dev is None:
+            cells['unknown'].append(trade)
+        elif float(dev) < 2.0:
+            cells['dev_lt_2'].append(trade)
+        elif copies:
+            cells['dev_2_4.5_copies_pos'].append(trade)
+        else:
+            cells['dev_2_4.5_copies_0'].append(trade)
+    return {
+        'rule': (
+            'dev_buy_sol = v_sol_birth - 29.96; the three cells of the '
+            'pre-declared decomposition of §5(5)'
+        ),
+        'cells': {
+            name: {
+                **trade_stats([float(t.get('pnl_rub') or 0.0) for t in rows]),
+                'mean_pct': round(
+                    sum(float(t.get('pnl_pct') or 0.0) for t in rows) / len(rows), 4,
+                ) if rows else None,
+                'fee_cover_n': sum(
+                    1 for t in rows if 'Fee cover' in str(t.get('reason') or '')
+                ),
+                'time_exit_n': sum(
+                    1 for t in rows if 'Time exit' in str(t.get('reason') or '')
+                ),
+                'hard_stop_n': sum(
+                    1 for t in rows if 'Hard stop' in str(t.get('reason') or '')
+                ),
+            }
+            for name, rows in cells.items()
+        },
+    }
 
 
 def paired_stats(
@@ -1225,6 +1340,8 @@ class ABPaperSimulator:
         }
         # --- run #8 §1.4: mark poll cadence (env MARK_POLL_SEC, default 0.15) ---
         self.mark_poll_sec = mark_poll_sec_from_env()
+        self.mark_poll_rps_limit = mark_poll_rps_limit_from_env()
+        self.mark_poll_adaptation_blocked = False
         self.mark_poll_adapted = False
         self.mark_poll_rps_at_check: Optional[float] = None
         self._last_rps_check_epoch = 0.0
@@ -2223,8 +2340,59 @@ class ABPaperSimulator:
             reason = self._resource_reason(free, quota)
         return reason
 
+    def negative_edge_reason(self, now: Optional[float] = None) -> Optional[str]:
+        """Run #9's ONE pre-agreed money stop, and the only one.
+
+        At `EARLY_STOP_NEGATIVE_EDGE_AT_SEC` after the start, if the 95 % CI of
+        the mean PnL of `EARLY_STOP_NEGATIVE_EDGE_BOOK` is entirely below zero,
+        the run stops as `negative_edge_S2`. Both values come from the
+        environment and are declared in the launcher, so the rule is fixed
+        before the first trade and cannot be re-read after the fact. With the
+        variable unset (every other run) this returns None and PnL still never
+        stops a run.
+        """
+        try:
+            threshold = float(os.getenv('EARLY_STOP_NEGATIVE_EDGE_AT_SEC') or 0.0)
+        except ValueError:
+            return None
+        if threshold <= 0:
+            return None
+        now = time.time() if now is None else float(now)
+        if now - self.started_at_epoch < threshold:
+            return None
+        name = (os.getenv('EARLY_STOP_NEGATIVE_EDGE_BOOK') or 'portfolio_s2').strip()
+        book = self.books.get(name)
+        if book is None:
+            return None
+        stats = trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades])
+        ci = stats.get('ci95_mean')
+        self.stop_policy_state['negative_edge'] = {
+            'book': name,
+            'checked_at_sec': round(now - self.started_at_epoch, 1),
+            'threshold_sec': threshold,
+            'n': stats.get('n'),
+            'mean_rub': stats.get('mean'),
+            'ci95_mean': ci,
+        }
+        if ci is None or int(stats.get('n') or 0) < 2:
+            return None
+        if float(ci[1]) < 0.0:
+            return (
+                f'negative_edge_S2 (CI95 of the mean [{ci[0]:.2f}, {ci[1]:.2f}] '
+                f'< 0 after {int(now - self.started_at_epoch)} s, n={stats["n"]})'
+            )
+        return None
+
     def _maybe_early_stop(self) -> None:
         if self.early_stop_reason is not None:
+            return
+        # Run #9: the single declared exception to "PnL never stops the run".
+        money_stop = self.negative_edge_reason()
+        if money_stop:
+            self.early_stop_reason = money_stop
+            self.stop_policy_state['reason'] = money_stop
+            self.early_stop_event.set()
+            log(f'⏹ Pre-agreed stop: {money_stop}', Color.YELLOW)
             return
         # Run #3 addendum: only the four declared reasons may stop the run;
         # a PnL-based stop would be result fitting. The bank never ends the
@@ -2270,12 +2438,24 @@ class ABPaperSimulator:
         if peak is None:
             return
         self.mark_poll_rps_at_check = float(peak)
-        if float(peak) > MARK_POLL_RPS_LIMIT:
+        if float(peak) > self.mark_poll_rps_limit:
+            if self.mark_poll_sec >= MARK_POLL_ADAPTED_SEC:
+                # Run #9 polls at 0.25 s from the start: there is nothing left
+                # to slow down, and claiming an adaptation would be a lie.
+                if not self.mark_poll_adaptation_blocked:
+                    self.mark_poll_adaptation_blocked = True
+                    log(
+                        f'🐢 {peak:.2f} rps in a 10-min window > '
+                        f'{self.mark_poll_rps_limit:.1f}, but the cadence is '
+                        f'already {self.mark_poll_sec:.2f} s; no adaptation '
+                        'is available and none is claimed.', Color.YELLOW,
+                    )
+                return
             self.mark_poll_sec = MARK_POLL_ADAPTED_SEC
             self.mark_poll_adapted = True
             log(
                 f'🐢 Mark poll adapted: {peak:.2f} rps in a 10-min window '
-                f'> {MARK_POLL_RPS_LIMIT:.1f}; cadence '
+                f'> {self.mark_poll_rps_limit:.1f}; cadence '
                 f'{MARK_POLL_SEC_DEFAULT:.2f} -> {MARK_POLL_ADAPTED_SEC:.2f} s.',
                 Color.YELLOW,
             )
@@ -4126,6 +4306,18 @@ class ABPaperSimulator:
                 # The two counters that tell a rule failure from a capacity cap.
                 'slots_full': book.slots_full_count,
                 'cash_below_slot': book.cash_below_slot_count,
+                # Run #9 §3: the funnel of THIS book, counted where the
+                # decision is made, so a lost telemetry row cannot hide it.
+                'reject_counts': {
+                    'name_copies': book.name_copies_count,
+                    'birth_band': book.birth_band_count,
+                    'delta_min': book.delta_min_count,
+                    'delta_max': book.delta_max_count,
+                    'slots_full': book.slots_full_count,
+                    'no_price': book.no_price_count,
+                },
+                'max_name_copies_120s': book.profile.max_name_copies_120s,
+                'v_sol_birth_min': book.profile.v_sol_birth_min,
                 # --- run #3 addendum: bank metrics ---
                 'top_ups': book.top_ups,
                 'capital_injected_rub': round(book.capital_injected_rub, 6),
@@ -4175,6 +4367,16 @@ class ABPaperSimulator:
                 'rocket_accounting': rocket_accounting(
                     book.closed_trades, peaks=peaks,
                 ),
+                # --- run #9 §5(4)-(5) ---
+                'minute_pairs_vs_reference': (
+                    minute_pairs(
+                        portfolios[reference_for[name]]['closed_trades'],
+                        book.closed_trades,
+                    )
+                    if reference_for.get(name) and reference_for[name] != name
+                    else None
+                ),
+                'selection_decomposition': selection_decomposition(book.closed_trades),
             }
         return {
             'run_id': self.run_id,
@@ -4194,7 +4396,8 @@ class ABPaperSimulator:
                 'mark_poll_adapted': self.mark_poll_adapted,
                 'adapted_from_sec': MARK_POLL_SEC_DEFAULT if self.mark_poll_adapted else None,
                 'adapted_to_sec': MARK_POLL_ADAPTED_SEC if self.mark_poll_adapted else None,
-                'rps_limit_10min': MARK_POLL_RPS_LIMIT,
+                'rps_limit_10min': self.mark_poll_rps_limit,
+                'adaptation_blocked': self.mark_poll_adaptation_blocked,
                 'rps_seen_at_last_check': (
                     round(self.mark_poll_rps_at_check, 3)
                     if self.mark_poll_rps_at_check is not None else None
@@ -4221,6 +4424,10 @@ class ABPaperSimulator:
                 'v_sol_birth_max': book.profile.v_sol_birth_max,
                 'delta_min_sol': book.profile.delta_min_sol,
                 'delta_max_sol': book.profile.delta_max_sol,
+                'max_name_copies_120s': book.profile.max_name_copies_120s,
+                'name_copies_window_sec': book.profile.name_copies_window_sec,
+                'reject_counts': portfolios[name].get('reject_counts'),
+                'post_exit': (self._post_exit_stats().get('per_book') or {}).get(name),
                 'entry_latency_ms': book.profile.entry_latency_ms,
                 'exit_rule': self._exit_rule_label(book.profile),
                 'stop_loss_pct': book.profile.stop_loss_pct,
