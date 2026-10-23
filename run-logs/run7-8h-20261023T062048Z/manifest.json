@@ -1,0 +1,567 @@
+{
+  "run_id": "run7-8h-20261023T062048Z",
+  "build": "98552c9",
+  "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+  "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+  "run7_single_difference": "entry_band",
+  "entry_latency_ms": 150.0,
+  "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+  "exit_rule": "identical in every arm — the Round 6 4-mode ladder: SL -10% before TP1/rocket, TP1 +30% sells 50%, rocket bypass +50%, trail 0.85x after +10%, shelf 4.5 s, no-progress 5 s, timeouts 35/90 s",
+  "arms": {
+    "portfolio_a": {
+      "arm_id": "A",
+      "band": "30.5-34.5 / 0.10-2.50",
+      "role": "reference, unchanged in every symbol"
+    },
+    "portfolio_b1_narrow": {
+      "arm_id": "B1",
+      "band": "30.5-34.5 / 0.10-1.00",
+      "changed": "delta_max 2.50 -> 1.00",
+      "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+    },
+    "portfolio_b2_birth": {
+      "arm_id": "B2",
+      "band": "30.5-31.0 / 0.10-2.50",
+      "changed": "v_sol_birth_max 34.50 -> 31.00",
+      "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+    },
+    "portfolio_b3_t0": {
+      "arm_id": "B3",
+      "band": "30.5-34.5 / 0.00-2.50",
+      "changed": "delta_min 0.10 -> 0.00",
+      "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+    }
+  },
+  "run7_expectation": {
+    "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+    "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+    "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+  },
+  "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+  "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+  "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+  "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+  "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+  "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+  "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+  "profiles": {
+    "portfolio_a": {
+      "arm_id": "A",
+      "entry_band": "30.5-34.5 / 0.10-2.50",
+      "changed_vs_a": "none",
+      "exit_rule": "4-mode ladder (identical in every arm)"
+    },
+    "portfolio_b1_narrow": {
+      "arm_id": "B1",
+      "entry_band": "30.5-34.5 / 0.10-1.00",
+      "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+      "exit_rule": "4-mode ladder (identical in every arm)"
+    },
+    "portfolio_b2_birth": {
+      "arm_id": "B2",
+      "entry_band": "30.5-31.0 / 0.10-2.50",
+      "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+      "exit_rule": "4-mode ladder (identical in every arm)"
+    },
+    "portfolio_b3_t0": {
+      "arm_id": "B3",
+      "entry_band": "30.5-34.5 / 0.00-2.50",
+      "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+      "exit_rule": "4-mode ladder (identical in every arm)"
+    }
+  },
+  "ab_test": {
+    "single_difference": "entry_band",
+    "reference_arm": "portfolio_a",
+    "entry_latency_ms": 150.0,
+    "exit_rule": "identical in every arm — the Round 6 4-mode ladder: SL -10% before TP1/rocket, TP1 +30% sells 50%, rocket bypass +50%, trail 0.85x after +10%, shelf 4.5 s, no-progress 5 s, timeouts 35/90 s",
+    "arms": {
+      "portfolio_a": {
+        "arm_id": "A",
+        "band": "30.5-34.5 / 0.10-2.50",
+        "role": "reference, unchanged in every symbol"
+      },
+      "portfolio_b1_narrow": {
+        "arm_id": "B1",
+        "band": "30.5-34.5 / 0.10-1.00",
+        "changed": "delta_max 2.50 -> 1.00",
+        "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+      },
+      "portfolio_b2_birth": {
+        "arm_id": "B2",
+        "band": "30.5-31.0 / 0.10-2.50",
+        "changed": "v_sol_birth_max 34.50 -> 31.00",
+        "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+      },
+      "portfolio_b3_t0": {
+        "arm_id": "B3",
+        "band": "30.5-34.5 / 0.00-2.50",
+        "changed": "delta_min 0.10 -> 0.00",
+        "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+      }
+    },
+    "decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+    "expectation": {
+      "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+      "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+      "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+    },
+    "power_note": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow"
+  },
+  "status": "running",
+  "early_stop_reason": null,
+  "created_at_utc": "2026-10-23T06:20:49+00:00",
+  "planned_duration_sec": 28800,
+  "paper_only": true,
+  "signed_transactions": 0,
+  "submitted_transactions": 0,
+  "portfolio_scope": [
+    "portfolio_a",
+    "portfolio_b1_narrow",
+    "portfolio_b2_birth",
+    "portfolio_b3_t0"
+  ],
+  "enrich": {
+    "enabled": true,
+    "path": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/exports/enrich.csv"
+  },
+  "strategies": {
+    "portfolio_a": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "98552c9",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "exit_rule": "4-mode ladder (identical in every arm)",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        }
+      },
+      "arm_id": "A",
+      "entry_band": "30.5-34.5 / 0.10-2.50",
+      "changed_vs_a": "none",
+      "entry_band_label": "30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    },
+    "portfolio_b1_narrow": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "98552c9",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "exit_rule": "4-mode ladder (identical in every arm)",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        }
+      },
+      "arm_id": "B1",
+      "entry_band": "30.5-34.5 / 0.10-1.00",
+      "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+      "entry_band_label": "30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    },
+    "portfolio_b2_birth": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "98552c9",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "exit_rule": "4-mode ladder (identical in every arm)",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        }
+      },
+      "arm_id": "B2",
+      "entry_band": "30.5-31.0 / 0.10-2.50",
+      "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+      "entry_band_label": "30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    },
+    "portfolio_b3_t0": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "98552c9",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "exit_rule": "4-mode ladder (identical in every arm)",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "4-mode ladder (identical in every arm)"
+        }
+      },
+      "arm_id": "B3",
+      "entry_band": "30.5-34.5 / 0.00-2.50",
+      "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+      "entry_band_label": "30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    }
+  },
+  "rpc": {
+    "provider": "Helius",
+    "http_host": "mainnet.helius-rpc.com",
+    "wss_host": "mainnet.helius-rpc.com",
+    "methods": [
+      "getMultipleAccounts",
+      "getSignaturesForAddress",
+      "getTokenAccountsByOwner"
+    ],
+    "read_only": true,
+    "credentials_stored": false,
+    "http_shadows_enabled": false,
+    "candidate_entry_batch_accounts": [
+      "mint",
+      "curve",
+      "PUMP_GLOBAL_PDA",
+      "PUMP_FEE_CONFIG_PDA"
+    ],
+    "candidate_entry_batch_commitment": "processed",
+    "null_retry": "one retry after 120 ms",
+    "latency_policy": "measure actual latency/errors; no SLA or coverage promise"
+  },
+  "fees": {
+    "source": "on-chain Pump Global + FeeConfig; quote fills use SDK integer math",
+    "entry_network_fee_sol_model": 8e-05,
+    "exit_network_fee_sol_model_per_sell": 5e-05,
+    "network_fees_are_simulation_assumptions": true,
+    "on_chain_curve_fees": "included in out_amount_raw; reported separately from network fees",
+    "unsupported_or_unknown": "fail closed"
+  },
+  "filters": {
+    "sources": "pumpfun",
+    "standard_supply": true,
+    "is_mayhem": false,
+    "quote_mint": "SOL/WSOL only",
+    "mint_authority_revoked": true,
+    "freeze_authority_revoked": true,
+    "duplicate_symbol_gate": false,
+    "creator_history_policy": "advisory telemetry/warnings only",
+    "creator_gate_in_live_arms": false,
+    "creator_gate_note": "the creator gate lost against the average in 4/4 independent samples (run3 -6.29 %, run5 -4.77 %, run6 both halves -4.01 / -6.44 % vs -2.99/-2.86/-4.11/-4.51) and is not used anywhere"
+  },
+  "observations_sec": [
+    0,
+    5,
+    15,
+    60
+  ],
+  "observation_policy": "scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun",
+  "accounting": {
+    "snapshot_fill": "out_amount_raw",
+    "conservative_shadow": "min_out_raw at QUOTE_SLIPPAGE_BPS=100",
+    "quote_slippage_bps": 100,
+    "gross_curve_pnl_rub": "realized snapshot PnL before modeled network fees; on-chain curve fee remains embedded in quote output",
+    "network_fees": "tracked separately; deducted from realized returns and shown as open fee liability",
+    "usd_rub_rate": 90.0
+  },
+  "wallet_state_files": [
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/wallet_portfolio_a.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/wallet_portfolio_b1_narrow.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/wallet_portfolio_b2_birth.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/wallet_portfolio_b3_t0.json"
+  ],
+  "data_files": {
+    "sniper_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/sniper.db",
+    "telemetry_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/telemetry.sqlite",
+    "exports": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/exports"
+  },
+  "api_key_or_rpc_url_with_query": false,
+  "started_at_utc": "2026-10-23T06:20:49+00:00",
+  "pumpportal_fast_source": true,
+  "helius_program_fallback": false,
+  "sources": "pumpfun"
+}
