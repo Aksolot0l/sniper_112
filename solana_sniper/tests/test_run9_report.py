@@ -176,9 +176,9 @@ class RunNineReportTests(unittest.TestCase):
         # The §5(4) block carries a real number, not a placeholder.
         self.assertIn('| S2 | 2 / 2 | 1 |', text)
         self.assertIn('доля минут', text)
-        # The B gate is spelled out on a 30-minute smoke.
-        self.assertIn('ворота прогона b', text.lower())
-        self.assertIn('прогон b запускается', text.lower())
+        # The stage-10b gate is spelled out on a 30-minute smoke.
+        self.assertIn('ворота этапа 10b', text.lower())
+        self.assertIn('этап 10b запускается', text.lower())
         # And it never claims money.
         self.assertIn('не про деньги', text)
         self.assertNotIn('стало прибыльно', text.replace('«стало прибыльно»', ''))
@@ -188,6 +188,34 @@ class RunNineReportTests(unittest.TestCase):
         self.assertIn('длительность ≥ 43 000 c', text)
         self.assertIn('неисправленные ошибки RPC ≤ 1 %', text)
         self.assertNotIn('технический смоук на 30 минут', text)
+
+    def test_the_one_hour_stage_gets_its_own_acceptance(self) -> None:
+        # Run #10a is a technical hour: 3 500 s, 2.2 rps window, 429 budget,
+        # 8 ghost marks, S0 >= 80 and S2 >= 8 trades — and money is not read.
+        text = self._report(duration=3_600)
+        self.assertIn('этап: **10a (1 ч)**', text)
+        self.assertIn('длительность ≥ 3 500 c', text)
+        self.assertIn('худшее 10-мин окно ≤ 2.2 rps', text)
+        self.assertIn('429 ≤ 0.5 % запросов', text)
+        self.assertIn('post_exit.csv: ≥ 8 меток у каждого выхода', text)
+        self.assertIn('S0 ≥ 80, S2 ≥ 8', text)
+        self.assertIn('неисправленные ошибки RPC ≤ 1 %', text)
+        self.assertNotIn('технический смоук на 30 минут', text)
+
+    def test_the_twelve_hour_stage_demands_the_money_sample(self) -> None:
+        text = self._report(duration=43_200)
+        self.assertIn('этап: **10b (12 ч)**', text)
+        self.assertIn('S0 ≥ 400, S2 ≥ 80', text)
+        self.assertIn('≥ +10 ₽', text)
+        # The 12-hour page must not describe itself as a technical smoke.
+        self.assertNotIn('технический смоук', text)
+        self.assertIn('CI95 средней S2 и разница', text)
+
+    def test_a_smoke_keeps_its_lighter_thresholds(self) -> None:
+        text = self._report(duration=1_800)
+        self.assertIn('этап: **смоук**', text)
+        self.assertIn('длительность ≥ 1 790 c', text)
+        self.assertIn('худшее 10-мин окно ≤ 2.5 rps', text)
 
     def test_summary_dispatch_prefers_the_run9_page(self) -> None:
         with patch.dict(os.environ, RUN9_ENV, clear=True):

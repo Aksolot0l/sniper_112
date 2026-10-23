@@ -621,6 +621,12 @@ def _run9_summary_markdown(
     profiles = summary.get('profiles') or {}
     planned = float(manifest.get('planned_duration_sec') or 0.0)
     long_run = planned >= 43_000.0
+    # Run #10 has two stages with different acceptance: 10a is one hour and is
+    # judged on technique only, 10b is twelve hours and carries the money
+    # question. The thresholds below follow the stage, never the outcome.
+    hour_run = not long_run and planned >= 3_000.0
+    # `stage` is already used below for a latency stage, so this one is named.
+    stage_label = '10b (12 ч)' if long_run else ('10a (1 ч)' if hour_run else 'смоук')
 
     def label(name: str) -> str:
         return str((profiles.get(name) or {}).get('arm_id') or name)
@@ -634,6 +640,7 @@ def _run9_summary_markdown(
     add(f"# Прогон {manifest.get('run_id')}")
     add('')
     add(f"- build: `{manifest.get('build')}`")
+    add(f"- этап: **{stage_label}**; номер прогона: `{manifest.get('run_number')}`")
     add(f"- длительность: {manifest.get('actual_duration_sec')} c "
         f"(план {manifest.get('planned_duration_sec')} c)")
     add(f"- paper-only: {manifest.get('paper_only')}; подписано транзакций: "
@@ -738,11 +745,11 @@ def _run9_summary_markdown(
             if int(((summary.get(name) or {}).get('round_trip_cost') or {})
                    .get('n_flat_exact') or 0) >= 5
         )
-        add(f"**Ворота прогона B:** медиана round trip {worst:.2f} % "
-            f"{'≤ 4.0 % — прогон B разрешён' if worst <= 4.0 else '> 4.0 % — прогон B не запускается'}.")
+        add(f"**Ворота этапа 10b:** медиана round trip {worst:.2f} % "
+            f"{'≤ 4.0 % — этап 10b разрешён' if worst <= 4.0 else '> 4.0 % — этап 10b не запускается'}.")
     else:
-        add('**Ворота прогона B:** неподвижных сделок слишком мало, чтобы назвать '
-            'медиану; по правилу §4 приёмки B не запускается до ручного решения.')
+        add('**Ворота этапа 10b:** неподвижных сделок слишком мало, чтобы назвать '
+            'медиану; по правилу §4 этап 10b не запускается до ручного решения.')
     add('')
 
     add('## Что было бы при выходе по часам: реальная цена через 5 с')
@@ -833,7 +840,7 @@ def _run9_summary_markdown(
         'правиле §5(5): эффект пола и эффект фильтра копий видны внутри одной книги.')
     add('')
 
-    add('## Приёмка прогона #9')
+    add(f'## Приёмка прогона #9 (этап {stage_label})')
     add('')
     rpc = manifest.get('rpc_metrics') or {}
     telemetry = manifest.get('telemetry') or {}
@@ -846,48 +853,73 @@ def _run9_summary_markdown(
     )
     duration = float(manifest.get('actual_duration_sec') or 0.0)
     peak = rpc.get('requests_per_sec_max_10min')
-    min_trades = 5 if not long_run else 0
+    # Run #10 §3/§4: the trade floor follows the stage. An hour has to show the
+    # flow is really there (S0 >= 80, S2 >= 8); twelve hours has to be able to
+    # answer the money question (S0 >= 400, S2 >= 80). A 30-minute smoke keeps
+    # the old "at least five per book" floor.
+    if long_run:
+        trade_mins = {'portfolio_s0': 400, 'portfolio_s2': 80}
+    elif hour_run:
+        trade_mins = {'portfolio_s0': 80, 'portfolio_s2': 8}
+    else:
+        trade_mins = {}
+    duration_min_text = '43 000' if long_run else ('3 500' if hour_run else '1 790')
+    duration_min_value = 43_000.0 if long_run else (3_500.0 if hour_run else 1_790.0)
+    default_min = 0 if long_run else (0 if hour_run else 5)
+    # Run #10 §2a: eight scheduled marks per exit. The smoke reports the same
+    # number, so a broken schedule shows up offline too; only its threshold is
+    # lower (>= 5) because a smoke may cut a ghost short at the very end.
+    marks_needed = 8 if (long_run or hour_run) else 5
     post_exit_ok = all(
         int((((summary.get(name) or {}).get('post_exit') or {})
              .get('exits_with_marks') or 0)) >= int((((summary.get(name) or {}).get('post_exit') or {})
                                                        .get('exits_followed') or 0))
         and int((((summary.get(name) or {}).get('post_exit') or {})
-                 .get('marks_per_exit_min') or 0)) >= 5
+                 .get('marks_per_exit_min') or 0)) >= marks_needed
         for name in arms
     )
     money_rule = (
-        'CI95 средней S2 исключает 0 и оценка ≥ +2 % -> отбор принят; включает 0 '
-        '-> не доказано; целиком ниже 0 -> отбор отклонён'
+        'отбор: CI95 средней S2 исключает 0 и оценка ≥ +10 ₽ -> принят; включает 0 '
+        '-> не доказано, конфиг не повторять; целиком ниже 0 -> отклонён. '
+        'Фильтр копий читается внутри S0 по разнице клеток «дев ≥ 2» без копий и '
+        'с копиями: ≥ 20 ₽ с CI95 вне 0 -> оставить, < 10 ₽ -> снять. '
+        'Пролёт стопа сверяется с медианой −14.5 %: хуже −17 % -> пересчитать конфиг'
     )
     rows = (
         ('paper_only = true, подписано 0',
          bool(manifest.get('paper_only')) and int(manifest.get('signed_transactions') or 0) == 0,
          f"{manifest.get('paper_only')} / {manifest.get('signed_transactions')}"),
-        (f'длительность ≥ {"43 000" if long_run else "1 790"} c',
-         duration >= (43_000.0 if long_run else 1_790.0), f'{duration:.0f} c'),
+        (f'длительность ≥ {duration_min_text} c',
+         duration >= duration_min_value, f'{duration:.0f} c'),
         ('early_stop_reason = null', not manifest.get('early_stop_reason'),
          manifest.get('early_stop_reason') or 'null'),
-        (f"неисправленные ошибки RPC ≤ {'1' if long_run else '2'} %",
-         float(rpc.get('unrecovered_rate') or 0.0) <= (0.01 if long_run else 0.02),
+        (f"неисправленные ошибки RPC ≤ {'1' if (long_run or hour_run) else '2'} %",
+         float(rpc.get('unrecovered_rate') or 0.0)
+         <= (0.01 if (long_run or hour_run) else 0.02),
          f"{100.0 * float(rpc.get('unrecovered_rate') or 0.0):.2f} % "
          f"({rpc.get('unrecovered_failures', 0)} из {rpc.get('requests', 0)})"),
         ('средний rps ≤ 1.8', float(rpc.get('requests_per_sec') or 0.0) <= 1.8,
          m(rpc.get('requests_per_sec'))),
-        ('худшее 10-мин окно ≤ 2.5 rps',
-         peak is None or float(peak) <= 2.5,
+        (f'худшее 10-мин окно ≤ {2.2 if (long_run or hour_run) else 2.5} rps',
+         peak is None or float(peak) <= (2.2 if (long_run or hour_run) else 2.5),
          m(peak) if peak is not None else '— (окно не набрано)'),
+        ('429 ≤ 0.5 % запросов',
+         int(rpc.get('http_429_count') or 0)
+         <= 0.005 * max(1, int(rpc.get('requests') or 0)),
+         f"{rpc.get('http_429_count', 0)} из {rpc.get('requests', 0)}"),
         ('dropped_events = 0', int(telemetry.get('dropped_events') or 0) == 0,
          int(telemetry.get('dropped_events') or 0)),
         ('write_errors = 0', int(telemetry.get('write_errors') or 0) == 0,
          int(telemetry.get('write_errors') or 0)),
         ('0 открытых позиций в конце (после паузы на закрытие)',
          open_positions == 0, f"{open_positions} (ждали {drain.get('waited_sec')} c)"),
-        (f'сделок ≥ {min_trades} в каждой книге' if min_trades else 'сделки в каждой книге',
-         all(int(((summary.get(name) or {}).get('stats') or {}).get('n') or 0) >= min_trades
-             for name in arms),
+        ('сделок не меньше порога этапа: ' + ', '.join(
+            f'{label(name)} ≥ {trade_mins.get(name, default_min)}' for name in arms),
+         all(int(((summary.get(name) or {}).get('stats') or {}).get('n') or 0)
+             >= trade_mins.get(name, default_min) for name in arms),
          ', '.join(f"{label(name)}={((summary.get(name) or {}).get('stats') or {}).get('n', 0)}"
                    for name in arms)),
-        ('post_exit.csv: ≥ 5 меток у каждого выхода', post_exit_ok,
+        (f'post_exit.csv: ≥ {marks_needed} меток у каждого выхода', post_exit_ok,
          ', '.join(
              f"{label(name)}: {((summary.get(name) or {}).get('post_exit') or {}).get('exits_followed', 0)}"
              f" выходов, мин "
@@ -942,10 +974,19 @@ def _run9_summary_markdown(
         'окно было мягким (5 стопов из 64 против 28 %, ожидаемых по сетке).')
     add('- Любая цифра PnL печатается только вместе с n, средним, медианой, CI95 и '
         'разбивкой по выходам; отдельного «стало прибыльно» здесь нет.')
-    if not long_run:
+    if hour_run:
+        add('- Это часовая проверка техники, а не денег: при потоке смоука час даёт '
+            'S0 ≈ 130 и S2 ≈ 18 сделок, то есть CI95 шириной ≈ ±9 ₽ и ≈ ±51 ₽. '
+            'Ожидаемый эффект отбора 15–25 ₽ лежит внутри этого шума, поэтому '
+            'деньги на этапе 10a не читаются, а этап 10b не гейтится по PnL.')
+    elif not long_run:
         add('- Это технический смоук на 30 минут: он отвечает про задержки, стоимость '
-            'круга и то, что пропускает фильтр, а не про деньги. Прогон B запускается '
-            'только при выполненной приёмке A и медиане круга ≤ 4.0 %.')
+            'круга и то, что пропускает фильтр, а не про деньги. Этап 10b '
+            'запускается только при выполненной приёмке 10a и медиане круга ≤ 4.0 %.')
+    else:
+        add('- Это 12-часовой прогон: он отвечает на вопрос отбора, а не на вопрос '
+            '«стало прибыльно». Даже здесь вердикт — это CI95 средней S2 и разница '
+            'клеток внутри S0, а не сумма ₽.')
     add('- Ничего не подписывалось и не отправлялось: `signed_transactions = 0`, '
         'RPC только на чтение.')
     add('')

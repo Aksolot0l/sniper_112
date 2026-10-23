@@ -100,7 +100,32 @@ profitable now", and any PnL statement without `n`, mean, median, CI95 and the
 exit breakdown.
 
 
-## Quick start (local PC, 30 min)
+## Quick start (local PC) — run #10 in two stages
+
+```
+# stage 10a, one hour, technique only
+DURATION_SEC=3600 RUN_NUMBER=run10 bash START_MAC_LINUX.sh \
+    --run-id run10a-1h-$(date -u +%Y%m%dT%H%M%SZ)
+
+# stage 10b, twelve hours — only after 10a passes its acceptance
+DURATION_SEC=43200 RUN_NUMBER=run10 bash START_MAC_LINUX.sh \
+    --run-id run10b-12h-$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Environment for both stages (identical, not one number moves between them):
+
+```
+ARMS=portfolio_s0,portfolio_s2
+ENTRY_BIRTH_MIN_SOL=30.50     # shared; S0 uses it — never 31.96
+ENTRY_BIRTH_MIN_S0=30.50 ; MAX_NAME_COPIES_S0=off
+ENTRY_BIRTH_MIN_S2=31.96 ; MAX_NAME_COPIES_S2=0
+ENTRY_DELTA_MIN_SOL=0.00 ; ENTRY_DELTA_MAX_SOL=1.00
+EXIT_MODE=fee_cover ; EXIT_FEE_COVER_PCT=3.5 ; EXIT_TIME_SEC=5.0
+EXIT_HARD_STOP_PCT=10.0 ; MARK_POLL_SEC=0.25
+TELEMETRY_OBSERVATION_OFFSETS_SEC=0,5
+```
+
+## Quick start (offline smoke)
 
 ```
 Windows:      START_WINDOWS.bat
