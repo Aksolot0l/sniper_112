@@ -1,0 +1,18 @@
+run_id: run9-30m-20261023T165747Z
+snapshot_utc: 2026-10-23T17:29:44Z
+mode: full
+run_dir_size: 31M
+opens: 74
+closes: 74
+[17:27:12] 👁️ Новая монета: AM3WetfKzEUkhvHHsae8SyFUKHshge1B4B2qGv24pump (Pump.fun | Brainobot)
+[17:27:13] 👁️ Новая монета: 8cYYFHYzxAPpRoCstb6NefWoNtH3RooExRspcvqNnvyS (Pump.fun | Brainobot)
+[17:27:13] 🛑 8cYY…nvyS — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (BoTx8y9ynfdxf5ZjWtCoBVkff52qKA82ysaLU8ZM6d8T)
+[17:27:31] 👁️ Новая монета: 3LSt2cZnt8c3EBMNhyivevYEB5Vem8QQifbyFFqmpump (Pump.fun | SQUAD)
+[17:27:39] 👁️ Новая монета: 6toyNNWwhXJ1Bt8fyresz6iR6TUjzxx8PkkcQ2zrpump (Pump.fun | DUPE)
+[17:27:39] 🧪 [portfolio_s0] OPEN 6toy…pump | birth=31.48 now=31.48 delta=+0.00 SOL | cost≈500.00 ₽ | tokens(out)=1704516585753 | fee=95+30 bps | slots=1/3
+[17:27:42] 👁️ Новая монета: D9mTnEWB3QcZzdeCkQ369k5UUWr8Phqjqnc8Brhspump (Pump.fun | GRAND)
+[17:27:42] 👁️ Новая монета: GcdyPgDV3xbgddGFfmH5k9DSnbgBjePqCfqYmEK1ChGV (Pump.fun | GRAND)
+[17:27:42] 🛑 Gcdy…ChGV — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[17:27:44] ✅ [portfolio_s0] CLOSE 6toy…pump | Time exit (5.0s) | PnL=-12.17 ₽ (-2.4%) | cash=2265.53 ₽
+[17:27:55] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run9-30m-20261023T165747Z/SUMMARY.md
+[17:27:55] ⏹ A/B run finalized: run9-30m-20261023T165747Z; open and pending positions remain separately recorded.
