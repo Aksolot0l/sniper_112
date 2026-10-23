@@ -6,19 +6,23 @@
 - RPC access is read-only. Never put Helius/API credentials in source files, manifests, logs, or archives.
 - One bot process at a time (Helius RPS budget). `run_local_session.py` refuses a second session.
 
-## Run #8 (active): 30 min, two books, fee_cover exit
+## Run #9 (active): S0 vs S2 — dev selection and ticker copies
 
-Base `0c7586c` + the run #8 blocks below. **One run, one process, paper only.**
+Base `52d6e53` + the run #9 blocks below. **One run, one process, paper only.**
+Stage A is a 30-minute smoke (technique, not money); stage B is 12 hours and is
+started only after A's acceptance passes and the median `round_trip_cost_pct`
+is ≤ 4.0 %.
 
-| book | `v_sol_birth` | `delta` | difference |
-|---|---|---|---|
-| S1 `portfolio_s1` | 30.50 … 34.50 | 0.10 … **1.00** | exactly B1 |
-| S0 `portfolio_s0` | 30.50 … 34.50 | **0.00** … 1.00 | S1 with the momentum gate removed |
+| book | `v_sol_birth` | `delta` | name copies (120 s) | what it is |
+|---|---|---|---|---|
+| S0 `portfolio_s0` | 30.50 … 34.50 | 0.00 … 1.00 | off | run #8's book verbatim (+558.02 ₽ in 30 min) |
+| S2 `portfolio_s2` | **31.96** … 34.50 | 0.00 … 1.00 | **≤ 0** | S0 + dev selection (`v_sol_birth = 29.96 + dev_buy`, so ≥ 31.96 means the dev bought ≥ 2 SOL) |
 
-S0 is the control **for S1** (`ARM_REFERENCE['portfolio_s0'] = 'portfolio_s1'`).
-There is no arm A in this run: `ALLOW_SINGLE_ARM=1` lets it start, the manifest
-carries `reference_arm: null`, `mode: single_arm_smoke` and the line
-«сравнения с A в этом прогоне нет».
+The two books differ in exactly two things — the birth floor and the copy
+filter. The exit, the entry timing, the slots, the stake and the cadence are
+identical: any other difference would make the comparison meaningless.
+`ALLOW_SINGLE_ARM=1` lets the pair start; the manifest carries the truthful
+per-book band of each book.
 
 Exit — one rule for both books, `EXIT_MODE=fee_cover`, before any Round 6 rule:
 hard stop **−10 %** → sell 100 % at **+3.5 %** → otherwise the **5 s** clock.
@@ -26,38 +30,57 @@ All three always sell the whole remaining position; TP1, trail, shelf,
 no-progress and the 35/90 s timeouts are not called in this mode and cannot
 appear in `exit_breakdown`. The 3.5 % is measured, not tuned: the round trip
 costs 3.25 % (202 run #7 trades whose price did not move), leaving 0.25 pp of
-slack. Why this exit: the replay of run #7's 167 real B1 trades, net of 3.25 %,
-gives B1+fee-cover **−4.93 %**, B1 held to 5 s −2.22 %, and the whole t0 band +
-5 s + stop −10 % **+1.46 %** — `delta ≥ 0.10` buys somebody else's move.
+slack. **The exit is untouchable in run #9** — it is not the experiment.
+
+The name-copy filter is pure arithmetic on a dict the process already holds
+(`symbol_lower → [found_at]`, 120 s window, no RPC). An empty ticker is never
+filtered; the reject reason is `name_copies_120s`.
 
 Entry latency is measured, not modelled: `t_detect_ms` (WSS packet → candidate
 row), `t_filters_ms` (row → security verdict), `t_read_ms` (verdict → the curve
 read the fill is priced from), `t_fill_ms` (read → fill row), `t_total_ms`
-(packet → fill). They land in `decisions.csv` and in `closed_trades`.
-`ENTRY_LATENCY_MS=0` removes the artificial floor only; the fill still waits for
-the real batch and `t_read_ms` is 0 because the security batch **is** the entry
-read — no second entry RPC is issued to make a stage look busy. The one read
-that really sat between the verdict and the fill, the SOL/USD rate, now starts
-with the security batch and is cancelled on every rejection.
+(packet → fill). `ENTRY_LATENCY_MS=0` removes the artificial floor only.
 
-Marks are polled every `MARK_POLL_SEC=0.15` s (floor 0.05) instead of the
-hardcoded 0.40 s. If any 10-minute window passes 2.2 rps the cadence rises once
-to 0.25 s and `mark_poll_adapted: true` is reported; the run does not stop on
-rps. `accountSubscribe` is deliberately **not** used: a second mark source would
-make exit timing depend on which stream arrived first.
+Marks are polled every `MARK_POLL_SEC=0.25` s under `MARK_POLL_RPS_LIMIT=2.5`:
+the cadence starts where the 12-hour budget needs it, so no mid-run adaptation
+decision exists. The run does not stop on rps, and raising the rate to "survive
+to the end" is forbidden. `accountSubscribe` is deliberately **not** used: a
+second mark source would make exit timing depend on which stream arrived first.
+
+After every exit the run keeps a **10 s ghost**: `exports/post_exit.csv` carries
+one mark per poll (`portfolio, mint, exit_at_epoch, sec_since_exit, price_usd,
+pnl_vs_entry_pct, pnl_vs_exit_pct`) with the mandatory `+0.5 / +1 / +2 / +5 /
++10` s points taken from the nearest mark. It costs no extra RPS — it is fed
+from the batch that already reads. It answers the question the paper fill
+distorts: it books the trigger price in the same snapshot, while a real sell
+arrives later. Every closed trade also carries `price_at_5s`, the real price
+5.0 s after entry (from the ghost when the position has already exited).
 
 Observation offsets in this run: **only `0, 5`** s (`TELEMETRY_OBSERVATION_OFFSETS_SEC=0,5`).
 
-Acceptance (§4): paper_only and 0 signatures; ≥1 790 s; `early_stop_reason =
+Acceptance A (§4): paper_only and 0 signatures; ≥1 790 s; `early_stop_reason =
 null`; unrecovered RPC errors ≤ 2 %; mean rps ≤ 1.8 and worst 10-min window
-≤ 2.2 (or the adaptation recorded); `dropped_events = 0`; `write_errors = 0`;
-0 open positions at the finish; `fee_cover` fired at least once per book;
-`t_total_ms` median recorded without a threshold.
+≤ 2.5; `dropped_events = 0`; `write_errors = 0`; 0 open positions at the finish;
+≥ 5 trades per book (otherwise the real number is reported); ≥ 5 ghost marks
+per exit; manifest bands S0 30.50–34.50 / S2 31.96–34.50, copies off / 0;
+median `round_trip_cost_pct` recorded — **> 4.0 % and stage B does not start**.
 
-Out of scope: money statistics (30–60 trades per book; the replay expects
-≈ −4.9 % for S1 and ≈ −4.6 % for S0), any comparison with A, any
-better/worse verdict. The report measures latency, execution cost and whether
-`fee_cover` fires — never profitability.
+Acceptance B (§5): ≥ 43 000 s of real polling; `early_stop_reason = null`; mean
+rps ≤ 1.8, worst 10-min window ≤ 2.5; unrecovered RPC errors ≤ 1 %; 0 open
+positions; `post_exit.csv` complete.
+
+Verdict, fixed before the start: S2's CI95 excludes 0 and is ≥ +2 % → the dev
+selection is accepted; includes 0 → not proven, the config is not repeated;
+entirely < 0 → rejected. S0 vs S2 is a **separate** conclusion, paired by
+minute (the share of minutes where S2 > S0, plus the mean ₽ difference), and
+inside S0 the pre-declared decomposition is `dev 2–4.5 & copies = 0`,
+`dev 2–4.5 & copies > 0`, `dev < 2`. The only pre-agreed money stop: at hour 8,
+if S2's CI95 is entirely below zero → `negative_edge_S2`.
+
+Out of scope: any direct comparison with run #8's numbers, any "it is
+profitable now", and any PnL statement without `n`, mean, median, CI95 and the
+exit breakdown.
+
 
 ## Quick start (local PC, 30 min)
 
@@ -90,8 +113,8 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
 - Tests: `tests/` (`python -m unittest discover -s tests`). Bundle builder: `tools/build_bundle.py`
 - Report template: `../run-logs/run7-TEMPLATE/RUN_NOTES.md` (run #7 comparison table);
-  run #8 writes its own page (`_run8_summary_markdown` in `main_ab.py`), template in
-  `../run-logs/run8-30min/RUN_NOTES.md`
+  run #9 writes its own page (`_run9_summary_markdown` in `main_ab.py`), template in
+  `../run-logs/run9-12h/RUN_NOTES.md`
 
 ## Strategy state (2026-10-22)
 
@@ -99,7 +122,7 @@ The run #7 arms below are **closed**: 8 h, build `98552c9`, A 296 trades
 −2 849.90 ₽, B1 167 / −1 107.10 ₽, B2 163 / −2 101.73 ₽, B3 758 / −4 161.36 ₽;
 no arm reached the pre-registered `paired mean(arm − A) ≥ +8 ₽`, and the paired
 column is structurally 0 (identical entry moment and ladder). Kept for the
-record; the live configuration is run #8 above.
+record; the live configuration is run #9 above.
 
 Entry v3 — live momentum, shared by both arms:
 

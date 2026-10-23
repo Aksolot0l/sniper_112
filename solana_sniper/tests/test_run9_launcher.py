@@ -163,5 +163,40 @@ class ShippedScriptDefaultsTests(unittest.TestCase):
         self.assertIn('run #9 preflight OK', script)
 
 
+class BundleReadMeTests(unittest.TestCase):
+    """The text a user reads before the run must describe THIS run."""
+
+    def setUp(self) -> None:
+        import tools.build_bundle as bundle
+        self.text = bundle.READ_ME_FIRST
+
+    def test_it_is_the_run9_text_and_names_the_build(self) -> None:
+        self.assertIn('ПРОГОН №9', self.text)
+        self.assertNotIn('ПРОГОН №8', self.text)
+        self.assertIn('BUILD', self.text)
+
+    def test_both_books_are_declared_with_their_own_edge(self) -> None:
+        for needle in (
+            'S0 portfolio_s0  30.50-34.50 / 0.00-1.00 / копии: выкл',
+            'S2 portfolio_s2  31.96-34.50 / 0.00-1.00 / копии <= 0 за 120 с',
+            '31.96 = 29.96 + 2 SOL',
+            'name_copies_120s',
+        ):
+            self.assertIn(needle, self.text)
+
+    def test_the_exit_and_the_cadence_are_the_frozen_ones(self) -> None:
+        for needle in ('hard stop -10 %', '+3.5 %', 'иначе 5 с', '0,25 с', '2.5 rps'):
+            self.assertIn(needle, self.text)
+        # Run #9 declares exactly one money stop, on the 8th hour.
+        self.assertIn('negative_edge_S2', self.text)
+        self.assertIn('8-м часу', self.text)
+
+    def test_both_stages_and_their_acceptance_are_written_down(self) -> None:
+        self.assertIn('DURATION_SEC=1800', self.text)
+        self.assertIn('DURATION_SEC=43200', self.text)
+        self.assertIn('4.0 %', self.text)
+        self.assertIn('43 000', self.text)
+
+
 if __name__ == '__main__':
     unittest.main()
