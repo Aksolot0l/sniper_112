@@ -27,7 +27,10 @@ from detector import (
     pumpportal_listener,
     select_programs,
 )
-from portfolio_ab import ARM_IDS, ABPaperSimulator, entry_band_label, profiles_from_settings
+from portfolio_ab import (
+    ARM_IDS, ARM_REFERENCE, ABPaperSimulator, entry_band_label,
+    profiles_from_settings,
+)
 from price import (
     ReadOnlyRpcBatcher,
     get_sol_usd,
@@ -74,6 +77,22 @@ def _observation_offsets() -> tuple[int, ...]:
 
 def _enrich_enabled() -> bool:
     return os.getenv('ENTRY_ENRICH', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def shared_entry_latency_ms() -> float:
+    """The entry delay every book of this run actually uses (run #8: 0).
+
+    Read from the built profiles, not from the env, so the manifest cannot
+    advertise one number while the books trade another.
+    """
+    try:
+        profiles = profiles_from_settings(load_settings())
+        return float(next(iter(profiles.values())).entry_latency_ms)
+    except Exception:
+        try:
+            return float(os.getenv('ENTRY_LATENCY_MS', '150').strip() or 150.0)
+        except ValueError:
+            return 150.0
 
 
 def _arm_bands() -> dict[str, str]:
@@ -570,6 +589,14 @@ def _strategy_metadata() -> dict[str, Any]:
                                           'a fixed exit, and identical to dev_buy <= '
                                           '1 SOL; risk: on the run6 ladder it lost '
                                           '(-507 RUB vs +755 RUB for birth > 31)'},
+            # --- run #8: a two-book pair with no reference arm --------------
+            'portfolio_s1': {'arm_id': 'S1', 'band': '30.5-34.5 / 0.10-1.00',
+                             'changed': 'nothing: S1 IS B1 (delta_max 2.50 -> 1.00)',
+                             'role': 'run #8 book under fee_cover exit'},
+            'portfolio_s0': {'arm_id': 'S0', 'band': '30.5-34.5 / 0.00-1.00',
+                             'changed': 'delta_min 0.10 -> 0.00, against S1 not A',
+                             'role': 'run #8 control: same band as S1 minus the '
+                                     'momentum gate'},
             'portfolio_b3_t0': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.00-2.50',
                                 'changed': 'delta_min 0.10 -> 0.00',
                                 'why': 'the only arm whose expected gain is '
@@ -654,6 +681,10 @@ def _strategy_metadata() -> dict[str, Any]:
                                        'changed': 'v_sol_birth_max 34.50 -> 31.00'},
                 'portfolio_b3_t0': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.00-2.50',
                                     'changed': 'delta_min_sol 0.10 -> 0.00'},
+                'portfolio_s1': {'arm_id': 'S1', 'band': '30.5-34.5 / 0.10-1.00',
+                                 'changed': 'none vs B1; no A in this run'},
+                'portfolio_s0': {'arm_id': 'S0', 'band': '30.5-34.5 / 0.00-1.00',
+                                 'changed': 'delta_min_sol 0.10 -> 0.00, vs S1'},
             }.items()
         },
     }
@@ -690,12 +721,23 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         **strategy_meta,
         # Acceptance #2: the latency model and the declared difference must be
         # readable from the manifest alone, without opening a trade row.
-        'entry_latency_ms': 150.0,
+        'entry_latency_ms': float(shared_entry_latency_ms()),
         'ab_test': {
             # Run #7: every experimental arm moves exactly one entry boundary.
             'single_difference': 'entry_band',
-            'reference_arm': 'portfolio_a',
-            'entry_latency_ms': 150.0,
+            # Run #8 drops A on purpose: S1 is compared with S0, and saying
+            # "reference_arm: portfolio_a" when A is not running would invite
+            # exactly the comparison the run does not make.
+            'reference_arm': (
+                'portfolio_a' if 'portfolio_a' in _arm_bands() else None
+            ),
+            'mode': 'single_arm_smoke' if 'portfolio_a' not in _arm_bands() else 'ab',
+            'reference_note': (
+                None if 'portfolio_a' in _arm_bands()
+                else 'сравнения с A в этом прогоне нет'
+            ),
+            'arm_reference': dict(ARM_REFERENCE),
+            'entry_latency_ms': float(shared_entry_latency_ms()),
             'exit_rule': strategy_meta['exit_rule'],
             'arms': strategy_meta['arms'],
             'decision_rule': strategy_meta['run7_decision_rule'],

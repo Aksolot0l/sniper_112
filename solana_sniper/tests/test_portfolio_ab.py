@@ -17,6 +17,7 @@ from portfolio_ab import (
     ARM_ENV_KEYS,
     ARM_IDS,
     ARM_LABELS,
+    ARM_REFERENCE,
     ABPaperSimulator,
     EntrySnapshot,
     ExecutableQuote,
@@ -38,6 +39,8 @@ from portfolio_ab import (
 # test needs a second live book.
 ARMS = arm_profiles()
 PROFILE_B1 = ARMS['portfolio_b1_narrow']
+# The four arms of run #7. Run #8 added S1/S0, which are asserted separately.
+RUN7_ARMS = ('portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0')
 PROFILE_B3 = ARMS['portfolio_b3_t0']
 B1 = 'portfolio_b1_narrow'
 from pump_curve_quote import (
@@ -139,7 +142,7 @@ class ABProfileTests(unittest.TestCase):
         profiles = arm_profiles()
         self.assertEqual(list(profiles), list(ARM_IDS))
         reference = asdict(PROFILE_A)
-        for name in ARM_IDS[1:]:
+        for name in RUN7_ARMS:
             arm = profiles[name]
             diff = {
                 key for key, value in asdict(arm).items()
@@ -174,6 +177,48 @@ class ABProfileTests(unittest.TestCase):
                       profiles['portfolio_b2_birth'].entry_band_label)
         self.assertIn('0.00 <= delta <= 2.50', profiles['portfolio_b3_t0'].entry_band_label)
         self.assertEqual(ARM_LABELS['portfolio_b3_t0'], 'B3')
+
+    def test_run8_pair_is_b1_and_b1_without_the_momentum_gate(self) -> None:
+        profiles = arm_profiles()
+        s1 = profiles['portfolio_s1']
+        s0 = profiles['portfolio_s0']
+        # S1 IS B1 — not "similar to", the same band.
+        self.assertEqual(entry_band_label(s1), entry_band_label(profiles['portfolio_b1_narrow']))
+        # S0 is S1 with exactly one boundary moved, and it is a boundary.
+        diff = {
+            key for key, value in asdict(s0).items()
+            if key not in ('name', 'arm_id', 'entry_band_label')
+            and asdict(s1)[key] != value
+        }
+        self.assertEqual(diff, {'delta_min_sol'})
+        self.assertEqual(s0.delta_min_sol, 0.00)
+        self.assertEqual(s0.delta_max_sol, 1.00)
+        self.assertEqual(s0.v_sol_birth_max, 34.50)
+        self.assertIn('0.10 <= delta <= 1.00', s1.entry_band_label)
+        self.assertIn('0.00 <= delta <= 1.00', s0.entry_band_label)
+        self.assertEqual((ARM_LABELS['portfolio_s1'], ARM_LABELS['portfolio_s0']), ('S1', 'S0'))
+        # S0 is compared with S1, not with A: that is the whole control.
+        self.assertEqual(ARM_REFERENCE['portfolio_s0'], 'portfolio_s1')
+        self.assertEqual(ARM_REFERENCE['portfolio_s1'], 'portfolio_a')
+        with patch.dict(os.environ, {
+            'ENTRY_DELTA_MAX_SOL_S1': '0.75', 'ENTRY_DELTA_MIN_SOL_S0': '0.05',
+        }, clear=False):
+            env_profiles = profiles_from_settings(SimpleNamespace())
+        self.assertEqual(env_profiles['portfolio_s1'].delta_max_sol, 0.75)
+        self.assertEqual(env_profiles['portfolio_s0'].delta_max_sol, 1.00)
+        self.assertEqual(env_profiles['portfolio_s0'].delta_min_sol, 0.05)
+
+    def test_single_arm_run_needs_the_explicit_flag(self) -> None:
+        # Run #8 runs S1+S0 only. Without A the run must refuse to start,
+        # unless ALLOW_SINGLE_ARM=1 says the comparison is deliberately absent.
+        with patch.dict(os.environ, {'ARMS': 'portfolio_s1,portfolio_s0'}, clear=False):
+            os.environ.pop('ALLOW_SINGLE_ARM', None)
+            with self.assertRaises(ValueError):
+                profiles_from_settings(SimpleNamespace())
+            with patch.dict(os.environ, {'ALLOW_SINGLE_ARM': '1'}, clear=False):
+                profiles = profiles_from_settings(SimpleNamespace())
+        self.assertEqual(list(profiles), ['portfolio_s1', 'portfolio_s0'])
+        self.assertNotIn('portfolio_a', profiles)
 
     def test_b3_is_the_t0_arm_not_a_wide_one(self) -> None:
         # The wide arm (delta > 2.5) is closed and must not come back: its
@@ -345,7 +390,7 @@ class ABProfileTests(unittest.TestCase):
         # No creator gate anywhere and no shadow books at all.
         for name in profiles:
             self.assertNotIn('shadow', name)
-        self.assertEqual(len(profiles), 4)
+        self.assertEqual(len(profiles), len(ARM_IDS))
         # The latency model is configurable and lands in every profile.
         latency_settings = SimpleNamespace(**{**vars(base), 'entry_latency_ms': 250.0})
         for name in profiles:
@@ -364,6 +409,9 @@ class ABProfileTests(unittest.TestCase):
             'timeout_before_trailing_sec', 'timeout_after_trailing_sec',
             'entry_latency_ms', 'initial_balance_rub', 'position_size_rub',
             'max_slots', 'auto_top_up', 'capital_rub',
+            # Run #8: the exit mode and its thresholds are run-level, so no arm
+            # may hold a different value than the other.
+            'exit_mode', 'fee_cover_pct', 'time_exit_sec', 'hard_stop_pct',
         )
         reference = asdict(PROFILE_A)
         for name, profile in profiles.items():
@@ -381,12 +429,17 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(PROFILE_A.no_progress_sec, 5.0)
         self.assertEqual(PROFILE_A.timeout_before_trailing_sec, 35.0)
         self.assertEqual(PROFILE_A.timeout_after_trailing_sec, 90.0)
-        for field in ('time_exit_sec', 'stop_loss_always', 'trailing_enabled',
+        for field in ('stop_loss_always', 'trailing_enabled',
                       'shelf_enabled', 'no_progress_enabled', 'require_creator_gate',
                       'is_shadow', 'mirror_of'):
             self.assertFalse(hasattr(PROFILE_A, field), field)
         # Entry happens on live momentum, not at detection (delta_min = 0 is
         # the closed experiment).
+        # Ladder by default: a run has to ask for fee_cover explicitly.
+        self.assertEqual(PROFILE_A.exit_mode, 'ladder')
+        self.assertEqual(PROFILE_A.fee_cover_pct, 3.5)
+        self.assertEqual(PROFILE_A.time_exit_sec, 5.0)
+        self.assertEqual(PROFILE_A.hard_stop_pct, 10.0)
         self.assertFalse(PROFILE_A.entry_at_detection)
         self.assertFalse(PROFILE_A.delta_max_from_birth_ceiling)
 
@@ -1492,7 +1545,7 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         simulator = make_simulator(tempfile.mkdtemp())
         summary = simulator.summary()
         self.assertEqual(summary['portfolio_scope'], list(ARM_IDS))
-        self.assertEqual(summary['arms'], ['A', 'B1', 'B2', 'B3'])
+        self.assertEqual(summary['arms'], [ARM_LABELS[name] for name in ARM_IDS])
         self.assertEqual(summary['ab_test']['single_difference'], 'entry_band')
         self.assertEqual(summary['ab_test']['reference_arm'], 'portfolio_a')
         for name in ARM_IDS:
@@ -1502,11 +1555,14 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('stability', entry)
             self.assertIn('rocket_accounting', entry)
             self.assertIn('entry_band_label', entry)
-            # A is the reference; the other three carry a paired result.
+            # A is the reference; every other arm carries a paired result
+            # against its own reference (S0 pairs with S1, not with A).
             if name == 'portfolio_a':
                 self.assertTrue(entry['paired_vs_a']['reference'])
             else:
                 self.assertEqual(entry['paired_vs_a']['n_pairs'], 0)
+            self.assertEqual(entry['paired_against'],
+                             None if name == 'portfolio_a' else ARM_REFERENCE[name])
             self.assertEqual(entry['exit_rule'], summary['profiles'][name]['exit_rule'])
 
     async def test_enrich_on_and_off_produce_identical_paper_fills(self) -> None:
@@ -1679,8 +1735,8 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
             positions = {
                 name: book.positions['mint-parity'] for name, book in simulator.books.items()
             }
-            # 30.8 birth and a 0.4 delta sit inside all four bands.
-            self.assertEqual(sorted(positions), list(ARM_IDS))
+            # 30.8 birth and a 0.4 delta sit inside every declared band.
+            self.assertEqual(sorted(positions), sorted(ARM_IDS))
             for name, pos in positions.items():
                 self.assertEqual(pos.initial_tokens_raw,
                                  positions['portfolio_a'].initial_tokens_raw, name)

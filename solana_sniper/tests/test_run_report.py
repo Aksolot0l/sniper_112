@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from main_ab import _safe_manifest, _summary_markdown
+from portfolio_ab import ARM_IDS
 from telemetry import funnel_from_db
 
 
@@ -174,6 +175,27 @@ class FunnelReportTests(unittest.TestCase):
         with patch.dict(os.environ, {'RUN_DURATION_SEC': '28800',
                                      'ENTRY_ENRICH': '1'}, clear=True):
             return _safe_manifest(_settings(), 'run-7', Path('/tmp/run-7'))
+
+    def test_manifest_says_the_run_has_no_reference_arm(self) -> None:
+        # Run #8: S1 + S0 only. reference_arm must be null and the manifest must
+        # spell out that there is no comparison with A, rather than leaving a
+        # dangling "portfolio_a" that was never run.
+        with patch.dict(os.environ, {
+            'RUN_DURATION_SEC': '1800', 'ARMS': 'portfolio_s1,portfolio_s0',
+            'ALLOW_SINGLE_ARM': '1',
+        }, clear=True):
+            manifest = _safe_manifest(_settings(), 'run-8', Path('/tmp/run-8'))
+        self.assertEqual(manifest['portfolio_scope'], ['portfolio_s1', 'portfolio_s0'])
+        self.assertIsNone(manifest['ab_test']['reference_arm'])
+        self.assertEqual(manifest['ab_test']['mode'], 'single_arm_smoke')
+        self.assertEqual(manifest['ab_test']['reference_note'],
+                         'сравнения с A в этом прогоне нет')
+        self.assertEqual(manifest['ab_test']['arm_reference']['portfolio_s0'],
+                         'portfolio_s1')
+        # Both books of a run always share the exit rule.
+        self.assertEqual({
+            strategy['exit_rule'] for strategy in manifest['strategies'].values()
+        }.__len__(), 1)
 
     def test_funnel_discovers_the_arms_from_the_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -376,9 +398,7 @@ class FunnelReportTests(unittest.TestCase):
         manifest = self._manifest()
         self.assertEqual(manifest['ab_test']['single_difference'], 'entry_band')
         self.assertEqual(manifest['ab_test']['reference_arm'], 'portfolio_a')
-        self.assertEqual(manifest['portfolio_scope'],
-                         ['portfolio_a', 'portfolio_b1_narrow',
-                          'portfolio_b2_birth', 'portfolio_b3_t0'])
+        self.assertEqual(manifest['portfolio_scope'], list(ARM_IDS))
         self.assertEqual(manifest['observations_sec'], [0, 5, 15, 60])
         self.assertEqual(manifest['entry_latency_ms'], 150.0)
         self.assertIn('+8', manifest['ab_test']['decision_rule'])
@@ -395,7 +415,7 @@ class FunnelReportTests(unittest.TestCase):
             self.assertIn('entry_band_label', strategy)
         self.assertFalse(manifest['filters']['creator_gate_in_live_arms'])
         self.assertIn('not used anywhere', manifest['filters']['creator_gate_note'])
-        self.assertEqual(len(manifest['wallet_state_files']), 4)
+        self.assertEqual(len(manifest['wallet_state_files']), len(ARM_IDS))
         # Fix #7's ladder numbers are untouched in every arm.
         for name, strategy in manifest['strategies'].items():
             self.assertEqual(strategy['timeout_before_trailing_sec'], 35, name)

@@ -151,12 +151,14 @@ assert PUMP_PROGRAM_ID in select_programs(s.sources)
 assert s.deposit_rub == 1500 and s.max_positions == 3 and s.max_trade_rub == 500
 assert s.mode == 'portfolio' and s.honeypot_check is False
 
-# --- run #7: four arms, ONE entry boundary each, one exit ladder ------------
+# --- run #7 arms, ONE entry boundary each, one exit ladder ------------------
+# Run #8 adds the S1/S0 pair (S0 vs S1, not S0 vs A), checked further down.
 profiles = arm_profiles()
 assert tuple(profiles) == ARM_IDS, (tuple(profiles), ARM_IDS)
-assert [ARM_LABELS[name] for name in profiles] == ['A', 'B1', 'B2', 'B3']
+assert [ARM_LABELS[name] for name in profiles] == [
+    'A', 'B1', 'B2', 'B3', 'S1', 'S0'], [ARM_LABELS[name] for name in profiles]
 reference = asdict(profiles['portfolio_a'])
-for name in ARM_IDS[1:]:
+for name in ('portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0'):
     arm = asdict(profiles[name])
     diff = {
         key for key in reference
@@ -175,6 +177,17 @@ assert profiles['portfolio_b2_birth'].entry_band_label == (
     '30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50')
 assert profiles['portfolio_b3_t0'].entry_band_label == (
     '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50')
+# --- run #8 pair: S1 is B1 verbatim, S0 is S1 minus the momentum gate ------
+assert (profiles['portfolio_s1'].entry_band_label
+        == profiles['portfolio_b1_narrow'].entry_band_label)
+assert profiles['portfolio_s0'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00')
+_s0_diff = {
+    key for key, value in asdict(profiles['portfolio_s0']).items()
+    if key not in ('name', 'arm_id', 'entry_band_label')
+    and asdict(profiles['portfolio_s1'])[key] != value
+}
+assert _s0_diff == {'delta_min_sol'}, _s0_diff
 # B3 is the t0 arm: it keeps A's ceilings and only drops the momentum floor.
 assert profiles['portfolio_b3_t0'].delta_max_sol == 2.50
 assert profiles['portfolio_b3_t0'].v_sol_birth_max == 34.50

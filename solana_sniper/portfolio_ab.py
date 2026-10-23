@@ -135,6 +135,19 @@ class ABProfile:
     # Safety nets that are not part of the 4-mode ladder but prevent stuck slots.
     timeout_before_trailing_sec: float = 35.0
     timeout_after_trailing_sec: float = 90.0
+    # --- run #8: a second, mutually exclusive exit rule -------------------
+    # 'ladder'    -> the Round 6 4-mode ladder above (run #7 behaviour);
+    # 'fee_cover' -> three rules only: hard stop, cover the round trip, and a
+    #                short clock. TP1 / trail / shelf / no-progress are NOT
+    #                called in that mode, so they cannot appear in the report.
+    #
+    # The threshold is measured data, not a guess: the round trip costs 3.25 %
+    # of the stake (run #7, 202 trades whose price did not move during 5 s), so
+    # 3.5 % covers the fees plus 0.25 pp of slippage.
+    exit_mode: str = 'ladder'
+    fee_cover_pct: float = 3.5
+    time_exit_sec: float = 5.0
+    hard_stop_pct: float = 10.0
     # Accounting only; a book never shares cash with another arm.
     capital_rub: float = 1_500.0
     initial_balance_rub: float = 1_500.0
@@ -210,6 +223,11 @@ PROFILE_A = ABProfile(name='portfolio_a', arm_id='A')
 
 ARM_IDS: tuple[str, ...] = (
     'portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0',
+    # Run #8 (30-minute fee-cover experiment): S1 is exactly B1, S0 is S1 with
+    # the momentum gate removed. They are a pair of their own — S0 is compared
+    # with S1, not with B1 — so `ARM_REFERENCE` says who each arm is measured
+    # against. A is still the reference of every run #7 arm.
+    'portfolio_s1', 'portfolio_s0',
 )
 
 # Default boundaries of the three experimental arms. They live in env as well
@@ -224,18 +242,37 @@ ARM_DEFAULTS: dict[str, dict[str, float]] = {
     'portfolio_b1_narrow': {'delta_max_sol': 1.00},
     'portfolio_b2_birth': {'v_sol_birth_max': 31.00},
     'portfolio_b3_t0': {'delta_min_sol': 0.00},
+    # S1 = B1 verbatim. S0 = S1 with ONE boundary moved: delta_min 0.10 -> 0.00.
+    'portfolio_s1': {'delta_max_sol': 1.00},
+    'portfolio_s0': {'delta_max_sol': 1.00, 'delta_min_sol': 0.00},
 }
 ARM_LABELS: dict[str, str] = {
     'portfolio_a': 'A',
     'portfolio_b1_narrow': 'B1',
     'portfolio_b2_birth': 'B2',
     'portfolio_b3_t0': 'B3',
+    'portfolio_s1': 'S1',
+    'portfolio_s0': 'S0',
 }
+# arm -> (env key, profile field). Each experimental arm names ONE boundary
+# it may move; everything else about it is an explicit ARM_DEFAULTS entry, so
+# S0 (delta_max 1.00 from S1 + delta_min 0.00) is readable in one place.
 ARM_ENV_KEYS: dict[str, tuple[str, str]] = {
-    # arm -> (env key, profile field)
     'portfolio_b1_narrow': ('ENTRY_DELTA_MAX_SOL_B1', 'delta_max_sol'),
     'portfolio_b2_birth': ('ENTRY_BIRTH_MAX_SOL_B2', 'v_sol_birth_max'),
     'portfolio_b3_t0': ('ENTRY_DELTA_MIN_SOL_B3', 'delta_min_sol'),
+    'portfolio_s1': ('ENTRY_DELTA_MAX_SOL_S1', 'delta_max_sol'),
+    'portfolio_s0': ('ENTRY_DELTA_MIN_SOL_S0', 'delta_min_sol'),
+}
+# Which profile each arm is compared with. S0 is a control for S1, not for A:
+# the question is "does the momentum gate help", not "does S0 beat A".
+ARM_REFERENCE: dict[str, str] = {
+    'portfolio_a': 'portfolio_a',
+    'portfolio_b1_narrow': 'portfolio_a',
+    'portfolio_b2_birth': 'portfolio_a',
+    'portfolio_b3_t0': 'portfolio_a',
+    'portfolio_s1': 'portfolio_a',
+    'portfolio_s0': 'portfolio_s1',
 }
 
 
@@ -248,7 +285,7 @@ def entry_band_label(profile: 'ABProfile') -> str:
 
 
 def arm_profiles(overrides: Optional[dict[str, dict[str, float]]] = None) -> dict[str, 'ABProfile']:
-    """A plus the three single-boundary arms (pure, no env)."""
+    """A plus every single-boundary arm (pure, no env)."""
     merged = {arm: dict(values) for arm, values in ARM_DEFAULTS.items()}
     for arm, values in (overrides or {}).items():
         merged.setdefault(arm, {}).update(values)
@@ -265,50 +302,88 @@ def arm_profiles(overrides: Optional[dict[str, dict[str, float]]] = None) -> dic
     return profiles
 
 
+def _env_float(name: str, fallback: float) -> float:
+    raw = (os.getenv(name) or '').strip()
+    if not raw:
+        return float(fallback)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f'{name} must be a number, got {raw!r}') from exc
+
+
+def exit_mode_from_env(default: str = 'ladder') -> str:
+    """Run-level exit rule. Both books of a run always share it."""
+    raw = (os.getenv('EXIT_MODE') or default).strip().lower()
+    if raw not in {'ladder', 'fee_cover'}:
+        raise ValueError(f"EXIT_MODE must be 'ladder' or 'fee_cover', got {raw!r}")
+    return raw
+
+
+def allow_single_arm() -> bool:
+    return (os.getenv('ALLOW_SINGLE_ARM') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
     """Build the live arms from settings/env.
 
     Invariants: `delta_min_sol`, the exit ladder, the slots and the stake are
     identical in every arm; an arm named in `ARMS` differs from A in exactly
-    one boundary, and the mapping arm -> boundary is fixed in ``ARM_ENV_KEYS``.
+    one boundary, and the mapping arm -> boundaries is fixed in ``ARM_ENV_KEYS``.
+
+    Run #8 adds two deliberate exceptions to "A is always present":
+    ``ALLOW_SINGLE_ARM=1`` lets a run start without the reference arm (a
+    30-minute fee-cover smoke compares S1 with S0, not with A), and the exit
+    rule — ``EXIT_MODE`` + its three thresholds — is read once for the whole
+    run so no book can end up with a different exit than its twin.
     """
     shared = {
         'v_sol_birth_min': float(getattr(settings, 'entry_birth_min_sol', 30.5)),
         'v_sol_birth_max': float(getattr(settings, 'entry_birth_max_sol', 34.5)),
         'delta_min_sol': float(getattr(settings, 'entry_delta_min_sol', 0.10)),
         'delta_max_sol': float(getattr(settings, 'entry_delta_max_sol', 2.5)),
-        'entry_latency_ms': float(getattr(settings, 'entry_latency_ms', 150.0)),
+        'entry_latency_ms': _env_float(
+            'ENTRY_LATENCY_MS', float(getattr(settings, 'entry_latency_ms', 150.0)),
+        ),
+        'exit_mode': exit_mode_from_env(),
+        'fee_cover_pct': _env_float('EXIT_FEE_COVER_PCT', 3.5),
+        'time_exit_sec': _env_float('EXIT_TIME_SEC', 5.0),
+        'hard_stop_pct': _env_float('EXIT_HARD_STOP_PCT', 10.0),
     }
     settings_attr = {
         'portfolio_b1_narrow': 'entry_delta_max_sol_b1',
         'portfolio_b2_birth': 'entry_birth_max_sol_b2',
         'portfolio_b3_t0': 'entry_delta_min_sol_b3',
     }
-    overrides: dict[str, float] = {}
+    overrides: dict[str, dict[str, float]] = {}
     for arm, (env_key, field) in ARM_ENV_KEYS.items():
-        raw = os.getenv(env_key, '').strip()
+        defaults = {key: float(val) for key, val in ARM_DEFAULTS.get(arm, {}).items()}
+        raw = (os.getenv(env_key) or '').strip()
         if raw:
-            overrides[arm] = float(raw)
-            continue
-        overrides[arm] = float(
-            getattr(settings, settings_attr[arm], ARM_DEFAULTS[arm][field])
-        )
+            defaults[field] = float(raw)
+        else:
+            defaults[field] = float(
+                getattr(settings, settings_attr.get(arm, ''), defaults[field])
+            )
+        overrides[arm] = defaults
     wanted = [
         name.strip() for name in
         os.getenv('ARMS', ','.join(ARM_IDS)).split(',') if name.strip()
     ]
-    if 'portfolio_a' not in wanted:
+    if 'portfolio_a' not in wanted and not allow_single_arm():
         # A is the reference every other arm is compared to; without it the
         # run cannot be analysed at all.
-        raise ValueError('ARMS must contain portfolio_a: it is the reference arm')
+        raise ValueError(
+            'ARMS must contain portfolio_a: it is the reference arm '
+            '(set ALLOW_SINGLE_ARM=1 for a deliberate A-free run)'
+        )
     built: dict[str, ABProfile] = {}
     for name in wanted:
         if name not in ARM_IDS:
             raise ValueError(f'unknown ARMS entry: {name}')
         kwargs: dict[str, Any] = {**shared, 'name': name, 'arm_id': ARM_LABELS[name]}
         if name != 'portfolio_a':
-            field = ARM_ENV_KEYS[name][1]
-            kwargs[field] = overrides[name]
+            kwargs.update(overrides.get(name, {}))
         profile = replace(PROFILE_A, **kwargs)
         built[name] = replace(profile, entry_band_label=entry_band_label(profile))
     return built
@@ -2992,6 +3067,15 @@ class ABPaperSimulator:
     def summary(self) -> dict[str, Any]:
         peaks = self._rocket_peaks()
         portfolios: dict[str, Any] = {}
+        # Which arm each book is measured against: A when it runs, otherwise
+        # the arm's declared pair partner if that partner is running too.
+        reference_name = 'portfolio_a' if 'portfolio_a' in self.books else None
+        reference_for: dict[str, Optional[str]] = {}
+        for name in self.books:
+            candidate = ARM_REFERENCE.get(name, 'portfolio_a')
+            reference_for[name] = (
+                candidate if candidate != name and candidate in self.books else None
+            )
         for name, book in self.books.items():
             open_positions = [p.to_dict() for p in book.positions.values() if p.status == 'open']
             pending_positions = [p.to_dict() for p in book.positions.values() if p.status == 'exit_pending']
@@ -3056,23 +3140,30 @@ class ABPaperSimulator:
                 'entry_quality': self._entry_quality(book),
                 # P0-4: what closed the trade, not just the total.
                 'exit_breakdown': self._exit_breakdown(book),
-                # Run #7 (§6): paired test vs A, hourly noise floor, the
-                # first/second-half sign, and how much rides on rockets.
+                # Run #7 (§6): paired test vs the arm's own reference, hourly
+                # noise floor, the first/second-half sign, and how much rides
+                # on rockets. In run #8 the reference of S1 (A) is absent, so
+                # the value is None instead of silently pairing with S0.
                 'paired_vs_a': (
-                    {'reference': True} if name == 'portfolio_a'
-                    else paired_stats(
-                        portfolios['portfolio_a']['closed_trades'],
-                        book.closed_trades,
+                    {'reference': True} if reference_name == name
+                    else (
+                        paired_stats(
+                            portfolios[reference_for[name]]['closed_trades'],
+                            book.closed_trades,
+                        ) if reference_for[name] else None
                     )
                 ),
+                'paired_against': reference_for[name],
                 'blocks': hourly_blocks(book.closed_trades, self.started_at_epoch),
                 'stability': (
-                    {'reference': True} if name == 'portfolio_a'
-                    else stability_split(
-                        portfolios['portfolio_a']['closed_trades'],
-                        book.closed_trades,
-                        self.started_at_epoch,
-                        (self.ended_at_epoch or time.time()) - self.started_at_epoch,
+                    {'reference': True} if reference_name == name
+                    else (
+                        stability_split(
+                            portfolios[reference_for[name]]['closed_trades'],
+                            book.closed_trades,
+                            self.started_at_epoch,
+                            (self.ended_at_epoch or time.time()) - self.started_at_epoch,
+                        ) if reference_for[name] else None
                     )
                 ),
                 'rocket_accounting': rocket_accounting(
@@ -3133,9 +3224,10 @@ class ABPaperSimulator:
             'ab_test': {
                 # Run #7: every arm moves exactly ONE entry boundary of A.
                 'single_difference': 'entry_band',
-                'reference_arm': 'portfolio_a',
+                'reference_arm': reference_name,
+                'arm_reference': dict(ARM_REFERENCE),
                 'entry_latency_ms': float(
-                    self.books['portfolio_a'].profile.entry_latency_ms
+                    next(iter(self.books.values())).profile.entry_latency_ms
                 ),
                 'decision_rule': (
                     'an arm confirms its hypothesis iff the PAIRED mean(arm - A) '
