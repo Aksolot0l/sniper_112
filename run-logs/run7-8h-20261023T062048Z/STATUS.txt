@@ -1,18 +1,18 @@
 run_id: run7-8h-20261023T062048Z
-snapshot_utc: 2026-10-23T09:36:03Z
+snapshot_utc: 2026-10-23T10:01:06Z
 mode: light
-run_dir_size: 61M
-opens: 383
-closes: 383
-[09:32:58] 👁️ Новая монета: 4KVWC6QyMmSqjqqBMfcogDpjkYA5q54VbD85enC4pump (Pump.fun | FUSE)
-[09:33:06] 👁️ Новая монета: 3gJkWrhmWmkT9PD8xWVf1QsH91FFKSrjkU2ErYDapump (Pump.fun | OS)
-[09:33:06] 🧪 [portfolio_a] OPEN 3gJk…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1657697383432 | fee=95+30 bps | slots=1/3
-[09:33:06] 🧪 [portfolio_b2_birth] OPEN 3gJk…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1657697383432 | fee=95+30 bps | slots=1/3
-[09:33:06] 🧪 [portfolio_b3_t0] OPEN 3gJk…pump | birth=31.00 now=32.00 delta=+1.00 SOL | cost≈500.00 ₽ | tokens(out)=1657697383432 | fee=95+30 bps | slots=1/3
-[09:33:11] ✅ [portfolio_a] CLOSE 3gJk…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-15.17 ₽ (-3.0%) | cash=1330.96 ₽
-[09:33:11] ✅ [portfolio_b2_birth] CLOSE 3gJk…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-15.17 ₽ (-3.0%) | cash=1036.94 ₽
-[09:33:11] ✅ [portfolio_b3_t0] CLOSE 3gJk…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-15.17 ₽ (-3.0%) | cash=1428.18 ₽
-[09:33:18] 👁️ Новая монета: AeLybz49E2vsePmvyfc7HzihTN5mNifj6sbiv2XWpump (Pump.fun | WEDGEWOOD)
-[09:33:19] 👁️ Новая монета: DJ79yvSovtqWsttF1g2qTehSknWTz34uRzoQNjTqEsuY (Pump.fun | NOVA)
-[09:33:19] 👁️ Новая монета: 4EnuyNbyg3XYWGLHpvGeumJ95j2f6hgoGMZxJEE7pump (Pump.fun | CAN)
-[09:33:56] 👁️ Новая монета: 3aqyu11gRzBNRWgLtMK3QqCFBCUsES1G6r15RVYipump (Pump.fun | OS)
+run_dir_size: 68M
+opens: 461
+closes: 460
+[09:59:40] ✅ [portfolio_b2_birth] CLOSE DNGY…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-46.08 ₽ (-9.2%) | cash=1869.17 ₽
+[09:59:40] ✅ [portfolio_b3_t0] CLOSE DNGY…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-46.08 ₽ (-9.2%) | cash=1283.90 ₽
+[09:59:43] ✅ [portfolio_a] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1654.83 ₽
+[09:59:43] ✅ [portfolio_b1_narrow] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1950.74 ₽
+[09:59:43] ✅ [portfolio_b3_t0] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1780.72 ₽
+[09:59:49] 👁️ Новая монета: 5E7T45hhbWNjtNPaCwQ2SuxBUhLmH45f6remyQjypump (Pump.fun | Martín)
+[09:59:51] 👁️ Новая монета: 4fmREMywJ2Qoucp98GvVzmJE5jw9jvdnmAMcLGkkpump (Pump.fun | Martín)
+[09:59:51] 👁️ Новая монета: 3JxXPqHB9CqPbQKfFRaoGXCvhF6W38U51aYBg1N2pump (Pump.fun | Martín)
+[09:59:51] 👁️ Новая монета: 4XXABuA9ALVXakMVtSu6joAF3dYJx2r8a9RMRQsopump (Pump.fun | Martín)
+[09:59:51] 👁️ Новая монета: AJZgUYPKjSk544h5YZCS9jNne4THF377oh3PX7ncpump (Pump.fun | Martín)
+[10:00:05] 👁️ Новая монета: 5N98sGV2Gc7CLYdgz7iqXqEEvNtvwjbrHBhHf7tZpump (Pump.fun | Friendship)
+[10:00:05] 🧪 [portfolio_a] OPEN 5N98…pump | birth=33.00 now=34.50 delta=+1.50 SOL | cost≈500.00 ₽ | tokens(out)=1421952674946 | fee=95+30 bps | slots=1/3
