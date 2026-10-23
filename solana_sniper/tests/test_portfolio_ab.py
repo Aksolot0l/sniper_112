@@ -1718,6 +1718,82 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(off.stats()['rows'], 0)
 
 
+class RunEightMarkPollTests(unittest.TestCase):
+    """Run #8 §1.4: 0.15 s marks, with one declared stop-loss on the cadence."""
+
+    def _simulator(self):
+        return make_simulator(tempfile.mkdtemp())
+
+    def test_cadence_comes_from_the_env_with_a_floor(self) -> None:
+        from portfolio_ab import mark_poll_sec_from_env
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('MARK_POLL_SEC', None)
+            self.assertEqual(mark_poll_sec_from_env(), 0.15)
+            self.assertEqual(self._simulator().mark_poll_sec, 0.15)
+        with patch.dict(os.environ, {'MARK_POLL_SEC': '0.15'}, clear=False):
+            self.assertEqual(mark_poll_sec_from_env(), 0.15)
+        # Faster than 0.05 s is not a cadence, it is a 429 generator.
+        with patch.dict(os.environ, {'MARK_POLL_SEC': '0.01'}, clear=False):
+            self.assertEqual(mark_poll_sec_from_env(), 0.05)
+        with patch.dict(os.environ, {'MARK_POLL_SEC': '0.25'}, clear=False):
+            self.assertEqual(mark_poll_sec_from_env(), 0.25)
+        with patch.dict(os.environ, {'MARK_POLL_SEC': 'fast'}, clear=False):
+            with self.assertRaises(ValueError):
+                mark_poll_sec_from_env()
+
+    def test_the_poll_loop_uses_the_configured_cadence(self) -> None:
+        # The 0.40 s wait was hardcoded; a regression would restore it silently.
+        import inspect
+
+        import portfolio_ab as module
+
+        source = inspect.getsource(module.ABPaperSimulator._position_poll_loop)
+        self.assertIn('timeout=self.mark_poll_sec', source)
+        self.assertNotIn('timeout=0.40', source)
+
+    def test_adaptation_only_above_the_limit_and_only_once(self) -> None:
+        simulator = self._simulator()
+        # Below the ceiling: nothing changes, and the check is throttled.
+        simulator._adapt_mark_poll(now=1_000.0, rpc={'requests_per_sec_max_10min': 1.9})
+        self.assertEqual(simulator.mark_poll_sec, 0.15)
+        self.assertFalse(simulator.mark_poll_adapted)
+        # A second call inside the throttle window must not even look.
+        simulator._adapt_mark_poll(now=1_001.0, rpc={'requests_per_sec_max_10min': 3.0})
+        self.assertFalse(simulator.mark_poll_adapted)
+        # After the window, 3.0 rps raises the cadence to 0.25 s.
+        simulator._adapt_mark_poll(now=1_011.0, rpc={'requests_per_sec_max_10min': 3.0})
+        self.assertTrue(simulator.mark_poll_adapted)
+        self.assertEqual(simulator.mark_poll_sec, 0.25)
+        # It never goes back down mid-run, even if the rate falls.
+        simulator._adapt_mark_poll(now=2_000.0, rpc={'requests_per_sec_max_10min': 0.5})
+        self.assertEqual(simulator.mark_poll_sec, 0.25)
+
+    def test_unmeasurable_window_is_not_an_adaptation(self) -> None:
+        # `requests_per_sec_max_10min` is None until the run is 10 min old.
+        simulator = self._simulator()
+        simulator._adapt_mark_poll(now=100.0, rpc={'requests_per_sec_max_10min': None})
+        self.assertFalse(simulator.mark_poll_adapted)
+        self.assertEqual(simulator.mark_poll_sec, 0.15)
+        self.assertIsNone(simulator.mark_poll_rps_at_check)
+
+    def test_summary_reports_the_cadence_and_the_adaptation(self) -> None:
+        simulator = self._simulator()
+        block = simulator.summary()['mark_poll']
+        self.assertEqual(block['mark_poll_sec'], 0.15)
+        self.assertFalse(block['mark_poll_adapted'])
+        self.assertIsNone(block['adapted_from_sec'])
+        self.assertEqual(block['rps_limit_10min'], 2.2)
+        simulator.mark_poll_sec = 0.25
+        simulator.mark_poll_adapted = True
+        simulator.mark_poll_rps_at_check = 2.71
+        block = simulator.summary()['mark_poll']
+        self.assertTrue(block['mark_poll_adapted'])
+        self.assertEqual(block['adapted_from_sec'], 0.15)
+        self.assertEqual(block['adapted_to_sec'], 0.25)
+        self.assertEqual(block['rps_seen_at_last_check'], 2.71)
+
+
 def make_four_account_snapshot(mint, curve, *, observed_at=None, vquote=31_200_000_000):
     """The exact dict filters.py stores on `coin.entry_snapshot`."""
     from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA

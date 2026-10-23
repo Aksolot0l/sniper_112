@@ -702,6 +702,32 @@ STOP_STALL_SEC = 1_800.0            # 30 minutes without a single entry
 STOP_DISK_FREE_BYTES = 2 * 1024 ** 3
 STOP_HELIUS_QUOTA_PCT = 10.0
 
+# --- run #8 §1.4: mark polling cadence --------------------------------------
+# The poll loop used to wait a hardcoded 0.40 s, so a 5 s fee-cover exit was
+# sampled ~12 times and the last 0.4 s of the hold were invisible. 0.15 s is
+# ~1.7 rps with three open positions in one batch; the floor is 0.05 s because
+# anything faster is just a slower way to write http_429.
+MARK_POLL_SEC_DEFAULT = 0.15
+MARK_POLL_SEC_MIN = 0.05
+# Run #7 acceptance is "no 10-minute window above 2.2 rps". Run #8 does not
+# stop on it (the run must survive to the end); the cadence adapts instead.
+MARK_POLL_RPS_LIMIT = 2.2
+MARK_POLL_ADAPTED_SEC = 0.25
+MARK_POLL_RPS_CHECK_SEC = 10.0
+
+
+def mark_poll_sec_from_env() -> float:
+    raw = (os.getenv('MARK_POLL_SEC') or '').strip()
+    if not raw:
+        return MARK_POLL_SEC_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f'MARK_POLL_SEC must be a number, got {raw!r}') from exc
+    if not math.isfinite(value):
+        raise ValueError(f'MARK_POLL_SEC must be finite, got {raw!r}')
+    return max(MARK_POLL_SEC_MIN, value)
+
 
 def _utc_from_epoch(value: float) -> str:
     """ISO-8601 Z timestamp from an epoch, without pulling in telemetry internals."""
@@ -1063,6 +1089,11 @@ class ABPaperSimulator:
         self.stop_policy_state: dict[str, Any] = {
             'reason': None, 'telemetry': {}, 'rpc': {}, 'stall': {}, 'resources': {},
         }
+        # --- run #8 §1.4: mark poll cadence (env MARK_POLL_SEC, default 0.15) ---
+        self.mark_poll_sec = mark_poll_sec_from_env()
+        self.mark_poll_adapted = False
+        self.mark_poll_rps_at_check: Optional[float] = None
+        self._last_rps_check_epoch = 0.0
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -1992,6 +2023,36 @@ class ABPaperSimulator:
             self.early_stop_reason = 'both_portfolios_below_slot_size'
             self.early_stop_event.set()
 
+    def _adapt_mark_poll(self, *, now: Optional[float] = None, rpc: Optional[dict[str, Any]] = None) -> None:
+        """Slow the mark cadence down when a 10-minute window passes 2.2 rps.
+
+        Run #8 asked for the run to survive to the end rather than stop on the
+        rps ceiling, so the only lever left is the cadence. It only ever goes
+        up (0.15 -> 0.25 s), once, and the change is reported as
+        `mark_poll_adapted: true` — a silent slowdown would make the latency
+        report a lie.
+        """
+        now = time.time() if now is None else float(now)
+        if self.mark_poll_adapted:
+            return
+        if now - self._last_rps_check_epoch < MARK_POLL_RPS_CHECK_SEC:
+            return
+        self._last_rps_check_epoch = now
+        metrics = rpc if rpc is not None else rpc_metrics_snapshot()
+        peak = metrics.get('requests_per_sec_max_10min')
+        if peak is None:
+            return
+        self.mark_poll_rps_at_check = float(peak)
+        if float(peak) > MARK_POLL_RPS_LIMIT:
+            self.mark_poll_sec = MARK_POLL_ADAPTED_SEC
+            self.mark_poll_adapted = True
+            log(
+                f'🐢 Mark poll adapted: {peak:.2f} rps in a 10-min window '
+                f'> {MARK_POLL_RPS_LIMIT:.1f}; cadence '
+                f'{MARK_POLL_SEC_DEFAULT:.2f} -> {MARK_POLL_ADAPTED_SEC:.2f} s.',
+                Color.YELLOW,
+            )
+
     async def _position_poll_loop(self) -> None:
         while not self._stopping.is_set():
             self._maybe_early_stop()
@@ -2141,8 +2202,11 @@ class ABPaperSimulator:
             self._maybe_early_stop()
             if self.early_stop_event.is_set():
                 return
+            self._adapt_mark_poll()
             try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=0.40)
+                await asyncio.wait_for(
+                    self._stopping.wait(), timeout=self.mark_poll_sec,
+                )
             except asyncio.TimeoutError:
                 pass
 
@@ -3325,6 +3389,17 @@ class ABPaperSimulator:
             'early_stop_reason': self.early_stop_reason,
             # Run #7 §1.4: the fly-through of the SL rule, mark to mark.
             'tick_quality': self.tick_quality(),
+            'mark_poll': {
+                'mark_poll_sec': round(self.mark_poll_sec, 4),
+                'mark_poll_adapted': self.mark_poll_adapted,
+                'adapted_from_sec': MARK_POLL_SEC_DEFAULT if self.mark_poll_adapted else None,
+                'adapted_to_sec': MARK_POLL_ADAPTED_SEC if self.mark_poll_adapted else None,
+                'rps_limit_10min': MARK_POLL_RPS_LIMIT,
+                'rps_seen_at_last_check': (
+                    round(self.mark_poll_rps_at_check, 3)
+                    if self.mark_poll_rps_at_check is not None else None
+                ),
+            },
             'stop_policy': {
                 **self.stop_policy_state,
                 'thresholds': {
