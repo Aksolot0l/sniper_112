@@ -548,21 +548,26 @@ def _strategy_metadata() -> dict[str, Any]:
                                           'a fixed exit, and identical to dev_buy <= '
                                           '1 SOL; risk: on the run6 ladder it lost '
                                           '(-507 RUB vs +755 RUB for birth > 31)'},
-            'portfolio_b3_wide': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.10-8.00',
-                                  'changed': 'delta_max 2.50 -> 8.00',
-                                  'why': 'the only way to ADD rockets: 39 of 126 '
-                                         '(9.6 %) live in the 2.5-8 band; risk: that '
-                                         'mass was the worst at a fixed exit in 3/3 '
-                                         'runs. Tested on the ladder; if it fails, '
-                                         'the band closes for good'},
+            'portfolio_b3_t0': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.00-2.50',
+                                'changed': 'delta_min 0.10 -> 0.00',
+                                'why': 'the only arm whose expected gain is '
+                                       'arithmetic: it enters on the first curve '
+                                       'read (A waits for a 0.10 SOL impulse) and '
+                                       'so does not pay the measured 1.416 % '
+                                       'entry_fill_premium (~7 RUB on 500 RUB); it '
+                                       'also sees 438 coins instead of 167 inside '
+                                       'the same birth band, with the same 6.6 % '
+                                       'rocket share (60 s window). Risk: entering '
+                                       'without an impulse confirmation'},
         },
         'run7_expectation': {
-            'portfolio_b1_narrow': '-3..+5 RUB/trade vs A (data disagree: two runs '
-                                   'for, run6 against)',
-            'portfolio_b2_birth': '+-0, risk -8 RUB (the filter lost on the run6 '
-                                  'ladder)',
-            'portfolio_b3_wide': '-10..+5 RUB/trade, wide spread (bad mass, but 39 '
-                                 'of 126 rockets)',
+            'portfolio_b1_narrow': '+1..+6 RUB/trade vs A (better in 3/3 runs on a '
+                                   'fixed exit and in run3/run5 on the ladder; the '
+                                   'narrow band cuts the flow 1.8x)',
+            'portfolio_b2_birth': '-8..+8 RUB (model says better in 2/3 runs, the '
+                                  'run6 ladder lost 15.7 RUB/trade: the run decides)',
+            'portfolio_b3_t0': '+3..+9 RUB from removing the 1.416 % entry premium '
+                                '(~7 RUB on 500 RUB); EV itself is neutral',
         },
         'run7_decision_rule': (
             'an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB '
@@ -571,9 +576,10 @@ def _strategy_metadata() -> dict[str, Any]:
             'same in both halves of the run'
         ),
         'run7_power': (
-            'paired sd ~98 RUB, ~56 trades/hour per arm: 8 RUB needs ~1 500 pairs '
-            '(after Bonferroni), i.e. ~21 h at this flow. A 3-hour run cannot '
-            'resolve anything below ~15 RUB/trade'
+            'paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is '
+            '~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below '
+            '~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after '
+            'Bonferroni, i.e. ~21 h at this flow'
         ),
         'run7_p0_accepted': (
             'early_stop_reason = null, unrecovered RPC failures <= 2 %, '
@@ -589,9 +595,10 @@ def _strategy_metadata() -> dict[str, Any]:
             'observation offsets 0/5/15/60 to fit the RPC budget'
         ),
         'run7_not_doing': (
-            'no exit change in any arm, no delta_min = 0 (a 5.6x flow for a '
-            '2.9 % rocket share), no creator gate (worse than average in 4/4 '
-            'samples), no fourth experimental arm, no band tuning mid-run'
+            'no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % '
+            'in three runs and no extra rockets inside A\'s birth band), no creator '
+            'gate live (worse than average in 4/4 samples), no fourth experimental '
+            'arm, no band tuning mid-run'
         ),
         'bank_rule': (
             'каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, '
@@ -621,8 +628,8 @@ def _strategy_metadata() -> dict[str, Any]:
                                         'changed': 'delta_max_sol 2.50 -> 1.00'},
                 'portfolio_b2_birth': {'arm_id': 'B2', 'band': '30.5-31.0 / 0.10-2.50',
                                        'changed': 'v_sol_birth_max 34.50 -> 31.00'},
-                'portfolio_b3_wide': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.10-8.00',
-                                      'changed': 'delta_max_sol 2.50 -> 8.00'},
+                'portfolio_b3_t0': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.00-2.50',
+                                    'changed': 'delta_min_sol 0.10 -> 0.00'},
             }.items()
         },
     }

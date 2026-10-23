@@ -82,7 +82,7 @@ BANDS = {
     'portfolio_a': '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50',
     'portfolio_b1_narrow': '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00',
     'portfolio_b2_birth': '30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50',
-    'portfolio_b3_wide': '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 8.00',
+    'portfolio_b3_t0': '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50',
 }
 
 
@@ -133,8 +133,8 @@ def _run7_summary() -> dict:
             stability={'first_half': {'mean_diff': -6.0},
                        'second_half': {'mean_diff': -10.0}, 'sign_stable': True},
         ),
-        'portfolio_b3_wide': book(
-            'B3', BANDS['portfolio_b3_wide'],
+        'portfolio_b3_t0': book(
+            'B3', BANDS['portfolio_b3_t0'],
             n=210, total=-210.0,
             paired_vs_a={'n_pairs': 160, 'mean_diff': -3.0, 'sd_diff': 98.0,
                          'ci95_diff': [-18.0, 12.0], 'ci_level': 0.9875,
@@ -151,12 +151,12 @@ def _run7_summary() -> dict:
                                         'single_boundary_vs_a': ['delta_max_sol 2.50 -> 1.00']},
                 'portfolio_b2_birth': {'arm_id': 'B2',
                                        'single_boundary_vs_a': ['v_sol_birth_max 34.50 -> 31.00']},
-                'portfolio_b3_wide': {'arm_id': 'B3',
-                                      'single_boundary_vs_a': ['delta_max_sol 2.50 -> 8.00']},
+                'portfolio_b3_t0': {'arm_id': 'B3',
+                                    'single_boundary_vs_a': ['delta_min_sol 0.10 -> 0.00']},
             },
-            'expectation': {'portfolio_b1_narrow': '−3 … +5 ₽',
-                            'portfolio_b2_birth': '±0 с риском −8 ₽',
-                            'portfolio_b3_wide': '−10 … +5 ₽'},
+            'expectation': {'portfolio_b1_narrow': '+1 … +6 ₽',
+                            'portfolio_b2_birth': '−8 … +8 ₽',
+                            'portfolio_b3_t0': '+3 … +9 ₽'},
             'power_note': 'на 8 часах шумовой пол ±10 ₽; разница < 15 ₽ на 3 часах нерешаема',
             'decision_rule': 'paired mean(arm − A) >= +8 RUB and the CI excludes 0',
         },
@@ -164,7 +164,7 @@ def _run7_summary() -> dict:
             'portfolio_a': {'arm_id': 'A', 'entry_band_label': BANDS['portfolio_a']},
             'portfolio_b1_narrow': {'arm_id': 'B1', 'entry_band_label': BANDS['portfolio_b1_narrow']},
             'portfolio_b2_birth': {'arm_id': 'B2', 'entry_band_label': BANDS['portfolio_b2_birth']},
-            'portfolio_b3_wide': {'arm_id': 'B3', 'entry_band_label': BANDS['portfolio_b3_wide']},
+            'portfolio_b3_t0': {'arm_id': 'B3', 'entry_band_label': BANDS['portfolio_b3_t0']},
         },
     }
 
@@ -226,11 +226,12 @@ class FunnelReportTests(unittest.TestCase):
         for arm, band in (('A', '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50'),
                           ('B1', '0.10 <= delta <= 1.00'),
                           ('B2', '30.50 <= v_sol_birth <= 31.00'),
-                          ('B3', '0.10 <= delta <= 8.00')):
+                          ('B3', '0.00 <= delta <= 2.50')):
             self.assertIn(band, text, arm)
         self.assertIn('## Армы: каждая отличается от A одной границей', text)
         self.assertIn('delta_max_sol 2.50 -> 1.00', text)
         self.assertIn('v_sol_birth_max 34.50 -> 31.00', text)
+        self.assertIn('delta_min_sol 0.10 -> 0.00', text)
         # Paired columns: A is the reference, the others carry a number + CI.
         self.assertIn('парная разница с A', text)
         self.assertIn('эталон', text)
@@ -242,7 +243,8 @@ class FunnelReportTests(unittest.TestCase):
         self.assertIn('### P0: принят ли прогон', text)
         self.assertIn('security_fail_skipped_deep > 0', text)
         self.assertIn('enrich.csv пишется', text)
-        self.assertIn('−3 … +5 ₽', text)
+        self.assertIn('+3 … +9 ₽', text)
+        self.assertIn('−8 … +8 ₽', text)
         # Hourly noise, half-to-half sign, rockets.
         self.assertIn('### Почасовые блоки', text)
         self.assertIn('### Стабильность знака', text)
@@ -353,11 +355,11 @@ class FunnelReportTests(unittest.TestCase):
 
     def test_money_cells_are_two_decimals_and_dashes(self) -> None:
         summary = _run7_summary()
-        summary['portfolio_b3_wide']['stats'] = {'n': 0, 'sum': None}
+        summary['portfolio_b3_t0']['stats'] = {'n': 0, 'sum': None}
         text = _summary_markdown({'run_id': 'run-7'}, {}, summary)
         row = [
             ln for ln in text.splitlines()
-            if ln.startswith('| B3 (`portfolio_b3_wide`)') and ln.count('|') == 12
+            if ln.startswith('| B3 (`portfolio_b3_t0`)') and ln.count('|') == 12
         ][0]
         cells = [cell.strip() for cell in row.strip('|').split('|')]
         self.assertEqual(cells[1], '0')
@@ -376,7 +378,7 @@ class FunnelReportTests(unittest.TestCase):
         self.assertEqual(manifest['ab_test']['reference_arm'], 'portfolio_a')
         self.assertEqual(manifest['portfolio_scope'],
                          ['portfolio_a', 'portfolio_b1_narrow',
-                          'portfolio_b2_birth', 'portfolio_b3_wide'])
+                          'portfolio_b2_birth', 'portfolio_b3_t0'])
         self.assertEqual(manifest['observations_sec'], [0, 5, 15, 60])
         self.assertEqual(manifest['entry_latency_ms'], 150.0)
         self.assertIn('+8', manifest['ab_test']['decision_rule'])

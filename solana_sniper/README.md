@@ -80,9 +80,14 @@ change would make the paired comparison meaningless.
 | A `portfolio_a` | 30.50 … 34.50 | 0.10 … 2.50 | reference |
 | B1 `portfolio_b1_narrow` | 30.50 … 34.50 | 0.10 … **1.00** | delta ceiling ↓ |
 | B2 `portfolio_b2_birth` | 30.50 … **31.00** | 0.10 … 2.50 | birth ceiling ↓ |
-| B3 `portfolio_b3_wide` | 30.50 … 34.50 | 0.10 … **8.00** | delta ceiling ↑ |
+| B3 `portfolio_b3_t0` | 30.50 … 34.50 | **0.00** … 2.50 | momentum floor ↓ (t0 entry) |
 
-`delta_min = 0.10` in all four: the t0 entry stays a deferred experiment.
+B3 is the t0 arm: it keeps A's whole band and only drops the momentum floor,
+so it enters on the first curve read after detection. Its expected gain is
+arithmetic, not fitted: A pays a measured `entry_fill_premium_pct` median of
+1.416 % (~7 ₽ on a 500 ₽ stake) for waiting for the impulse, and B3 does not.
+Inside the same birth window B3 sees 438 coins instead of 167 with the same
+6.6 % rocket share (60 s), so the flow grows without diluting the tail.
 600 RPC is the bottleneck, so the observation schedule shrank to
 `0, 5, 15, 60` s (was `0, 5, 10, 15, 60, 120`); coins that failed the security
 filter are read only at 0 and 15 s (`status=skipped_security_deep`), which is
@@ -99,10 +104,13 @@ Pre-registered decision rule:
    повтор" — the live config does not change;
 4. every arm inside ±5 ₽ means band tuning is exhausted.
 
-Honest expectations, written before the start: B1 −3…+5 ₽, B2 ≈ 0 with a
-plausible −8 ₽, B3 −10…+5 ₽ per trade. Run #6's noise floor is ±19 ₽ at n=167
-per arm, so any difference below ~15 ₽ on a 3-hour run is undecidable and is
-reported as such. No number from this run may be described as "being
+Honest expectations, written before the start: B1 **+1…+6 ₽**, B2 **−8…+8 ₽**,
+B3 **+3…+9 ₽** per trade. A band above the 2.5 SOL delta ceiling is deliberately
+absent: its EV@15 is −9.25 / −5.84 / −5.54 % in three independent runs and it
+holds no extra rockets inside A's birth band. Run #6's paired CI95 was
+[−19.20; +10.72] at n=165 pairs, i.e. a ±15 ₽ half-width and a ~21 ₽ minimum
+detectable effect at 80 % power, so any difference below ~15 ₽ on a 3-hour run
+is undecidable and is reported as such. No number from this run may be described as "being
 profitable now": arm A's median trade in run #6 was −15.20 ₽ and the whole
 plus rested on two pump tails.
 

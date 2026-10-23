@@ -206,28 +206,33 @@ def entry_shadow_flags(
 PROFILE_A = ABProfile(name='portfolio_a', arm_id='A')
 
 ARM_IDS: tuple[str, ...] = (
-    'portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_wide',
+    'portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0',
 )
 
 # Default boundaries of the three experimental arms. They live in env as well
-# (ENTRY_DELTA_MAX_SOL_B1 / ENTRY_BIRTH_MAX_SOL_B2 / ENTRY_DELTA_MAX_SOL_B3)
+# (ENTRY_DELTA_MAX_SOL_B1 / ENTRY_BIRTH_MAX_SOL_B2 / ENTRY_DELTA_MIN_SOL_B3)
 # and are written into the manifest, so a run can never be misread.
+#
+# B3 is the t0 arm: it keeps A's whole band and only drops the momentum floor,
+# i.e. it enters on the first curve read after detection. It is the one arm
+# whose expected gain is arithmetic rather than fitted: the measured
+# entry_fill_premium_pct median is 1.416 % (about +7 RUB on a 500 RUB stake).
 ARM_DEFAULTS: dict[str, dict[str, float]] = {
     'portfolio_b1_narrow': {'delta_max_sol': 1.00},
     'portfolio_b2_birth': {'v_sol_birth_max': 31.00},
-    'portfolio_b3_wide': {'delta_max_sol': 8.00},
+    'portfolio_b3_t0': {'delta_min_sol': 0.00},
 }
 ARM_LABELS: dict[str, str] = {
     'portfolio_a': 'A',
     'portfolio_b1_narrow': 'B1',
     'portfolio_b2_birth': 'B2',
-    'portfolio_b3_wide': 'B3',
+    'portfolio_b3_t0': 'B3',
 }
 ARM_ENV_KEYS: dict[str, tuple[str, str]] = {
     # arm -> (env key, profile field)
     'portfolio_b1_narrow': ('ENTRY_DELTA_MAX_SOL_B1', 'delta_max_sol'),
     'portfolio_b2_birth': ('ENTRY_BIRTH_MAX_SOL_B2', 'v_sol_birth_max'),
-    'portfolio_b3_wide': ('ENTRY_DELTA_MAX_SOL_B3', 'delta_max_sol'),
+    'portfolio_b3_t0': ('ENTRY_DELTA_MIN_SOL_B3', 'delta_min_sol'),
 }
 
 
@@ -274,7 +279,7 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
     settings_attr = {
         'portfolio_b1_narrow': 'entry_delta_max_sol_b1',
         'portfolio_b2_birth': 'entry_birth_max_sol_b2',
-        'portfolio_b3_wide': 'entry_delta_max_sol_b3',
+        'portfolio_b3_t0': 'entry_delta_min_sol_b3',
     }
     overrides: dict[str, float] = {}
     for arm, (env_key, field) in ARM_ENV_KEYS.items():
@@ -2783,8 +2788,10 @@ class ABPaperSimulator:
             'v_sol_birth_min', 'v_sol_birth_max',
             'delta_min_sol', 'delta_max_sol',
         )
+        # Two decimals: a band edge is money-adjacent, and "0.1 -> 0" reads like
+        # a bug in a report that also prints 0.10 elsewhere.
         changed = [
-            f'{field}: {getattr(reference, field):g} -> {getattr(arm, field):g}'
+            f'{field} {getattr(reference, field):.2f} -> {getattr(arm, field):.2f}'
             for field in fields
             if getattr(reference, field) != getattr(arm, field)
         ]
@@ -3079,15 +3086,18 @@ class ABPaperSimulator:
                     for name, book in self.books.items()
                 },
                 'expectation': {
-                    'portfolio_b1_narrow': '-3..+5 RUB/trade vs A (data disagree)',
-                    'portfolio_b2_birth': '+-0, risk -8 RUB (lost on the run #6 ladder)',
-                    'portfolio_b3_wide': '-10..+5 RUB/trade, wide spread '
-                                         '(bad mass, but 39 of 126 rockets)',
+                    'portfolio_b1_narrow': '+1..+6 RUB/trade vs A (better in 3/3 '
+                                           'runs on a fixed exit, 2/2 on the ladder)',
+                    'portfolio_b2_birth': '-8..+8 RUB (model better in 2/3, the '
+                                          'run #6 ladder lost 15.7 RUB/trade)',
+                    'portfolio_b3_t0': '+3..+9 RUB from removing the 1.416 % entry '
+                                       'premium; EV itself is neutral',
                 },
                 'power_note': (
-                    'paired sd ~98 RUB and ~56 trades/hour per arm: an 8 RUB '
-                    'effect needs ~1 500 pairs (Bonferroni), ~21 h at this flow. '
-                    'A 3-hour run cannot resolve anything below ~15 RUB/trade'
+                    'paired sd ~98 RUB and ~56 trades/hour per arm: the CI half '
+                    'width is ~15 RUB at ~165 pairs, so a 3-hour run cannot '
+                    'resolve anything below ~15 RUB/trade, and an 8 RUB effect '
+                    'needs ~1 700 pairs after Bonferroni (~21 h at this flow)'
                 ),
             },
             'enrich': self.enrich.stats(),

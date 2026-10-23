@@ -87,7 +87,7 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         # Run #7: each experimental arm moves ONE entry boundary of A.
         'ENTRY_DELTA_MAX_SOL_B1': env.get('ENTRY_DELTA_MAX_SOL_B1', '1.00'),
         'ENTRY_BIRTH_MAX_SOL_B2': env.get('ENTRY_BIRTH_MAX_SOL_B2', '31.00'),
-        'ENTRY_DELTA_MAX_SOL_B3': env.get('ENTRY_DELTA_MAX_SOL_B3', '8.00'),
+        'ENTRY_DELTA_MIN_SOL_B3': env.get('ENTRY_DELTA_MIN_SOL_B3', '0.00'),
         'ENTRY_ENRICH': env.get('ENTRY_ENRICH', '1'),
         'CREATOR_GUARD_MIN_SIG': env.get('CREATOR_GUARD_MIN_SIG', '25'),
         'CREATOR_BURST_WINDOW_SEC': env.get('CREATOR_BURST_WINDOW_SEC', '3600'),

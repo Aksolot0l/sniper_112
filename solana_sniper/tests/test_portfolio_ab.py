@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import struct
 import tempfile
 import time
@@ -13,7 +14,9 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from portfolio_ab import (
     ARM_DEFAULTS,
+    ARM_ENV_KEYS,
     ARM_IDS,
+    ARM_LABELS,
     ABPaperSimulator,
     EntrySnapshot,
     ExecutableQuote,
@@ -35,6 +38,7 @@ from portfolio_ab import (
 # test needs a second live book.
 ARMS = arm_profiles()
 PROFILE_B1 = ARMS['portfolio_b1_narrow']
+PROFILE_B3 = ARMS['portfolio_b3_t0']
 B1 = 'portfolio_b1_narrow'
 from pump_curve_quote import (
     BONDING_CURVE_DISCRIMINATOR,
@@ -144,14 +148,20 @@ class ABProfileTests(unittest.TestCase):
             }
             # Exactly one boundary moves, and it is a boundary — not the exit.
             self.assertEqual(len(diff), 1, (name, diff))
-            self.assertIn(diff.pop(), ('delta_max_sol', 'v_sol_birth_max'), name)
+            self.assertIn(
+                diff.pop(), ('delta_max_sol', 'v_sol_birth_max', 'delta_min_sol'), name,
+            )
         # The declared boundaries.
         self.assertEqual(profiles['portfolio_b1_narrow'].delta_max_sol, 1.00)
         self.assertEqual(profiles['portfolio_b2_birth'].v_sol_birth_max, 31.00)
-        self.assertEqual(profiles['portfolio_b3_wide'].delta_max_sol, 8.00)
+        self.assertEqual(profiles['portfolio_b3_t0'].delta_min_sol, 0.00)
+        # B3 keeps A's whole band: only the momentum floor moves.
+        self.assertEqual(profiles['portfolio_b3_t0'].delta_max_sol, 2.50)
+        self.assertEqual(profiles['portfolio_b3_t0'].v_sol_birth_max, 34.50)
+        for name in ('portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth'):
+            self.assertEqual(profiles[name].delta_min_sol, 0.10, name)
         for name in ARM_IDS:
             arm = profiles[name]
-            self.assertEqual(arm.delta_min_sol, 0.10, name)
             self.assertEqual(arm.v_sol_birth_min, 30.5, name)
             self.assertEqual(arm.stop_loss_pct, 10.0, name)
             self.assertEqual(arm.tp1_pct, 30.0, name)
@@ -162,15 +172,45 @@ class ABProfileTests(unittest.TestCase):
         self.assertIn('0.10 <= delta <= 1.00', profiles['portfolio_b1_narrow'].entry_band_label)
         self.assertIn('30.50 <= v_sol_birth <= 31.00',
                       profiles['portfolio_b2_birth'].entry_band_label)
-        self.assertIn('0.10 <= delta <= 8.00', profiles['portfolio_b3_wide'].entry_band_label)
+        self.assertIn('0.00 <= delta <= 2.50', profiles['portfolio_b3_t0'].entry_band_label)
+        self.assertEqual(ARM_LABELS['portfolio_b3_t0'], 'B3')
+
+    def test_b3_is_the_t0_arm_not_a_wide_one(self) -> None:
+        # The wide arm (delta > 2.5) is closed and must not come back: its
+        # EV@15 was -9.25 / -5.84 / -5.54 % in three runs and it held no extra
+        # rockets inside A's birth band.
+        self.assertNotIn('portfolio_b3_wide', ARM_IDS)
+        self.assertNotIn('portfolio_b3_wide', ARM_DEFAULTS)
+        self.assertNotIn('portfolio_b3_wide', ARM_LABELS)
+        self.assertNotIn('ENTRY_DELTA_MAX_SOL_B3', ARM_ENV_KEYS['portfolio_b3_t0'])
+        self.assertEqual(ARM_ENV_KEYS['portfolio_b3_t0'],
+                         ('ENTRY_DELTA_MIN_SOL_B3', 'delta_min_sol'))
+        self.assertEqual(ARM_DEFAULTS['portfolio_b3_t0'], {'delta_min_sol': 0.00})
+        self.assertEqual(ARM_LABELS['portfolio_b3_t0'], 'B3')
+        # The t0 arm still carries A's delta ceiling: it only drops the floor.
+        self.assertEqual(ARM_DEFAULTS['portfolio_a' if False else 'portfolio_b1_narrow'],
+                         {'delta_max_sol': 1.00})
+        self.assertEqual(arm_profiles()['portfolio_b3_t0'].delta_max_sol,
+                         PROFILE_A.delta_max_sol)
+        with patch.dict(os.environ, {'ENTRY_DELTA_MIN_SOL_B3': '0.05'}, clear=False):
+            self.assertEqual(
+                profiles_from_settings(SimpleNamespace())['portfolio_b3_t0'].delta_min_sol,
+                0.05,
+            )
 
     def test_entry_rule_requires_live_momentum(self) -> None:
-        # Dead launch: no buys after the creator -> rejected by every arm.
-        for name, profile in arm_profiles().items():
+        # Dead launch: A, B1 and B2 wait for an impulse and reject it.
+        for name in ('portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth'):
+            profile = arm_profiles()[name]
             self.assertEqual(
                 profile.entry_check(31.0, 31.0), (False, 'no_live_momentum'), name,
             )
             self.assertFalse(profile.entry_check(31.0, 31.05)[0], name)
+        # B3 is the t0 arm: it enters on the first read, delta == 0 included.
+        self.assertEqual(
+            arm_profiles()['portfolio_b3_t0'].entry_check(31.0, 31.0),
+            (True, 'live_momentum_entry'),
+        )
         self.assertEqual(PROFILE_A.entry_check(30.5, 31.3), (True, 'live_momentum_entry'))
         # PERFORMA was born at 39.88 — inside the old 50 SOL band, outside the
         # 34.5 one: the ceiling is a dev-buy filter, not a delta one.
@@ -180,23 +220,26 @@ class ABProfileTests(unittest.TestCase):
             self.assertEqual(PROFILE_A.entry_check(birth, now)[1], 'momentum_too_late')
         self.assertFalse(PROFILE_A.entry_check(30.49, 31.3)[0])
 
-    def test_only_the_wide_arm_admits_the_2_5_to_8_band(self) -> None:
+    def test_no_arm_buys_above_the_delta_ceiling(self) -> None:
         profiles = arm_profiles()
-        # A and B2 cap at 2.5; B1 is tighter; B3 is the arm that adds rockets.
-        # A caps the delta at 2.5; B2 rejects the same coin at the door
-        # because its birth is already above the 31.0 ceiling.
+        # A wide arm (delta > 2.5) was rejected on data: EV@15 -9.25/-5.84/-5.54 %
+        # in three runs and no extra rockets inside A's birth band.
+        for name, profile in profiles.items():
+            self.assertFalse(profile.entry_check(32.0, 35.0)[0], name)
+            self.assertFalse(profile.entry_check(30.8, 40.0)[0], name)
         self.assertEqual(profiles['portfolio_a'].entry_check(32.0, 35.0)[1],
                          'momentum_too_late')
+        # B2 rejects the same coin at the door: its birth is above 31.0.
         self.assertEqual(profiles['portfolio_b2_birth'].entry_check(32.0, 35.0)[1],
                          'birth_out_of_band')
         self.assertEqual(profiles['portfolio_b2_birth'].entry_check(30.8, 33.4)[1],
                          'momentum_too_late')
         self.assertEqual(profiles['portfolio_b1_narrow'].entry_check(32.0, 33.5)[1],
                          'momentum_too_late')
-        self.assertEqual(profiles['portfolio_b3_wide'].entry_check(32.0, 35.0),
+        # B3 differs only by admitting the zero-impulse read.
+        self.assertEqual(profiles['portfolio_b3_t0'].entry_check(32.0, 32.0),
                          (True, 'live_momentum_entry'))
-        self.assertEqual(profiles['portfolio_b3_wide'].entry_check(32.0, 40.5)[1],
-                         'momentum_too_late')
+        self.assertFalse(profiles['portfolio_b3_t0'].entry_check(32.0, 35.0)[0])
 
     def test_birth_cut_arm_rejects_what_a_admits(self) -> None:
         profiles = arm_profiles()
@@ -282,7 +325,7 @@ class ABProfileTests(unittest.TestCase):
             'entry_birth_max_sol': 44.0, 'entry_delta_min_sol': 0.5,
             'entry_delta_max_sol': 6.0,
             'entry_delta_max_sol_b1': 1.5, 'entry_birth_max_sol_b2': 33.0,
-            'entry_delta_max_sol_b3': 9.0,
+            'entry_delta_min_sol_b3': 0.25,
         })
         profiles = profiles_from_settings(settings)
         self.assertEqual(profiles['portfolio_a'].v_sol_birth_max, 44.0)
@@ -293,12 +336,12 @@ class ABProfileTests(unittest.TestCase):
         self.assertEqual(profiles[B1].v_sol_birth_max, 44.0)
         self.assertEqual(profiles['portfolio_b2_birth'].v_sol_birth_max, 33.0)
         self.assertEqual(profiles['portfolio_b2_birth'].delta_max_sol, 6.0)
-        self.assertEqual(profiles['portfolio_b3_wide'].delta_max_sol, 9.0)
-        self.assertEqual(profiles['portfolio_b3_wide'].v_sol_birth_max, 44.0)
+        self.assertEqual(profiles['portfolio_b3_t0'].delta_min_sol, 0.25)
+        self.assertEqual(profiles['portfolio_b3_t0'].v_sol_birth_max, 44.0)
         # One band edge per arm, everything else identical to A.
-        for name in ('portfolio_b2_birth', 'portfolio_b3_wide'):
-            self.assertEqual(profiles[name].delta_min_sol, 0.5, name)
+        for name in ('portfolio_b2_birth', 'portfolio_b3_t0'):
             self.assertEqual(profiles[name].v_sol_birth_min, 30.5, name)
+        self.assertEqual(profiles['portfolio_b2_birth'].delta_min_sol, 0.5)
         # No creator gate anywhere and no shadow books at all.
         for name in profiles:
             self.assertNotIn('shadow', name)
@@ -1502,3 +1545,26 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
             # And every book's cash is down by exactly one slot.
             for name, book in simulator.books.items():
                 self.assertAlmostEqual(book.cash_balance_rub, 1_000.0, places=3, msg=name)
+
+    async def test_t0_arm_enters_the_zero_impulse_coin_the_others_skip(self) -> None:
+        # delta == 0: no impulse since detection. A/B1/B2 wait for momentum,
+        # B3 buys the first curve read (that is the whole point of the arm).
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp))
+            coin = NewCoin(
+                mint='mint-t0', source='Pump.fun', signature='sig-t0',
+                curve='curve-test', packet={'v_sol': 30.8},
+            )
+            snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+            epoch = time.time()
+            with patch('portfolio_ab.get_collector', return_value=None):
+                for name, book in simulator.books.items():
+                    await simulator._consider_entry(
+                        book, coin, snapshot, 30.8, 30.8, 200.0, {}, epoch,
+                    )
+            self.assertIn('mint-t0', simulator.books['portfolio_b3_t0'].positions)
+            for name in ('portfolio_a', 'portfolio_b1_narrow', 'portfolio_b2_birth'):
+                self.assertNotIn('mint-t0', simulator.books[name].positions, name)
+                self.assertAlmostEqual(
+                    simulator.books[name].cash_balance_rub, 1_500.0, places=3, msg=name,
+                )

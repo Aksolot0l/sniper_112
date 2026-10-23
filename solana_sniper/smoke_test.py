@@ -319,8 +319,9 @@ async def run(seconds: float) -> int:
         book.save(run_id)
         counters['closed'] += 1
 
-    # Run #3 artefacts: own mark stream + shadow fills. The snapshot helper is
-    # the same one the live run calls every 60 s (P0-5), so the smoke proves it.
+    # Run #7 artefacts: own mark stream + the periodic snapshot. The snapshot
+    # helper is the same one the live run calls every 60 s (P0-5), so the smoke
+    # proves it. There are no shadow books and no shadow fills any more.
     simulator.snapshot_artifacts(reason='smoke_end')
     summary = simulator.summary()
     (run_dir / 'ab_summary.json').write_text(

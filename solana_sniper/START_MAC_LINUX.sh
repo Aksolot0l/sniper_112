@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 echo "=============================================================="
-echo " Solana Pump.fun · PAPER A/B · 2ч30м локальный прогон"
+echo " Solana Pump.fun · PAPER · 4 арма · длительность из DURATION_SEC (по умолчанию 8 ч)"
 echo " paper-only: транзакции не подписываются и не отправляются"
 echo "=============================================================="
 
@@ -42,7 +42,7 @@ fi
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
 export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
 export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
-export ENTRY_DELTA_MAX_SOL_B3="${ENTRY_DELTA_MAX_SOL_B3:-8.00}"
+export ENTRY_DELTA_MIN_SOL_B3="${ENTRY_DELTA_MIN_SOL_B3:-0.00}"
 # Пассивный сбор признаков Jupiter datapi (0 RPC, на решения не влияет).
 export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
 # Расписание наблюдений: 0/5/15/60 с — 4 чтения вместо 6.
