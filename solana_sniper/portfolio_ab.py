@@ -580,6 +580,9 @@ class SimPosition:
     price_at_5s: Optional[float] = None
     pnl_pct_at_5s: Optional[float] = None
     price_at_5s_source: Optional[str] = None
+    # How far from entry+5.0 s the real mark that was used sits, in seconds.
+    # Without it the ghost could not tell "closer than what is already there".
+    price_at_5s_distance_sec: Optional[float] = None
     # Run #9 §3: how many times this ticker had already been launched in the
     # 120 s before entry (0 = first launch of that symbol we saw).
     name_copies_120s: Optional[int] = None
@@ -2856,12 +2859,14 @@ class ABPaperSimulator:
 
     def _price_at_offset(
         self, book_name: str, mint: str, entry_epoch: float, offset_sec: float,
-    ) -> Optional[tuple[float, str]]:
+    ) -> Optional[tuple[float, str, float]]:
         """Nearest real mark to entry+offset, from ticks or the ghost.
 
         No interpolation: the value is a price the bot actually read, and the
         distance to the requested moment is bounded by
-        POST_EXIT_NEAREST_TOLERANCE_SEC.
+        POST_EXIT_NEAREST_TOLERANCE_SEC. The distance is returned with the
+        price: run #10 §3, the ghost uses it to decide whether its own mark is
+        really closer than the tick that is already stored.
         """
         target = entry_epoch + offset_sec
         best: Optional[tuple[float, float, str]] = None
@@ -2884,7 +2889,7 @@ class ABPaperSimulator:
                     best = (distance, float(mark['price_usd']), 'post_exit')
         if best is None or best[0] > POST_EXIT_NEAREST_TOLERANCE_SEC:
             return None
-        return best[1], best[2]
+        return best[1], best[2], round(best[0], 3)
 
     @staticmethod
     def _ghost_mark_price(
@@ -3475,7 +3480,10 @@ class ABPaperSimulator:
                 book.profile.name, pos.mint, pos.opened_at_epoch, 5.0,
             )
             if price_at_5s is not None and pos.price_at_5s is None:
-                pos.price_at_5s, pos.price_at_5s_source = price_at_5s[0], price_at_5s[1]
+                # Run #10 §3: the distance travels with the price, otherwise a
+                # later ghost mark could overwrite a much closer tick.
+                (pos.price_at_5s, pos.price_at_5s_source,
+                 pos.price_at_5s_distance_sec) = price_at_5s
             record = TradeRecord(
                 mint=pos.mint, source=pos.source,
                 entry_price=pos.entry_price_usd,
@@ -3570,6 +3578,10 @@ class ABPaperSimulator:
                     if pos.price_at_5s and entry_mid_price_usd else None
                 ),
                 'price_at_5s_source': pos.price_at_5s_source,
+                'price_at_5s_distance_sec': (
+                    round(pos.price_at_5s_distance_sec, 3)
+                    if pos.price_at_5s_distance_sec is not None else None
+                ),
                 'network_fees_rub': round(pos.realized_fee_rub, 6),
                 'onchain_fees_rub': round(pos.onchain_fees_paid_rub, 6),
             }
@@ -4320,6 +4332,11 @@ class ABPaperSimulator:
                 for t in book.closed_trades
                 if t.get('pnl_pct_at_5s') is not None
             ]
+            d_5s = [
+                float(t['price_at_5s_distance_sec'])
+                for t in book.closed_trades
+                if t.get('price_at_5s_distance_sec') is not None
+            ]
             per_book[name] = {
                 'exits_followed': self.post_exit_started.get(name, 0),
                 'exits_not_followed': self.post_exit_skipped.get(name, 0),
@@ -4343,6 +4360,12 @@ class ABPaperSimulator:
                 ),
                 'pnl_pct_at_5s_mean': (
                     round(sum(five_s) / len(five_s), 4) if five_s else None
+                ),
+                # Run #10 §3: how far from entry+5 s the chosen observation
+                # sits. A systematic drift to ~5.6 s changes what the number
+                # means, so the distance is reported, not implied.
+                'price_at_5s_median_distance_sec': (
+                    round(statistics.median(d_5s), 3) if d_5s else None
                 ),
             }
         return {

@@ -754,12 +754,14 @@ def _run9_summary_markdown(
 
     add('## Что было бы при выходе по часам: реальная цена через 5 с')
     add('')
-    add('| книга | сделок с price_at_5s | покрытие | медиана PnL на 5 с, % | среднее, % |')
-    add('|---|---:|---:|---:|---:|')
+    add('| книга | сделок с price_at_5s | покрытие | медиана расстояния до 5.0 с, с | '
+        'медиана PnL на 5 с, % | среднее, % |')
+    add('|---|---:|---:|---:|---:|---:|')
     for name in arms:
         pe = ((summary.get(name) or {}).get('post_exit') or {})
         add(f"| {label(name)} | {pe.get('price_at_5s_trades', 0)} | "
             f"{_share(pe.get('price_at_5s_coverage'))} | "
+            f"{m(pe.get('price_at_5s_median_distance_sec'))} | "
             f"{m(pe.get('pnl_pct_at_5s_median'))} | {m(pe.get('pnl_pct_at_5s_mean'))} |")
     add('')
     add('`price_at_5s` — ближайшая **реальная** метка к входу + 5 с (допуск 0.75 с), '
