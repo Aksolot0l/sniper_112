@@ -452,6 +452,9 @@ class CandidateCollector:
 
     def record_candidate(self, coin: NewCoin, config: dict[str, Any]) -> None:
         cid = candidate_id_for(coin.mint)
+        # Run #8 §1.3: the moment the row is stamped, so the latency chain can
+        # report WSS packet -> candidate row instead of guessing from found_at.
+        coin.candidate_row_epoch = time.time()
         first_seen = _utc_from_epoch(coin.found_at)
         packet = dict(coin.packet or {})
         program_creator = coin.program_creator or packet.get('program_creator')

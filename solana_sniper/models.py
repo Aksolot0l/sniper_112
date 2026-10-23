@@ -34,6 +34,10 @@ class NewCoin:
     curve_observed_at: Optional[float] = None  # first successful curve read used as Watchlist t0
     entry_snapshot: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
     creator_probe_result: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
+    # Run #8 §1.3: when the candidate row itself was written. `found_at` is the
+    # WSS packet, this is the row in telemetry, and the difference is the
+    # detection stage the latency chain reports. Set by the collector.
+    candidate_row_epoch: Optional[float] = field(default=None, repr=False, compare=False)
 
 
 @dataclass

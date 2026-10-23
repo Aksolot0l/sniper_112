@@ -470,6 +470,20 @@ class SimPosition:
     t0_price_usd: Optional[float] = None
     # Detection -> the on-chain read used for the fill, milliseconds.
     entry_lag_ms: Optional[float] = None
+    # Run #8 §1.3: the entry latency chain, stage by stage. Each value is a
+    # duration in ms between two real clocks, not a model:
+    #   t_detect_ms  WSS packet -> candidate row written to telemetry
+    #   t_filters_ms candidate row -> the security batch verdict
+    #   t_read_ms    verdict -> the curve read this fill was priced from
+    #   t_fill_ms    that read -> the fill row
+    #   t_total_ms   WSS packet -> the fill row
+    # t_read_ms is 0 whenever the filter batch IS the entry read, which is the
+    # production path: no second entry RPC is issued to make a stage look busy.
+    t_detect_ms: Optional[float] = None
+    t_filters_ms: Optional[float] = None
+    t_read_ms: Optional[float] = None
+    t_fill_ms: Optional[float] = None
+    t_total_ms: Optional[float] = None
     entry_latency_ms: float = 0.0
     entry_latency_floor_met: Optional[bool] = None
     mfe_pct: float = 0.0
@@ -1217,6 +1231,28 @@ class ABPaperSimulator:
             if collector is not None:
                 collector.record_decision(coin.mint, coin.source, 'ab_scope', 'skipped', ['source_not_pumpfun'])
             return
+        # Run #8 §1.3: the SOL/USD rate used to be awaited AFTER the security
+        # verdict, so on a cache miss an HTTPS round trip sat between the
+        # verdict and the fill. Start it together with the security batch: it
+        # is DexScreener, not Helius, so it costs neither RPC budget nor a
+        # filter-semaphore slot.
+        sol_usd_task = asyncio.create_task(get_sol_usd(self.session))
+        try:
+            await self._handle_candidate_checks(coin, sol_usd_task)
+        finally:
+            # Rejections return early all over the place; never leave the
+            # prefetched rate running behind them.
+            if not sol_usd_task.done():
+                sol_usd_task.cancel()
+            elif not sol_usd_task.cancelled():
+                # Consume the result even when it was not needed, so a failed
+                # prefetch can never surface as an unretrieved exception.
+                sol_usd_task.exception()
+
+    async def _handle_candidate_checks(
+        self, coin: NewCoin, sol_usd_task: 'asyncio.Future',
+    ) -> None:
+        """Everything after the source check, with the rate prefetch in flight."""
         handler_started = time.monotonic()
         first_seen_delay_ms = max(0.0, (time.time() - coin.found_at) * 1000.0)
         async with self.filter_sem:
@@ -1230,11 +1266,21 @@ class ABPaperSimulator:
                 creator_probe=self.creator_probe,
             )
         filter_done = time.monotonic()
+        filter_done_epoch = time.time()
+        # Stage 1 (WSS packet -> candidate row) is stamped by the collector when
+        # it writes the row; the handler start is the fallback without telemetry.
+        detect_epoch = float(
+            coin.candidate_row_epoch
+            or (coin.found_at + first_seen_delay_ms / 1000.0)
+        )
         filter_metrics = {
             'queue_delay_ms': round(first_seen_delay_ms, 2),
             'filter_semaphore_wait_ms': round(max(0.0, (filter_started - handler_started) * 1000.0), 2),
             'filter_execution_ms': round(max(0.0, (filter_done - filter_started) * 1000.0), 2),
-            'first_seen_to_filter_done_ms': round(max(0.0, (time.time() - coin.found_at) * 1000.0), 2),
+            'first_seen_to_filter_done_ms': round(max(0.0, (filter_done_epoch - coin.found_at) * 1000.0), 2),
+            # --- run #8 §1.3: the chain, stages 1-2 ---
+            't_detect_ms': round(max(0.0, (detect_epoch - coin.found_at) * 1000.0), 2),
+            't_filters_ms': round(max(0.0, (filter_done_epoch - detect_epoch) * 1000.0), 2),
         }
         collector = self._collector()
         if collector is not None:
@@ -1316,7 +1362,20 @@ class ABPaperSimulator:
             self._record_candidate_fail(coin, 'missing_or_invalid_v_sol_birth')
             return
         current_v_sol = snapshot.curve.virtual_quote_reserves / LAMPORTS_PER_SOL
-        sol_usd = await get_sol_usd(self.session)
+        # Stage 3: how old the read this fill is priced from is, measured from
+        # the verdict. It is 0 on the production path because the filter batch
+        # and the entry read are the same getMultipleAccounts context.
+        read_epoch = float(snapshot.observed_at_epoch or filter_done_epoch)
+        filter_metrics = {
+            **filter_metrics,
+            't_read_ms': round(max(0.0, (read_epoch - filter_done_epoch) * 1000.0), 2),
+        }
+        try:
+            sol_usd = await sol_usd_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            sol_usd = None
         if sol_usd is None or not math.isfinite(sol_usd) or sol_usd <= 0:
             for book in self.books.values():
                 self._record_portfolio_skip(book, coin, 'sol_usd_unavailable', birth_v_sol, current_v_sol)
@@ -1597,6 +1656,11 @@ class ABPaperSimulator:
             # actually priced, and the modelled execution delay next to it.
             read_epoch = float(snapshot.observed_at_epoch or decision_epoch)
             entry_lag_ms = max(0.0, (read_epoch - coin.found_at) * 1000.0)
+            # Stages 4-5: the fill is booked right here, so this clock is the
+            # fill row and the whole chain can be closed with two durations.
+            fill_epoch = time.time()
+            t_fill_ms = round(max(0.0, (fill_epoch - read_epoch) * 1000.0), 2)
+            t_total_ms = round(max(0.0, (fill_epoch - coin.found_at) * 1000.0), 2)
             entry_latency_ms = float(profile.entry_latency_ms)
             latency_floor_met = entry_lag_ms >= entry_latency_ms
             pos = SimPosition(
@@ -1637,6 +1701,11 @@ class ABPaperSimulator:
                 entry_lag_ms=round(entry_lag_ms, 3),
                 entry_latency_ms=entry_latency_ms,
                 entry_latency_floor_met=latency_floor_met,
+                t_detect_ms=filter_metrics.get('t_detect_ms'),
+                t_filters_ms=filter_metrics.get('t_filters_ms'),
+                t_read_ms=filter_metrics.get('t_read_ms'),
+                t_fill_ms=t_fill_ms,
+                t_total_ms=t_total_ms,
             )
             book.cash_balance_rub -= actual_cost_rub
             book.fees_paid_rub += entry_fee_rub
@@ -1685,6 +1754,12 @@ class ABPaperSimulator:
                 'entry_lag_ms': round(entry_lag_ms, 3),
                 'entry_latency_ms': entry_latency_ms,
                 'entry_latency_floor_met': latency_floor_met,
+                # Run #8 §1.3: the whole chain lands in decisions.csv too.
+                't_detect_ms': filter_metrics.get('t_detect_ms'),
+                't_filters_ms': filter_metrics.get('t_filters_ms'),
+                't_read_ms': filter_metrics.get('t_read_ms'),
+                't_fill_ms': t_fill_ms,
+                't_total_ms': t_total_ms,
                 'entry_price_source': 'first_onchain_curve_read_after_detection',
                 'entry_at_detection': profile.entry_at_detection,
                 'delta_min_sol': profile.delta_min_sol,
@@ -2721,6 +2796,13 @@ class ABPaperSimulator:
                 # Run #3 instrumentation, all from the position's own marks.
                 'entry_lag_sec': pos.entry_lag_sec,
                 'entry_lag_ms': pos.entry_lag_ms,
+                # Run #8 §1.3: the chain survives into closed_trades, so the
+                # report can be built from trades alone.
+                't_detect_ms': pos.t_detect_ms,
+                't_filters_ms': pos.t_filters_ms,
+                't_read_ms': pos.t_read_ms,
+                't_fill_ms': pos.t_fill_ms,
+                't_total_ms': pos.t_total_ms,
                 'entry_latency_ms': pos.entry_latency_ms,
                 'entry_latency_floor_met': pos.entry_latency_floor_met,
                 'entry_premium_pct': pos.entry_premium_pct,

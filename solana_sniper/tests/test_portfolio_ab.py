@@ -114,6 +114,12 @@ def make_settings():
     return SimpleNamespace(
         filter_concurrency=4,
         usd_rub_rate=90.0,
+        # Needed by handle_candidate (run #8 latency-chain tests).
+        min_liquidity_usd=0.0,
+        honeypot_check=False,
+        only_sol_pairs=True,
+        indexer_retries=0,
+        indexer_retry_delay_sec=0.1,
         entry_fee_sol=0.00008,
         exit_fee_sol=0.00005,
         http_rpc_url='https://rpc.invalid',
@@ -1710,6 +1716,198 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(off.enqueue('mint-3'))
         await off.flush()
         self.assertEqual(off.stats()['rows'], 0)
+
+
+def make_four_account_snapshot(mint, curve, *, observed_at=None, vquote=31_200_000_000):
+    """The exact dict filters.py stores on `coin.entry_snapshot`."""
+    from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA
+
+    global_raw = bytearray(1_088)
+    global_raw[:8] = GLOBAL_DISCRIMINATOR
+    struct.pack_into('<Q', global_raw, 105, 95)
+    struct.pack_into('<Q', global_raw, 154, 30)
+    global_raw[1045] = 0
+    struct.pack_into('<Q', global_raw, 1046, 1_000)
+    fee_raw = bytearray(FEE_CONFIG_DISCRIMINATOR)
+    fee_raw.extend(b'\x01' + bytes(32))
+    fee_raw.extend(struct.pack('<QQQ', 0, 95, 30))
+    fee_raw.extend(struct.pack('<I', 1))
+    fee_raw.extend((0).to_bytes(16, 'little'))
+    fee_raw.extend(struct.pack('<QQQ', 0, 95, 30))
+    fee_raw.extend(struct.pack('<I', 0))
+    fee_raw.extend(struct.pack('<QQQ', 0, 0, 0))
+    return {
+        'mint': mint, 'curve': curve,
+        'curve_raw': make_curve_raw(vquote=vquote),
+        'global_raw': bytes(global_raw), 'fee_config_raw': bytes(fee_raw),
+        'context_slot': 12,
+        'observed_at_epoch': time.time() if observed_at is None else observed_at,
+        'account_addresses': [mint, curve, PUMP_GLOBAL_PDA, PUMP_FEE_CONFIG_PDA],
+    }
+
+
+class RunEightEntryLatencyChainTests(unittest.IsolatedAsyncioTestCase):
+    """Run #8 §1.3: every stage of the entry is measured, not modelled."""
+
+    async def _enter(self, *, found_ago=0.05, row_after_packet=0.010,
+                     verdict_after_row=0.150, read_after_verdict=0.0):
+        import portfolio_ab as sim_module
+
+        tmp = tempfile.mkdtemp()
+        # Run #8 runs with ENTRY_LATENCY_MS=0: no modelled delay at all.
+        profiles = {
+            name: replace(profile, entry_latency_ms=0.0)
+            for name, profile in arm_profiles().items()
+        }
+        simulator = make_simulator(Path(tmp), profiles=profiles)
+        collector = SimpleNamespace(
+            record_decision=Mock(), record_quote=Mock(return_value='q'),
+            record_fill=Mock(), set_security_verdict=Mock(),
+            record_creator_attribution=Mock(),
+        )
+        now = time.time()
+        found_at = now - found_ago
+        coin = NewCoin(
+            mint='mint-chain', source='Pump.fun', signature='sig-chain',
+            curve='curve-chain', packet={'v_sol': 30.8, 'pumpportal_identity_verified': True},
+            found_at=found_at,
+        )
+        coin.candidate_row_epoch = found_at + row_after_packet
+        verdict_epoch = coin.candidate_row_epoch + verdict_after_row
+        coin.entry_snapshot = make_four_account_snapshot(
+            coin.mint, coin.curve, observed_at=verdict_epoch + read_after_verdict,
+        )
+
+        class FakeVerdict:
+            passed = True
+            reasons = []
+
+            def merge(self, other):
+                return self
+
+        async def fake_run_all_checks(*args, **kwargs):
+            # The security batch takes exactly the declared time.
+            await asyncio.sleep(max(0.0, verdict_epoch - time.time()))
+            return FakeVerdict()
+
+        async def fake_sol_usd(_session):
+            return 200.0
+
+        with patch.object(sim_module, 'run_all_checks', fake_run_all_checks), \
+                patch.object(sim_module, 'get_sol_usd', fake_sol_usd), \
+                patch('portfolio_ab.get_collector', return_value=collector):
+            await simulator.handle_candidate(coin)
+        return simulator, collector, coin, verdict_epoch
+
+    async def test_chain_lands_on_the_position_and_in_decisions(self) -> None:
+        simulator, collector, coin, _ = await self._enter()
+        book = simulator.books['portfolio_s1']
+        pos = book.positions['mint-chain']
+        for field in ('t_detect_ms', 't_filters_ms', 't_read_ms',
+                      't_fill_ms', 't_total_ms'):
+            self.assertIsInstance(getattr(pos, field), float, field)
+        self.assertAlmostEqual(pos.t_detect_ms, 10.0, delta=6.0)
+        self.assertAlmostEqual(pos.t_filters_ms, 150.0, delta=25.0)
+        self.assertAlmostEqual(pos.t_read_ms, 0.0, places=6)
+        self.assertGreaterEqual(pos.t_fill_ms, 0.0)
+        # The chain closes: packet -> fill is at least each stage's sum.
+        self.assertGreater(pos.t_total_ms, pos.t_filters_ms)
+        # decisions.csv gets the same five numbers on the opened row.
+        opened = [
+            call for call in collector.record_decision.call_args_list
+            if call.args[2] == 'portfolio_s1_entry' and call.args[3] == 'opened'
+        ]
+        self.assertEqual(len(opened), 1)
+        # record_decision(mint, source, stage, decision, reasons, values)
+        values = opened[0].args[5]
+        for field in ('t_detect_ms', 't_filters_ms', 't_read_ms',
+                      't_fill_ms', 't_total_ms'):
+            self.assertIn(field, values)
+            self.assertIsNotNone(values[field], field)
+        self.assertEqual(values['t_detect_ms'], pos.t_detect_ms)
+
+    async def test_chain_survives_into_closed_trades(self) -> None:
+        simulator, _, _, _ = await self._enter()
+        book = simulator.books['portfolio_s1']
+        pos = book.positions['mint-chain']
+        curve = make_curve()
+        fees = make_fee_context_for_test()
+        local = quote_sell_exact_tokens(
+            curve, fees, pos.remaining_tokens_raw, slippage_bps=100, context_slot=12,
+        )
+        swap = SwapQuote(
+            input_mint=pos.mint, output_mint=WSOL_MINT,
+            in_amount_raw=pos.remaining_tokens_raw,
+            out_amount_raw=local.out_amount_raw, min_out_raw=local.min_out_raw,
+            price_impact_pct=local.price_impact_pct,
+            route_labels=local.route_labels(), context_slot=12,
+        )
+        executable = ExecutableQuote(
+            swap, local.protocol_fee_raw, local.creator_fee_raw,
+            local.protocol_fee_bps, local.creator_fee_bps,
+            local.market_cap_lamports, local.tier_index, 'local exact quote',
+        )
+        with patch('portfolio_ab.get_collector', return_value=None):
+            await simulator._apply_sell_fill(
+                book, pos, pos.remaining_tokens_raw, 'Fee cover (+3.5%)',
+                executable, curve, fees, 12, 200.0, 3.6, 518.0,
+            )
+        trade = book.closed_trades[-1]
+        self.assertEqual(trade['reason'], 'Fee cover (+3.5%)')
+        for field in ('t_detect_ms', 't_filters_ms', 't_read_ms',
+                      't_fill_ms', 't_total_ms'):
+            self.assertIn(field, trade)
+            self.assertEqual(trade[field], getattr(pos, field))
+
+    async def test_entry_latency_zero_does_not_wait_for_a_floor(self) -> None:
+        # ENTRY_LATENCY_MS=0 removes the modelled delay only: the fill still
+        # happens after the real filter batch, and t_total_ms reports that.
+        simulator, _, coin, _ = await self._enter()
+        self.assertEqual(simulator.last_entry_latency_wait_sec, 0.0)
+        for book in simulator.books.values():
+            self.assertEqual(book.profile.entry_latency_ms, 0.0)
+
+    async def test_rate_prefetch_is_cancelled_on_a_rejection(self) -> None:
+        # A rejected candidate must not leave the DexScreener prefetch running.
+        import portfolio_ab as sim_module
+
+        simulator = make_simulator(tempfile.mkdtemp())
+        coin = NewCoin(
+            mint='mint-rejected', source='Pump.fun', signature='sig-rejected',
+            curve='curve-rejected', packet={'v_sol': 30.8},
+        )
+        coin.candidate_row_epoch = time.time()
+        started = asyncio.Event()
+        cancelled = []
+
+        async def slow_rate(_session):
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+            return 200.0
+
+        class Reject:
+            passed = False
+            reasons = ['boom']
+
+            def merge(self, other):
+                return self
+
+        async def failing(*args, **kwargs):
+            await started.wait()
+            return Reject()
+
+        with patch.object(sim_module, 'run_all_checks', failing), \
+                patch.object(sim_module, 'get_sol_usd', slow_rate), \
+                patch('portfolio_ab.get_collector', return_value=None):
+            await simulator.handle_candidate(coin)
+            # Cancellation is delivered on the next loop turn, not synchronously.
+            await asyncio.sleep(0.01)
+        self.assertEqual(cancelled, [True])
+        self.assertTrue(all(not book.positions for book in simulator.books.values()))
 
 
 class RunEightFeeCoverExitTests(unittest.TestCase):
