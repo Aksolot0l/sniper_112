@@ -384,6 +384,12 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
         kwargs: dict[str, Any] = {**shared, 'name': name, 'arm_id': ARM_LABELS[name]}
         if name != 'portfolio_a':
             kwargs.update(overrides.get(name, {}))
+        if shared['exit_mode'] == 'fee_cover':
+            for field in ('fee_cover_pct', 'time_exit_sec', 'hard_stop_pct'):
+                if float(shared[field]) <= 0:
+                    raise ValueError(
+                        f'{field} must be > 0 in fee_cover mode, got {shared[field]}'
+                    )
         profile = replace(PROFILE_A, **kwargs)
         built[name] = replace(profile, entry_band_label=entry_band_label(profile))
     return built
@@ -2263,6 +2269,13 @@ class ABPaperSimulator:
         if pos.remaining_tokens_raw <= 0:
             return None
 
+        # Run #8: `fee_cover` is a different exit, not a variant of the ladder.
+        # It is decided first and returns in every case, so none of the Round 6
+        # rules below (TP1, trail, shelf, no-progress, 35/90 s timeout) can
+        # fire — and so none of them can appear in exit_breakdown.
+        if profile.exit_mode == 'fee_cover':
+            return self._fee_cover_trigger(profile, pos, pnl_pct, held)
+
         # Run #7: one exit ladder for every arm (the run #4 time exit and its
         # toggles were deleted, not parked).
         # Once a TP1 sell quote has failed, retry the same half-size paper fill
@@ -2354,6 +2367,40 @@ class ABPaperSimulator:
         )
         if held >= timeout:
             return f'Timeout ({timeout:.1f}s)', pos.remaining_tokens_raw
+        return None
+
+    def _fee_cover_trigger(
+        self,
+        profile: ABProfile,
+        pos: SimPosition,
+        pnl_pct: float,
+        held: float,
+    ) -> Optional[tuple[str, int]]:
+        """Run #8's exit rule — always the whole remaining position.
+
+        Order matters: a hard stop outranks a profit target when a mark jumps
+        over both, and the clock only runs when neither price rule fired. The
+        three thresholds are measured, not tuned: the round trip costs 3.25 %
+        of the stake, so +3.5 % covers it with 0.25 pp of slack, and the replay
+        of run #7's real B1 trades says a 5 s clock is the least bad of the
+        short holds. `tp1_sell_pct` is deliberately unused: a partial exit
+        cannot both cover the fee and leave the book flat.
+        """
+        if pnl_pct <= -abs(float(profile.hard_stop_pct)):
+            return (
+                f'Hard stop (−{abs(float(profile.hard_stop_pct)):.1f}%)',
+                pos.remaining_tokens_raw,
+            )
+        if pnl_pct >= float(profile.fee_cover_pct):
+            return (
+                f'Fee cover (+{float(profile.fee_cover_pct):.1f}%)',
+                pos.remaining_tokens_raw,
+            )
+        if held >= float(profile.time_exit_sec):
+            return (
+                f'Time exit ({float(profile.time_exit_sec):.1f}s)',
+                pos.remaining_tokens_raw,
+            )
         return None
 
     async def _apply_sell_fill(
@@ -2884,6 +2931,13 @@ class ABPaperSimulator:
     @staticmethod
     def _exit_rule_label(profile: ABProfile) -> str:
         """One line that identifies the exit rule (identical in every arm)."""
+        if profile.exit_mode == 'fee_cover':
+            return (
+                f'fee cover: hard stop −{profile.hard_stop_pct:g}%, '
+                f'sell 100% at +{profile.fee_cover_pct:g}%, else time exit '
+                f'{profile.time_exit_sec:g}s; no TP1, no trail, no shelf, '
+                f'no no-progress'
+            )
         return (
             f'4-mode ladder: SL −{profile.stop_loss_pct:.0f}%, '
             f'TP1 +{profile.tp1_pct:.0f}%={profile.tp1_sell_pct:.0f}%, '
@@ -2915,6 +2969,12 @@ class ABPaperSimulator:
         text = str(reason or '').strip()
         head = text.split('(')[0].strip()
         for prefix, label in (
+            # Run #8's three rules. They must be classified here: an unknown
+            # head lands in its own bucket, which is how a run #8 report would
+            # end up with an "unknown" exit category.
+            ('Hard stop', 'hard_stop'),
+            ('Fee cover', 'fee_cover'),
+            ('Time exit', 'time_exit'),
             ('SL/trail', 'trail'),
             ('SL', 'stop_loss'),
             ('TP1', 'tp'),

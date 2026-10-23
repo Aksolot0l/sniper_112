@@ -1712,6 +1712,132 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(off.stats()['rows'], 0)
 
 
+class RunEightFeeCoverExitTests(unittest.TestCase):
+    """Run #8: hard stop, cover the round trip, or leave at 5 s — nothing else."""
+
+    def _profile(self, **overrides):
+        values = {'exit_mode': 'fee_cover'}
+        values.update(overrides)
+        return replace(ARMS['portfolio_s1'], **values)
+
+    def _simulator(self):
+        return make_simulator(tempfile.mkdtemp())
+
+    def _trigger(self, pnl_pct, *, held=0.0, **overrides):
+        simulator = self._simulator()
+        profile = self._profile(**overrides)
+        pos = make_position(opened_ago=held)
+        return simulator._exit_trigger(profile, pos, pnl_pct, time.time())
+
+    def test_three_rules_in_the_declared_order(self) -> None:
+        # Hard stop outranks fee cover when a single mark jumps over both.
+        self.assertEqual(self._trigger(-10.0)[0], 'Hard stop (−10.0%)')
+        self.assertEqual(self._trigger(-35.0, held=9.0)[0], 'Hard stop (−10.0%)')
+        self.assertEqual(self._trigger(+8.0)[0], 'Fee cover (+3.5%)')
+        # Neither price rule fired -> the clock decides.
+        self.assertEqual(self._trigger(+3.49, held=5.0)[0], 'Time exit (5.0s)')
+        self.assertEqual(self._trigger(-9.99, held=5.0)[0], 'Time exit (5.0s)')
+        # And before any of them: no exit at all.
+        self.assertIsNone(self._trigger(+3.49, held=4.9))
+        self.assertIsNone(self._trigger(-9.99, held=0.0))
+
+    def test_every_exit_sells_the_whole_position(self) -> None:
+        for pnl, held in ((-10.0, 0.0), (+3.5, 0.0), (+0.1, 5.0)):
+            pos = make_position(opened_ago=held)
+            profile = self._profile(tp1_sell_pct=50.0)
+            reason, amount = self._simulator()._exit_trigger(
+                profile, pos, pnl, time.time(),
+            )
+            self.assertEqual(amount, pos.remaining_tokens_raw, reason)
+            self.assertEqual(amount, pos.initial_tokens_raw, reason)
+
+    def test_no_ladder_rule_can_fire(self) -> None:
+        # Every rung of Round 6 that would have sold something is unreachable:
+        # +30 % is a fee cover (100 %, not TP1's half), +50 % likewise, a flat
+        # +2 % shelf with 10 s held is a time exit, and -10 % + 20 s is a stop.
+        self.assertEqual(self._trigger(+30.0), ('Fee cover (+3.5%)', 1_000_000))
+        self.assertEqual(self._trigger(+60.0), ('Fee cover (+3.5%)', 1_000_000))
+        self.assertEqual(self._trigger(+2.0, held=10.0)[0], 'Time exit (5.0s)')
+        self.assertEqual(self._trigger(-10.0, held=20.0)[0], 'Hard stop (−10.0%)')
+        # A peak above +10 % does not arm a trail: the ladder is not consulted.
+        simulator = self._simulator()
+        pos = make_position(opened_ago=1.0, best_pnl=+20.0)
+        self.assertIsNone(simulator._exit_trigger(self._profile(), pos, +1.0, time.time()))
+
+    def test_thresholds_come_from_the_profile(self) -> None:
+        self.assertEqual(
+            self._trigger(+2.6, fee_cover_pct=2.5)[0], 'Fee cover (+2.5%)',
+        )
+        self.assertEqual(self._trigger(-7.5, hard_stop_pct=7.5)[0], 'Hard stop (−7.5%)')
+        self.assertEqual(self._trigger(+1.0, held=2.0, time_exit_sec=2.0)[0],
+                         'Time exit (2.0s)')
+        # A tighter stop does not close a +1 % trade on its own.
+        self.assertIsNone(self._trigger(+1.0, held=2.0, hard_stop_pct=7.5))
+
+    def test_ladder_mode_is_untouched(self) -> None:
+        # The same mark that fee_cover closes at +3.5 % leaves the ladder open.
+        simulator = self._simulator()
+        pos = make_position(opened_ago=1.0)
+        self.assertIsNone(simulator._exit_trigger(ARMS['portfolio_s1'], pos, +3.5,
+                                                  time.time()))
+
+    def test_reasons_are_classified_not_unknown(self) -> None:
+        kind = ABPaperSimulator.exit_reason_kind
+        self.assertEqual(kind('Hard stop (−10.0%)'), 'hard_stop')
+        self.assertEqual(kind('Fee cover (+3.5%)'), 'fee_cover')
+        self.assertEqual(kind('Time exit (5.0s)'), 'time_exit')
+        # The ladder's own labels still resolve as before.
+        self.assertEqual(kind('SL (−10.0%)'), 'stop_loss')
+        self.assertEqual(kind('SL/trail (peak=+12.0%, floor=+10.2%)'), 'trail')
+        self.assertEqual(kind('TP1 +30% partial 50%'), 'tp')
+        self.assertEqual(kind('Timeout (35.0s)'), 'timeout')
+
+    def test_exit_breakdown_only_the_three_run8_kinds(self) -> None:
+        simulator = self._simulator()
+        book = simulator.books['portfolio_s1']
+        book.closed_trades.extend([
+            {'reason': 'Fee cover (+3.5%)', 'pnl_rub': 10.0, 'held_sec': 4.0},
+            {'reason': 'Fee cover (+3.5%)', 'pnl_rub': 8.0, 'held_sec': 2.0},
+            {'reason': 'Time exit (5.0s)', 'pnl_rub': -6.0, 'held_sec': 5.01},
+            {'reason': 'Hard stop (−10.0%)', 'pnl_rub': -52.0, 'held_sec': 1.5},
+        ])
+        breakdown = simulator._exit_breakdown(book)
+        self.assertEqual(sorted(breakdown), ['fee_cover', 'hard_stop', 'time_exit'])
+        self.assertEqual(breakdown['fee_cover']['n'], 2)
+        self.assertAlmostEqual(breakdown['fee_cover']['mean_rub'], 9.0, places=6)
+        self.assertEqual(breakdown['time_exit']['n'], 1)
+        self.assertEqual(breakdown['hard_stop']['n'], 1)
+
+    def test_profile_validation_and_label(self) -> None:
+        with patch.dict(os.environ, {'EXIT_MODE': 'fee_cover'}, clear=False):
+            profile = profiles_from_settings(SimpleNamespace())['portfolio_s1']
+            self.assertEqual(profile.exit_mode, 'fee_cover')
+            label = ABPaperSimulator._exit_rule_label(profile)
+            self.assertIn('fee cover', label)
+            self.assertIn('no TP1', label)
+            with patch.dict(os.environ, {'EXIT_FEE_COVER_PCT': '0'}, clear=False):
+                with self.assertRaises(ValueError):
+                    profiles_from_settings(SimpleNamespace())
+        with patch.dict(os.environ, {'EXIT_MODE': 'fee-cover'}, clear=False):
+            with self.assertRaises(ValueError):
+                profiles_from_settings(SimpleNamespace())
+        # The ladder label is what run #7 shipped.
+        self.assertIn('4-mode ladder', ABPaperSimulator._exit_rule_label(PROFILE_A))
+
+    def test_both_books_of_a_run_share_the_exit(self) -> None:
+        with patch.dict(os.environ, {
+            'ARMS': 'portfolio_s1,portfolio_s0', 'ALLOW_SINGLE_ARM': '1',
+            'EXIT_MODE': 'fee_cover', 'EXIT_FEE_COVER_PCT': '3.5',
+            'EXIT_TIME_SEC': '5.0', 'EXIT_HARD_STOP_PCT': '10.0',
+        }, clear=False):
+            profiles = profiles_from_settings(SimpleNamespace())
+        exits = {
+            (p.exit_mode, p.fee_cover_pct, p.time_exit_sec, p.hard_stop_pct)
+            for p in profiles.values()
+        }
+        self.assertEqual(exits, {('fee_cover', 3.5, 5.0, 10.0)})
+
+
 class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
     """The isolation rule, executed: one candidate, four books."""
 
