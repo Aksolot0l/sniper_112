@@ -849,6 +849,10 @@ POST_EXIT_SCHEDULE_SEC: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 
 # The last scheduled point sits exactly on the window edge; the ghost has to
 # outlive it by at least one poll cycle, or the 10th mark is never read.
 POST_EXIT_SCHEDULE_GRACE_SEC = 0.5
+# How many cycles a single scheduled point may be retried before it is written
+# off. The point is then counted as missed (coverage < 1) instead of being
+# retried every cycle until the window closes.
+POST_EXIT_MAX_ATTEMPTS_PER_POINT = 3
 MARK_POLL_RPS_LIMIT = 2.2
 MARK_POLL_ADAPTED_SEC = 0.25
 MARK_POLL_RPS_CHECK_SEC = 10.0
@@ -2637,25 +2641,22 @@ class ABPaperSimulator:
                 # Run #10 §2a: only the ghosts whose point is due, one mark
                 # each, then the schedule advances.
                 for ghost in due_ghosts:
-                    account = accounts.get(ghost['curve'])
-                    if not isinstance(account, dict) or account.get('owner') != PUMP_PROGRAM_ID:
+                    price = self._ghost_mark_price(accounts, ghost, sol_usd)
+                    if price is not None:
+                        self._record_post_exit_mark(ghost, time.time(), price)
+                        # The point is taken; the next one is seconds away.
+                        ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
+                        ghost['attempts'] = 0
                         continue
-                    raw = decode_account_data(account)
-                    if not raw:
-                        continue
-                    try:
-                        ghost_curve = CurveState.decode(raw)
-                    except QuoteUnavailable:
-                        continue
-                    price = self._mid_price_usd(ghost_curve, sol_usd)
-                    if price is None:
-                        continue
-                    self._record_post_exit_mark(ghost, time.time(), price)
-                    # The point is taken; the next one is minutes away. A
-                    # failed read above leaves the index untouched, so a lost
-                    # mark is retried on the next cycle instead of being
-                    # silently dropped from the schedule.
-                    ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
+                    # A failed read is retried on the next cycle, but only so
+                    # many times: an unreadable curve would otherwise turn a
+                    # dead ghost into a request every 0.25 s for ten seconds,
+                    # which is exactly the rps problem this change removes.
+                    ghost['attempts'] = int(ghost.get('attempts', 0)) + 1
+                    if ghost['attempts'] >= POST_EXIT_MAX_ATTEMPTS_PER_POINT:
+                        ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
+                        ghost['attempts'] = 0
+                        ghost['missed'] = int(ghost.get('missed', 0)) + 1
                 for book in self.books.values():
                     if book.profile.name in changed_books:
                         book.save(self.run_id)
@@ -2841,6 +2842,8 @@ class ABPaperSimulator:
             'exit_mid_price_usd': float(exit_mid_price_usd),
             # Run #10 §2a: which point of the schedule is due next.
             'schedule_index': 0,
+            'attempts': 0,
+            'missed': 0,
             'until_epoch': (
                 float(exit_epoch) + POST_EXIT_WINDOW_SEC
                 + max(POST_EXIT_SCHEDULE_GRACE_SEC, 2.0 * self.mark_poll_sec)
@@ -2882,6 +2885,25 @@ class ABPaperSimulator:
         if best is None or best[0] > POST_EXIT_NEAREST_TOLERANCE_SEC:
             return None
         return best[1], best[2]
+
+    @staticmethod
+    def _ghost_mark_price(
+        accounts: dict[str, Optional[dict[str, Any]]],
+        ghost: dict[str, Any],
+        sol_usd: Optional[float],
+    ) -> Optional[float]:
+        """The mid price of a ghost, or None when this read cannot give one."""
+        account = accounts.get(ghost['curve'])
+        if not isinstance(account, dict) or account.get('owner') != PUMP_PROGRAM_ID:
+            return None
+        raw = decode_account_data(account)
+        if not raw:
+            return None
+        try:
+            curve = CurveState.decode(raw)
+        except QuoteUnavailable:
+            return None
+        return ABPaperSimulator._mid_price_usd(curve, sol_usd)
 
     def _due_post_exit_ghosts(self, now_epoch: float) -> list[dict[str, Any]]:
         """Ghosts whose next scheduled second has arrived (run #10 §2a).

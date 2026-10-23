@@ -146,5 +146,36 @@ class PollLoopScheduleTests(unittest.IsolatedAsyncioTestCase):
                 rpc.assert_not_awaited()
 
 
+class UnreadableGhostTests(unittest.IsolatedAsyncioTestCase):
+    """A curve that cannot be decoded must not become a 4 rps burst."""
+
+    async def test_an_unreadable_point_is_retried_twice_and_then_written_off(self) -> None:
+        with tempfile.TemporaryDirectory() as root, \
+                patch.object(module, 'POST_EXIT_SCHEDULE_SEC', (0.02, 0.04)), \
+                patch('portfolio_ab.get_sol_usd', new=AsyncMock(return_value=200.0)):
+            simulator = make_simulator(root)
+            simulator.mark_poll_sec = 0.02
+            now = time.time()
+            ghost = _ghost(exit_epoch=now, until_epoch=now + 10.0)
+            simulator._ghosts = [ghost]
+            calls: list[int] = []
+
+            async def empty_rpc(session, url, addresses, **kwargs):
+                calls.append(1)
+                return {}, 12  # nothing decodable: every point fails
+
+            with patch('portfolio_ab.rpc_get_multiple_accounts', new=empty_rpc):
+                task = asyncio.create_task(simulator._position_poll_loop())
+                await asyncio.sleep(0.4)
+                simulator._stopping.set()
+                await asyncio.wait_for(task, timeout=1.0)
+
+            self.assertEqual(simulator.post_exit_rows, [])
+            # Two points x three attempts, not one attempt per cycle (that
+            # would be ~20 calls in 0.4 s at this cadence).
+            self.assertLessEqual(len(calls), 8, len(calls))
+            self.assertGreaterEqual(ghost['missed'], 1)
+
+
 if __name__ == '__main__':
     unittest.main()
