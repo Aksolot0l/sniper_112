@@ -6,12 +6,20 @@
 - RPC access is read-only. Never put Helius/API credentials in source files, manifests, logs, or archives.
 - One bot process at a time (Helius RPS budget). `run_local_session.py` refuses a second session.
 
-## Run #9 (active): S0 vs S2 — dev selection and ticker copies
+## Run #10 (active): S0 vs S2 — dev selection and ticker copies
 
-Base `52d6e53` + the run #9 blocks below. **One run, one process, paper only.**
-Stage A is a 30-minute smoke (technique, not money); stage B is 12 hours and is
-started only after A's acceptance passes and the median `round_trip_cost_pct`
-is ≤ 4.0 %.
+Base `cb3f7b8` + the run #10 blocks below. **One run, one process, paper only.**
+Both stages carry the same number — `RUN_NUMBER=run10` — and differ only in the
+run directory and the duration:
+
+| stage | duration | run id | what it decides |
+|---|---|---|---|
+| 10a | 3 600 s | `run10a-1h-<UTC>` | technique only: rps, ghost coverage, funnel |
+| 10b | 43 200 s | `run10b-12h-<UTC>` | the money question, 12 h |
+
+10b is started only after 10a passes its acceptance and the median
+`round_trip_cost_pct` is ≤ 4.0 %. The numbers of the books, the exit, the stake,
+the slots and the cadence are identical in both stages — not one of them moves.
 
 | book | `v_sol_birth` | `delta` | name copies (120 s) | what it is |
 |---|---|---|---|---|
@@ -43,7 +51,12 @@ read the fill is priced from), `t_fill_ms` (read → fill row), `t_total_ms`
 
 Marks are polled every `MARK_POLL_SEC=0.25` s under `MARK_POLL_RPS_LIMIT=2.5`:
 the cadence starts where the 12-hour budget needs it, so no mid-run adaptation
-decision exists. The run does not stop on rps, and raising the rate to "survive
+decision exists. The ghost does **not** ride along on every poll — it is read on
+`POST_EXIT_SCHEDULE_SEC = 0.5, 1, 1.5, 2, 3, 5, 7, 10` s, one mark per due
+point. In the 30-minute smoke 1 839 of 2 735 mark batches existed only for
+ghosts (2.23 rps mean, 2.83 rps in the worst window); the schedule turns those
+into eight reads per exit and leaves a cycle with no open position and no due
+ghost issuing no request at all. The run does not stop on rps, and raising the rate to "survive
 to the end" is forbidden. `accountSubscribe` is deliberately **not** used: a
 second mark source would make exit timing depend on which stream arrived first.
 
@@ -58,16 +71,21 @@ arrives later. Every closed trade also carries `price_at_5s`, the real price
 
 Observation offsets in this run: **only `0, 5`** s (`TELEMETRY_OBSERVATION_OFFSETS_SEC=0,5`).
 
-Acceptance A (§4): paper_only and 0 signatures; ≥1 790 s; `early_stop_reason =
-null`; unrecovered RPC errors ≤ 2 %; mean rps ≤ 1.8 and worst 10-min window
-≤ 2.5; `dropped_events = 0`; `write_errors = 0`; 0 open positions at the finish;
-≥ 5 trades per book (otherwise the real number is reported); ≥ 5 ghost marks
-per exit; manifest bands S0 30.50–34.50 / S2 31.96–34.50, copies off / 0;
-median `round_trip_cost_pct` recorded — **> 4.0 % and stage B does not start**.
+Acceptance 10a (§3): paper_only and 0 signatures; ≥ 3 500 s of real polling;
+`early_stop_reason = null`; unrecovered RPC errors ≤ 1 %; **mean rps ≤ 1.8**
+and **worst 10-min window ≤ 2.2** (the smoke measured 2.23 / 2.83); 429 ≤ 0.5 %
+of requests; `dropped_events = 0`; `write_errors = 0`; 0 open positions at the
+finish; **8 ghost marks per exit** (min ≥ 5) with coverage of +0.5/+1/+2/+5/+10
+= 1.0; manifest bands S0 30.50–34.50 / S2 31.96–34.50, copies off / 0;
+**S0 ≥ 80 trades, S2 ≥ 8**; median `round_trip_cost_pct` recorded —
+**> 4.0 % and 10b does not start**. Money is not read at 10a: an hour gives
+S2 a CI95 of roughly ±51 ₽, which cannot separate the expected +15…+25 ₽ from
+noise, and gating on it would change the config on a coin flip.
 
-Acceptance B (§5): ≥ 43 000 s of real polling; `early_stop_reason = null`; mean
-rps ≤ 1.8, worst 10-min window ≤ 2.5; unrecovered RPC errors ≤ 1 %; 0 open
-positions; `post_exit.csv` complete.
+Acceptance 10b (§4): ≥ 43 000 s of real polling; `early_stop_reason = null`;
+mean rps ≤ 1.8, worst 10-min window ≤ 2.2; unrecovered RPC errors ≤ 1 %;
+429 ≤ 0.5 %; 0 open positions; `post_exit.csv` complete; S0 ≥ 400 and
+S2 ≥ 80 trades.
 
 Verdict, fixed before the start: S2's CI95 excludes 0 and is ≥ +2 % → the dev
 selection is accepted; includes 0 → not proven, the config is not repeated;

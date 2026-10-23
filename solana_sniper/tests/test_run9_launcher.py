@@ -170,9 +170,10 @@ class BundleReadMeTests(unittest.TestCase):
         import tools.build_bundle as bundle
         self.text = bundle.READ_ME_FIRST
 
-    def test_it_is_the_run9_text_and_names_the_build(self) -> None:
-        self.assertIn('ПРОГОН №9', self.text)
-        self.assertNotIn('ПРОГОН №8', self.text)
+    def test_it_is_the_run10_text_and_names_the_build(self) -> None:
+        self.assertIn('ПРОГОН №10', self.text)
+        for older in ('ПРОГОН №8', 'ПРОГОН №9'):
+            self.assertNotIn(older, self.text)
         self.assertIn('BUILD', self.text)
 
     def test_both_books_are_declared_with_their_own_edge(self) -> None:
@@ -192,8 +193,15 @@ class BundleReadMeTests(unittest.TestCase):
         self.assertIn('8-м часу', self.text)
 
     def test_both_stages_and_their_acceptance_are_written_down(self) -> None:
-        self.assertIn('DURATION_SEC=1800', self.text)
+        # Run #10: 10a is one hour, 10b is twelve, and 10b never starts on a
+        # failed 10a.
+        self.assertIn('DURATION_SEC=3600', self.text)
         self.assertIn('DURATION_SEC=43200', self.text)
+        self.assertIn('run10a-1h', self.text)
+        self.assertIn('run10b-12h', self.text)
+        self.assertIn('RUN_NUMBER=run10', self.text)
+        # The ghost schedule is the whole reason the rps changed.
+        self.assertIn('0.5/1/1.5/2/3/5/7/10', self.text)
         self.assertIn('4.0 %', self.text)
         self.assertIn('43 000', self.text)
 
