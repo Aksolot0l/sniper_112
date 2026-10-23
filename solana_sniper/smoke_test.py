@@ -32,6 +32,7 @@ from typing import Any
 
 from config import load_settings
 from console import Color, log
+from main_ab import _observation_offsets
 from models import NewCoin, SwapQuote
 from portfolio_ab import (
     ABPaperSimulator,
@@ -331,6 +332,7 @@ async def run(seconds: float) -> int:
         'portfolio_scope': list(profiles),
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
         'entry': 'four arms, each one entry boundary away from A',
+        'telemetry': {'observation_offsets_sec': list(_observation_offsets())},
         'entry_latency_ms': 150.0,
         'run7_single_difference': 'entry_band',
         'ab_test': {

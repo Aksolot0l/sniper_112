@@ -85,6 +85,10 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.10'),
         'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '2.5'),
         # Run #7: each experimental arm moves ONE entry boundary of A.
+        'ARMS': env.get(
+            'ARMS',
+            'portfolio_a,portfolio_b1_narrow,portfolio_b2_birth,portfolio_b3_t0',
+        ),
         'ENTRY_DELTA_MAX_SOL_B1': env.get('ENTRY_DELTA_MAX_SOL_B1', '1.00'),
         'ENTRY_BIRTH_MAX_SOL_B2': env.get('ENTRY_BIRTH_MAX_SOL_B2', '31.00'),
         'ENTRY_DELTA_MIN_SOL_B3': env.get('ENTRY_DELTA_MIN_SOL_B3', '0.00'),
@@ -186,11 +190,22 @@ def print_summary(run_dir: Path) -> None:
     print(f"  длительность: {summary.get('duration_sec')} c | "
           f"paper_only={summary.get('paper_only')} | "
           f"подписано транзакций: {summary.get('signed_transactions')}", flush=True)
-    for name in ('portfolio_a', 'portfolio_b'):
+    arm_keys = [
+        name for name in (summary.get('portfolio_scope') or [])
+        if isinstance(summary.get(name), dict)
+    ] or [
+        name for name in summary
+        if isinstance(summary.get(name), dict) and name.startswith('portfolio_')
+    ]
+    for name in arm_keys:
         book = summary.get(name)
         if not isinstance(book, dict):
             continue
-        arm = 'A (контроль)' if name == 'portfolio_a' else 'B (+creator guard)'
+        arm = name if name == 'portfolio_a' else str(book.get('arm_id') or name)
+        if name == 'portfolio_a':
+            arm = 'A (эталон, portfolio_a)'
+        else:
+            arm = (f"{arm} ({name}) | полоса: {book.get('entry_band_label') or '—'}")
         print(
             f"  {arm}: кэш={book.get('cash_balance_rub')} ₽ | "
             f"realized={book.get('realized_pnl_rub')} ₽ | "

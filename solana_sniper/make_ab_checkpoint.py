@@ -58,12 +58,15 @@ def copy_run_snapshot(run_id: str, target_root: Path) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
     for name in (
         'manifest.json', 'run.log', 'preflight_tests.log', 'trades.log',
-        'wallet_portfolio_a.json', 'wallet_portfolio_b.json', 'ab_summary.json',
-        'operator_stop_record.json', 'summary.md', 'README.md',
+        'ab_summary.json', 'SUMMARY.md', 'operator_stop_record.json',
+        'summary.md', 'README.md',
     ):
         path = src / name
         if path.is_file():
             shutil.copy2(path, dest / name)
+    # Run #7: four arms, so the wallet files are discovered, not enumerated.
+    for path in sorted(src.glob('wallet_*.json')):
+        shutil.copy2(path, dest / path.name)
     for db_name in ('sniper.db', 'telemetry.sqlite'):
         backup_db(src / db_name, dest / db_name)
     exports = src / 'exports'
@@ -83,8 +86,10 @@ def copy_run_snapshot(run_id: str, target_root: Path) -> dict:
         'run_id': run_id,
         'source_path': str(src),
         'manifest': read_json(src / 'manifest.json'),
-        'wallet_a': read_json(src / 'wallet_portfolio_a.json'),
-        'wallet_b': read_json(src / 'wallet_portfolio_b.json'),
+        'wallets': {
+            path.stem.removeprefix('wallet_'): read_json(path)
+            for path in sorted(src.glob('wallet_*.json'))
+        },
         'telemetry_counts': db_counts(src / 'telemetry.sqlite'),
         'sniper_db_exists': (src / 'sniper.db').exists(),
         'summary_exists': (src / 'ab_summary.json').exists(),
@@ -130,10 +135,14 @@ def main() -> None:
     manifest = read_json(current_dir / 'manifest.json')
     stop_record = read_json(current_dir / 'operator_stop_record.json')
     effective_status = stop_record.get('status') or manifest.get('status', 'unknown')
+    # Run #7: whatever arms the run actually had, in a stable order.
+    wallet_files = sorted(current_dir.glob('wallet_*.json'))
     wallets = [
-        portfolio_record('portfolio_a', read_json(current_dir / 'wallet_portfolio_a.json')),
-        portfolio_record('portfolio_b', read_json(current_dir / 'wallet_portfolio_b.json')),
+        portfolio_record(path.stem.removeprefix('wallet_'), read_json(path))
+        for path in wallet_files
     ]
+    if not wallets:
+        raise SystemExit(f'no wallet_*.json in {current_dir}')
     ranked = sorted(wallets, key=lambda item: float(item.get('realized_pnl_rub') or 0), reverse=True)
     interim_leader = ranked[0]
     start_text = manifest.get('started_at_utc')
@@ -172,6 +181,8 @@ def main() -> None:
             'pending_positions': len(interim_leader['pending_positions']),
         },
         'comparison_snapshot': wallets,
+        'arms': (manifest.get('ab_test') or {}).get('arms')
+        or {wallet['portfolio']: {} for wallet in wallets},
         'strategies': manifest.get('strategies', {}),
         'shared_settings': {
             'paper_only': True,
@@ -198,6 +209,17 @@ def main() -> None:
     (bundle_dir / 'model_config_best_so_far_provisional.json').write_text(
         json.dumps(model_config, ensure_ascii=False, indent=2), encoding='utf-8'
     )
+
+    def arms_table() -> str:
+        arms = (manifest.get('ab_test') or {}).get('arms') or {}
+        lines = ['| арм | полоса входа | что изменено против A |', '|---|---|---|']
+        for name, meta in arms.items():
+            lines.append(
+                f"| {meta.get('arm_id') or name} (`{name}`) | "
+                f"{meta.get('entry_band_label') or meta.get('band') or '—'} | "
+                f"{', '.join(meta.get('single_boundary_vs_a') or []) or meta.get('changed_vs_a') or 'эталон'} |"
+            )
+        return '\n'.join(lines) if len(lines) > 2 else '- arms: see companion JSON'
 
     def portfolio_lines() -> str:
         out = ['| Портфель | Баланс | Реализованный PnL | Входы / закрытия | Открыто / pending | Сетевые расходы |',
@@ -228,21 +250,19 @@ Captured: **{captured.isoformat(timespec='seconds')} UTC** ({local.isoformat(tim
 
 {portfolio_lines()}
 
-**Stop-time leader by realized PnL only:** `{interim_leader['portfolio']}` at {rub(interim_leader['realized_pnl_rub'])}. This is only a point-in-time ranking; it does not include unrealized PnL and is not a final statistical winner. Both portfolios are below their initial balances; the run stopped before 60 minutes.
+**Stop-time leader by realized PnL only:** `{interim_leader['portfolio']}` at {rub(interim_leader['realized_pnl_rub'])}. This is only a point-in-time ranking; it does not include unrealized PnL and is not a final statistical winner. A checkpoint snapshot cannot decide an arm: the paired test needs the whole run, and the minimum detectable effect at ~165 pairs is about 15 ₽ per trade.
 
 ## Saved configuration
 
 The companion JSON saves both A/B rule sets and marks the current higher-realized-PnL profile as a **provisional best-so-far candidate**, per the request. It is a rule-based config, not neural-network weights. Neither profile is claimed profitable or validated for future performance.
 
-- Portfolio A entry: `{manifest.get('strategies', {}).get('portfolio_a', {}).get('entry', 'see companion JSON')}`
-- Portfolio B entry: `{manifest.get('strategies', {}).get('portfolio_b', {}).get('entry', 'see companion JSON')}`
-- A no-progress: `{manifest.get('strategies', {}).get('portfolio_a', {}).get('no_progress', 'see companion JSON')}`; B: `{manifest.get('strategies', {}).get('portfolio_b', {}).get('no_progress', 'see companion JSON')}`
-- A: TP1 +35% / sell 50%, then BE +3% and trailing −10% from ATH. B: TP1 +40% / sell 50%, then trailing −12% from ATH. No −15% trailing rule.
-- Position marks are targeted once per second; no-progress is evaluated once at/after 10 seconds using current net PnL. Dashboard refresh is separate from the trading loop.
+{arms_table()}
+- Exit ladder (identical in every arm): `{(manifest.get('strategy_meta') or {}).get('exit_rule') or 'see manifest'}`.
+- Position marks are polled once per slot-second; no-progress is evaluated once at 5 s. Dashboard refresh is separate from the trading loop.
 - Helius read-only; `getMultipleAccounts` batches up to 100 accounts; one retry after 120 ms for null values. Aggregate end-of-run latency/error metrics were not finalized after the early stop; no SLA is claimed.
 - HTTP shadow buy/sell disabled. Local Pump.fun fills require on-chain Global/FeeConfig and exact integer fee math; unsupported states fail closed. Jupiter fallback only when `complete=true`.
 - Mayhem excluded; standard supply, SOL/WSOL quote, revoked mint/freeze authorities checked. Creator probes are telemetry/warn-only.
-- Observations scheduled at 0/15/60/120 seconds. No signing or transaction submission.
+- Observation schedule: `{(manifest.get('telemetry') or {}).get('observation_offsets_sec') or '0/5/15/60'}` seconds. No signing or transaction submission.
 - Virtual network fees are tracked separately from the 1,500 ₽ principal balances and deducted from realized proceeds; open entry-fee liabilities are recorded.
 
 ## Earlier partial run (preserved)

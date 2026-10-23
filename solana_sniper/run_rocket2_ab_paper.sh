@@ -50,7 +50,7 @@ mkdir -p "$RUN_DIR/exports"
 # process environment only; no keyed URL is exported to disk or printed.
 unset SOLANA_HTTP_RPC_URL SOLANA_WSS_RPC_URL
 export RUN_ID RUN_DIR
-# Прогон №3 (P2): 8 часов, один процесс.
+# Прогон №7: 8 часов, один процесс, четыре арма, одна граница на арм.
 export RUN_DURATION_SEC="${RUN_DURATION_SEC:-28800}"
 export PAPER_ONLY='1'
 export MODE='portfolio'
@@ -67,7 +67,6 @@ export EXIT_FEE_SOL='0.00005'
 export PROTOCOL_FEE_PCT='1.25'
 export HONEYPOT_CHECK='off'
 export ONLY_SOL_PAIRS='on'
-export SHADOW_NOTIONAL_RUB='0'
 export FILTER_CONCURRENCY='4'
 export INDEXER_RETRIES='0'
 export INDEXER_RETRY_DELAY_SEC='0.12'
@@ -75,20 +74,26 @@ export RPC_BATCH_WINDOW_SEC='0.008'
 export CREATOR_RISK_POLICY='warn'
 export CREATOR_HISTORY_DIR="$PROJECT/runs"
 export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
-# --- entry v3: live momentum instead of the anti-filter delta cap ---
+# --- entry v3: live momentum; the arm name is the ONLY thing that differs ---
+export ARMS="${ARMS:-portfolio_a,portfolio_b1_narrow,portfolio_b2_birth,portfolio_b3_t0}"
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
 # Потолок рождения 34.5 (а не 50): v_sol_birth = 29.96 + dev_buy, потолок 50
 # пускал монеты с покупкой дева 4-6 SOL; 36 из 50 таких падали <= -25%.
 export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-34.5}"
 export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
-# --- creator guard: shadow-only (shadow_gate), in-memory wallet cache keeps RPS flat ---
-export ENTRY_DELTA_MAX_SOL_B="${ENTRY_DELTA_MAX_SOL_B:-3.0}"
+# --- the three experimental arms: one entry boundary each -------------------
+export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
+export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
+export ENTRY_DELTA_MIN_SOL_B3="${ENTRY_DELTA_MIN_SOL_B3:-0.00}"
+# --- passive coin features (0 RPC, decisions never read them) ---------------
+export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
 export CREATOR_GUARD_MIN_SIG="${CREATOR_GUARD_MIN_SIG:-25}"
 export CREATOR_BURST_WINDOW_SEC="${CREATOR_BURST_WINDOW_SEC:-3600}"
 export CREATOR_CACHE_TTL_SEC="${CREATOR_CACHE_TTL_SEC:-300}"
 export TELEMETRY_RUN_ID="$RUN_ID"
-export TELEMETRY_OBSERVATION_OFFSETS_SEC='0,5,10,15,60,120'
+# Run #7: offsets 0/5/15/60 fit the RPC budget; 10 and 120 are gone.
+export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5,15,60}"
 export WALLET_PATH="$RUN_DIR/wallet_portfolio_a.json"
 export TRADE_LOG="$RUN_DIR/trades.log"
 export DB_PATH="$RUN_DIR/sniper.db"
@@ -122,15 +127,22 @@ export RUN_DURATION_SEC
 
 "$PYTHON" - <<'PY'
 import os
-from urllib.parse import urlsplit
+import tempfile
 from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import urlsplit
+
 from config import load_settings
 from detector import PUMP_PROGRAM_ID, select_programs
-from main_ab import _observation_offsets
+from main_ab import _enrich_enabled, _observation_offsets
 from portfolio_ab import (
-    PROFILE_A, PROFILE_B, entry_shadow_flags, profiles_from_settings,
+    ARM_ENV_KEYS, ARM_IDS, ARM_LABELS,
+    STOP_DISK_FREE_BYTES, STOP_HELIUS_QUOTA_PCT, STOP_RPC_ERROR_RATE,
+    STOP_RPC_LATENCY_HOLD_SEC, STOP_STALL_SEC,
+    PortfolioBook, arm_profiles,
 )
 from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA
+
 s = load_settings()
 assert s.api_key
 assert 'helius' in (urlsplit(s.http_rpc_url).hostname or '').lower()
@@ -138,82 +150,87 @@ assert s.sources == 'pumpfun' and len(select_programs(s.sources)) == 1
 assert PUMP_PROGRAM_ID in select_programs(s.sources)
 assert s.deposit_rub == 1500 and s.max_positions == 3 and s.max_trade_rub == 500
 assert s.mode == 'portfolio' and s.honeypot_check is False
-assert PROFILE_A.initial_balance_rub == PROFILE_B.initial_balance_rub == 1500
-assert PROFILE_A.position_size_rub == PROFILE_B.position_size_rub == 500
-assert PROFILE_A.max_slots == PROFILE_B.max_slots == 3
-live = {name: p for name, p in profiles_from_settings(s).items() if not p.is_shadow}
-assert set(live) == {'portfolio_a', 'portfolio_b'}
-# Run #3 invariant: exactly one difference between the live arms.
-assert PROFILE_A.delta_max_sol == 2.5 and PROFILE_B.delta_max_sol == 3.0
-assert live['portfolio_a'].delta_max_sol == 2.5 and live['portfolio_b'].delta_max_sol == 3.0
-assert PROFILE_A.require_creator_gate is False and PROFILE_B.require_creator_gate is False
-assert {k: v for k, v in asdict(PROFILE_A).items() if k not in {'name', 'delta_max_sol'}} == {
-    k: v for k, v in asdict(PROFILE_B).items() if k not in {'name', 'delta_max_sol'}
-}
-# The gate survives only as a zero-capital shadow mirrored from A.
-shadow = {name: p for name, p in profiles_from_settings(s).items() if p.is_shadow}
-assert set(shadow) == {'shadow_gate', 'shadow_exit25'}
-for profile in shadow.values():
-    assert profile.capital_rub == 0.0 and profile.mirror_of == 'portfolio_a'
-    assert profile.initial_balance_rub == 1500 and profile.position_size_rub == 500
-assert shadow['shadow_gate'].require_creator_gate is True
-assert shadow['shadow_exit25'].single_exit_pct == 25.0
-assert shadow['shadow_exit25'].require_creator_gate is False
-# Approved exit ladder must stay 1:1 with the spec.
-assert PROFILE_A.tp1_pct == 30.0 and PROFILE_A.rocket_bypass_pct == 50.0
-assert PROFILE_A.profit_retain_ratio == 0.85 and PROFILE_A.stop_loss_pct == 10.0
-assert PROFILE_A.shelf_stagnation_sec == 4.5 and PROFILE_A.shelf_min_pnl_pct == 1.5
-assert PROFILE_A.no_progress_sec == 5.0 and PROFILE_A.no_progress_best_max_pct == 4.0
-# Entry v3: no dead delta==0 fills, no tight cap on real runners.
-ok, reason = PROFILE_A.entry_check(31.0, 31.0)
-assert not ok and reason == 'no_live_momentum'
-assert PROFILE_A.delta_max_sol == 2.5
-ok, reason = PROFILE_A.entry_check(33.95, 45.51)   # Turtle delta 11.56
-assert not ok and reason == 'momentum_too_late'
-ok, _ = PROFILE_A.entry_check(33.50, 34.00)        # live momentum inside the band
-assert ok
-# PERFORMA (born 39.88) is now rejected by the 34.5 birth ceiling, not by the
-# old anti-filter: v_sol_birth = 29.96 + dev_buy_SOL (fix #7).
-ok, reason = PROFILE_A.entry_check(39.88, 40.41)
-assert not ok and reason == 'birth_out_of_band'
-assert entry_shadow_flags(PROFILE_A, 33.0, 36.0) == {
-    'pass_if_cap_1': False, 'pass_if_cap_2.5': False, 'pass_if_cap_3': True,
-    'pass_if_cap_4': True, 'pass_if_cap_12': True,
-}
-# delta 2.9 is where the two arms actually disagree: A rejects, B admits.
-assert PROFILE_A.entry_check(33.0, 35.9)[0] is False
-assert PROFILE_B.entry_check(33.0, 35.9) == (True, 'live_momentum_entry')
-# --- addendum: bank top-up accounting and the four-reason stop-list ---
-import tempfile
-from pathlib import Path
-from portfolio_ab import (
-    PortfolioBook, STOP_DISK_FREE_BYTES, STOP_HELIUS_QUOTA_PCT,
-    STOP_RPC_ERROR_RATE, STOP_RPC_LATENCY_HOLD_SEC, STOP_STALL_SEC,
-)
-assert PROFILE_A.auto_top_up is True and PROFILE_B.auto_top_up is True
-assert PROFILE_A.initial_balance_rub == PROFILE_A.position_size_rub * 3
+
+# --- run #7: four arms, ONE entry boundary each, one exit ladder ------------
+profiles = arm_profiles()
+assert tuple(profiles) == ARM_IDS, (tuple(profiles), ARM_IDS)
+assert [ARM_LABELS[name] for name in profiles] == ['A', 'B1', 'B2', 'B3']
+reference = asdict(profiles['portfolio_a'])
+for name in ARM_IDS[1:]:
+    arm = asdict(profiles[name])
+    diff = {
+        key for key in reference
+        if key not in ('name', 'arm_id', 'entry_band_label')
+        and reference[key] != arm[key]
+    }
+    expected = ARM_ENV_KEYS[name][1]
+    assert diff == {expected}, (name, diff, expected)
+    assert expected in ('delta_max_sol', 'v_sol_birth_max', 'delta_min_sol')
+# The declared bands, spelled out: a silent env change must not slip through.
+assert profiles['portfolio_a'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50')
+assert profiles['portfolio_b1_narrow'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00')
+assert profiles['portfolio_b2_birth'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50')
+assert profiles['portfolio_b3_t0'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50')
+# B3 is the t0 arm: it keeps A's ceilings and only drops the momentum floor.
+assert profiles['portfolio_b3_t0'].delta_max_sol == 2.50
+assert profiles['portfolio_b3_t0'].v_sol_birth_max == 34.50
+# Shared everything else: stake, bank, slots, entry latency, exit ladder.
+for name, profile in profiles.items():
+    assert profile.position_size_rub == 500.0, name
+    assert profile.initial_balance_rub == 1500.0, name
+    assert profile.max_slots == 3, name
+    assert profile.auto_top_up is True, name
+assert len({asdict(p)['tp1_pct'] for p in profiles.values()}) == 1
+assert len({asdict(p)['stop_loss_pct'] for p in profiles.values()}) == 1
+assert len({asdict(p)['entry_latency_ms'] for p in profiles.values()}) == 1
+assert profiles['portfolio_a'].tp1_pct == 30.0
+assert profiles['portfolio_a'].rocket_bypass_pct == 50.0
+assert profiles['portfolio_a'].stop_loss_pct == 10.0
+assert profiles['portfolio_a'].shelf_stagnation_sec == 4.5
+assert profiles['portfolio_a'].no_progress_sec == 5.0
+
+# Entry: A waits for an impulse, B3 buys the first read.
+assert profiles['portfolio_a'].entry_check(31.0, 31.0) == (False, 'no_live_momentum')
+assert profiles['portfolio_b3_t0'].entry_check(31.0, 31.0) == (True, 'live_momentum_entry')
+# Nobody buys above the 2.5 delta ceiling: the wide arm is closed for good.
+for profile in profiles.values():
+    assert profile.entry_check(32.0, 35.0)[0] is False
+# PERFORMA (born 39.88) is rejected by the 34.5 birth ceiling.
+assert profiles['portfolio_a'].entry_check(39.88, 40.41)[1] == 'birth_out_of_band'
+
+# --- observation schedule and passive features ------------------------------
+assert _observation_offsets() == (0, 5, 15, 60), _observation_offsets()
+assert _enrich_enabled() is True
+
+# --- stop-list thresholds (the 2 % floor may not be raised) ------------------
+assert STOP_RPC_ERROR_RATE == 0.02
+assert STOP_RPC_LATENCY_HOLD_SEC == 300.0
+assert STOP_STALL_SEC == 1800.0
+assert STOP_HELIUS_QUOTA_PCT == 10.0
+assert STOP_DISK_FREE_BYTES == 2 * 1024 ** 3
+assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
+
+# --- bank: top-up only when cash < 500, stake and slots never change --------
 _bank_dir = Path(tempfile.mkdtemp())
-_book = PortfolioBook(PROFILE_A, _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
+_book = PortfolioBook(
+    profiles['portfolio_a'], _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
 _event = _book.maybe_top_up(at_epoch=1_700_000_000.0)
 assert _event is not None and _event['cash_before'] == 300.0
 assert _event['cash_after'] == 1500.0 and _event['amount_rub'] == 1200.0
 assert _book.top_ups == 1 and _book.capital_injected_rub == 1200.0
 assert _book.maybe_top_up() is None
-assert STOP_RPC_ERROR_RATE == 0.01 and STOP_RPC_LATENCY_HOLD_SEC == 300.0
-assert STOP_STALL_SEC == 1800.0 and STOP_HELIUS_QUOTA_PCT == 10.0
-assert STOP_DISK_FREE_BYTES == 2 * 1024 ** 3
-assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
+
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
-assert os.getenv('SHADOW_NOTIONAL_RUB') == '0'
-assert _observation_offsets() == (0, 5, 10, 15, 60, 120)
-assert s.entry_delta_max_sol == 2.5
-assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
-print('A/B preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
-      'live-momentum entry; approved 4-mode exits; single difference delta_cap '
-      'A=2.5 / B=3.0 (creator gate is a shadow); bank top-up at cash<500 up to '
-      '1500; four-reason stop-list; in-memory wallet cache enabled.')
+print('run #7 preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
+      'four arms A/B1/B2/B3 with exactly one entry boundary each (B3 = t0, '
+      'delta_min 0.00); one Round 6 exit ladder; offsets 0/5/15/60; enrich on; '
+      'bank top-up at cash<500 up to 1500; stop-list RPC floor 2 % not raised.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.

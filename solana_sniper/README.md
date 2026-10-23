@@ -26,14 +26,17 @@ Offline engine smoke test (no network, no key): `python smoke_test.py --seconds 
 
 ## Active code and tests
 
-- Launcher (Linux/macOS, Helius preflight): `run_rocket2_ab_paper.sh`
+- Launchers: `START_WINDOWS.bat` / `START_MAC_LINUX.sh` (they create `.venv`,
+  ask for the key and start one foreground process). `run_rocket2_ab_paper.sh`
+  is the bare Linux/macOS entry point with the run #7 preflight, and
+  `run_local_session.py` adds the dashboard + heartbeat on top of it.
 - Cross-platform runner + dashboard + heartbeat: `run_local_session.py`
 - Entry point: `main_ab.py`
 - A/B portfolio, entry rule, exit ladder: `portfolio_ab.py`, `pump_curve_quote.py`, `price.py`
 - Creator identity / guard / wallet cache: `creator_probe.py`
 - Telemetry: `telemetry.py`; monitor: `live_ab_dashboard.py` + `paper_ab_dashboard.html`
-- Tests: `tests/` (187 tests). Bundle builder: `tools/build_bundle.py`
-- Report preview before launch: `RUN4_SUMMARY_PREVIEW.md` (synthetic numbers, shows the exact SUMMARY.md layout and criteria)
+- Tests: `tests/` (`python -m unittest discover -s tests`). Bundle builder: `tools/build_bundle.py`
+- Report template: `../run-logs/run7-TEMPLATE/RUN_NOTES.md` (the single comparison table filled after the run)
 
 ## Strategy state (2026-10-22)
 
@@ -93,6 +96,10 @@ Inside the same birth window B3 sees 438 coins instead of 167 with the same
 filter are read only at 0 and 15 s (`status=skipped_security_deep`), which is
 the P0-2 fix — in run #6 the verdict was resolved before the loop ran, so this
 trim never happened (`security_fail_skipped_deep = 0` over 1 634 rejects).
+The 60 s read itself is taken for a **deterministic third of the coins**, chosen
+by the mint hash (never by a bot decision, or the sample would be selected by the
+thing being measured; unselected coins get `status=skipped_window_sample`). That
+makes ≈47 000 requests over 8 h ≈ 1.64 rps.
 
 Pre-registered decision rule:
 
@@ -130,15 +137,14 @@ security-passing coin to `datapi.jup.ag/v1/assets/search` (batches of seven,
 `twitter`, `primaryTwitter.followerCount`. It never influences an entry or an
 exit — it is data collection for run #8. `status = ok | enrich_unavailable`.
 
-**Run #3 arms (closed).** The live arms differ in exactly one number, `delta_max_sol`:
-`portfolio_a = 2.5`, `portfolio_b = 3.0`; both have the creator gate switched
-off. Everything else (birth band 30.5–34.5, `delta_min 0.10`, the 4-mode exit
-ladder, 3 × 500 ₽, 1500 ₽) is identical. The creator guard (below) now lives on
-a zero-capital shadow `shadow_gate` that mirrors A's entries, and a second
-shadow `shadow_exit25` mirrors the same entries but sells 100 % at the first
-tick with `pnl_pct >= +25 %` (TP1, trailing, shelf and no-progress disabled; SL
-and the 35 s timeout kept). Shadows never touch real capital and are reported
-separately in `ab_summary.json`, `exports/shadow_fills.csv` and `SUMMARY.md`.
+**Run #3 arms (closed).** The live arms differed in exactly one number,
+`delta_max_sol`: `portfolio_a = 2.5`, `portfolio_b = 3.0`. The creator guard
+used to sit on a zero-capital shadow (`shadow_gate`) and a second shadow
+(`shadow_exit25`) sold 100 % of the first +25 % tick. **Both shadows are gone**
+in run #7: they ran at a different poll rate (2.34 s vs 0.467 s) with
+`max_slots = 1`, so their numbers were never comparable with the live arms.
+`PROFILE_B` (the `delta_max = 3.0` arm) is gone as well — a delta band above
+2.5 is closed on data (EV@15 −9.25 / −5.84 / −5.54 % in three runs).
 
 The run #3 rule was: B beats A iff `mean(B) − mean(A) >= +10 ₽` per trade
 **and** the 95 % bootstrap CI excludes 0. Result: −4.76 ₽, CI [−35.04, 24.44] —
