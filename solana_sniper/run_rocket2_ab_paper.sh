@@ -50,7 +50,7 @@ mkdir -p "$RUN_DIR/exports"
 # process environment only; no keyed URL is exported to disk or printed.
 unset SOLANA_HTTP_RPC_URL SOLANA_WSS_RPC_URL
 export RUN_ID RUN_DIR
-# Прогон №8: 30 минут, один процесс, две книги (S1/S0), выход fee_cover.
+# Прогон №9: 30 минут (A) или 12 часов (B), один процесс, книги S0/S2.
 export RUN_DURATION_SEC="${RUN_DURATION_SEC:-1800}"
 export PAPER_ONLY='1'
 export MODE='portfolio'
@@ -75,14 +75,14 @@ export CREATOR_RISK_POLICY='warn'
 export CREATOR_HISTORY_DIR="$PROJECT/runs"
 export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
 # --- entry v3: live momentum; the arm name is the ONLY thing that differs ---
-export ARMS="${ARMS:-portfolio_s1,portfolio_s0}"
+export ARMS="${ARMS:-portfolio_s0,portfolio_s2}"
 export ALLOW_SINGLE_ARM="${ALLOW_SINGLE_ARM:-1}"
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
 # Потолок рождения 34.5 (а не 50): v_sol_birth = 29.96 + dev_buy, потолок 50
 # пускал монеты с покупкой дева 4-6 SOL; 36 из 50 таких падали <= -25%.
 export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-34.5}"
-export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
-export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
+export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.00}"
+export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-1.00}"
 # --- the three experimental arms: one entry boundary each -------------------
 export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
 export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
@@ -90,23 +90,32 @@ export ENTRY_DELTA_MIN_SOL_B3="${ENTRY_DELTA_MIN_SOL_B3:-0.00}"
 # --- run #8: S1 is B1 verbatim, S0 is S1 minus the momentum gate ------------
 export ENTRY_DELTA_MAX_SOL_S1="${ENTRY_DELTA_MAX_SOL_S1:-1.00}"
 export ENTRY_DELTA_MIN_SOL_S0="${ENTRY_DELTA_MIN_SOL_S0:-0.00}"
+# --- run #9: S0 unchanged, S2 = birth floor 31.96 + zero name copies/120 s --
+export ENTRY_BIRTH_MIN_S0="${ENTRY_BIRTH_MIN_S0:-30.50}"
+export MAX_NAME_COPIES_S0="${MAX_NAME_COPIES_S0:-off}"
+export ENTRY_BIRTH_MIN_S2="${ENTRY_BIRTH_MIN_S2:-31.96}"
+export MAX_NAME_COPIES_S2="${MAX_NAME_COPIES_S2:-0}"
 # --- run #8 exit: hard stop -> cover the round trip -> 5 s clock ------------
 export EXIT_MODE="${EXIT_MODE:-fee_cover}"
 export EXIT_FEE_COVER_PCT="${EXIT_FEE_COVER_PCT:-3.5}"
 export EXIT_TIME_SEC="${EXIT_TIME_SEC:-5.0}"
 export EXIT_HARD_STOP_PCT="${EXIT_HARD_STOP_PCT:-10.0}"
-# --- run #8 fast entry and fast marks ---------------------------------------
+# --- run #9 fast entry and fast marks ---------------------------------------
 export ENTRY_LATENCY_MS="${ENTRY_LATENCY_MS:-0}"
-export MARK_POLL_SEC="${MARK_POLL_SEC:-0.15}"
+export MARK_POLL_SEC="${MARK_POLL_SEC:-0.25}"
+export MARK_POLL_RPS_LIMIT="${MARK_POLL_RPS_LIMIT:-2.5}"
+# The only pre-agreed money stop: at hour 8, if S2's CI95 is entirely below 0.
+export EARLY_STOP_NEGATIVE_EDGE_AT_SEC="${EARLY_STOP_NEGATIVE_EDGE_AT_SEC:-28800}"
+export EARLY_STOP_NEGATIVE_EDGE_BOOK="${EARLY_STOP_NEGATIVE_EDGE_BOOK:-portfolio_s2}"
 # --- passive coin features (0 RPC, decisions never read them) ---------------
 export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
 export CREATOR_GUARD_MIN_SIG="${CREATOR_GUARD_MIN_SIG:-25}"
 export CREATOR_BURST_WINDOW_SEC="${CREATOR_BURST_WINDOW_SEC:-3600}"
 export CREATOR_CACHE_TTL_SEC="${CREATOR_CACHE_TTL_SEC:-300}"
 export TELEMETRY_RUN_ID="$RUN_ID"
-# Run #8: only 0 and 5 s — the poll cadence moved from 0.40 to 0.15 s.
+# Run #9: only 0 and 5 s — the poll cadence is 0.25 s, offsets stay narrow.
 export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5}"
-export WALLET_PATH="$RUN_DIR/wallet_portfolio_s1.json"
+export WALLET_PATH="$RUN_DIR/wallet_portfolio_s0.json"
 export TRADE_LOG="$RUN_DIR/trades.log"
 export DB_PATH="$RUN_DIR/sniper.db"
 export TELEMETRY_DB_PATH="$RUN_DIR/telemetry.sqlite"
@@ -152,8 +161,8 @@ from portfolio_ab import (
     MARK_POLL_ADAPTED_SEC, MARK_POLL_RPS_LIMIT,
     STOP_DISK_FREE_BYTES, STOP_HELIUS_QUOTA_PCT, STOP_RPC_ERROR_RATE,
     STOP_RPC_LATENCY_HOLD_SEC, STOP_STALL_SEC,
-    ABPaperSimulator, PortfolioBook, arm_profiles, mark_poll_sec_from_env,
-    profiles_from_settings,
+    ABPaperSimulator, PortfolioBook, arm_profiles, mark_poll_rps_limit_from_env,
+    mark_poll_sec_from_env, profiles_from_settings,
 )
 from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA
 
@@ -170,7 +179,7 @@ assert s.mode == 'portfolio' and s.honeypot_check is False
 profiles = arm_profiles()
 assert tuple(profiles) == ARM_IDS, (tuple(profiles), ARM_IDS)
 assert [ARM_LABELS[name] for name in profiles] == [
-    'A', 'B1', 'B2', 'B3', 'S1', 'S0'], [ARM_LABELS[name] for name in profiles]
+    'A', 'B1', 'B2', 'B3', 'S1', 'S0', 'S2'], [ARM_LABELS[name] for name in profiles]
 reference = asdict(profiles['portfolio_a'])
 for name in ('portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0'):
     arm = asdict(profiles[name])
@@ -184,18 +193,18 @@ for name in ('portfolio_b1_narrow', 'portfolio_b2_birth', 'portfolio_b3_t0'):
     assert expected in ('delta_max_sol', 'v_sol_birth_max', 'delta_min_sol')
 # The declared bands, spelled out: a silent env change must not slip through.
 assert profiles['portfolio_a'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50')
+    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 2.50; name copies: off')
 assert profiles['portfolio_b1_narrow'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00')
+    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00; name copies: off')
 assert profiles['portfolio_b2_birth'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50')
+    '30.50 <= v_sol_birth <= 31.00; 0.10 <= delta <= 2.50; name copies: off')
 assert profiles['portfolio_b3_t0'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50')
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 2.50; name copies: off')
 # --- run #8 pair: S1 is B1 verbatim, S0 is S1 minus the momentum gate ------
 assert (profiles['portfolio_s1'].entry_band_label
         == profiles['portfolio_b1_narrow'].entry_band_label)
 assert profiles['portfolio_s0'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00')
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies: off')
 _s0_diff = {
     key for key, value in asdict(profiles['portfolio_s0']).items()
     if key not in ('name', 'arm_id', 'entry_band_label')
@@ -229,28 +238,39 @@ for profile in profiles.values():
 # PERFORMA (born 39.88) is rejected by the 34.5 birth ceiling.
 assert profiles['portfolio_a'].entry_check(39.88, 40.41)[1] == 'birth_out_of_band'
 
-# --- run #8: the LIVE set of books, built the way the run builds it ---------
+# --- run #9: the LIVE set of books, built the way the run builds it ---------
 # `arm_profiles()` above is the pure catalogue; these are the books that will
 # actually trade, read through the same env this launcher exports.
 live = profiles_from_settings(s)
-assert tuple(live) == ('portfolio_s1', 'portfolio_s0'), tuple(live)
+assert tuple(live) == ('portfolio_s0', 'portfolio_s2'), tuple(live)
 assert 'portfolio_a' not in live
 assert os.getenv('ALLOW_SINGLE_ARM') == '1'
-assert live['portfolio_s1'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00')
+# S0 is run #8's book, and it says so: same band, no copy filter.
 assert live['portfolio_s0'].entry_band_label == (
-    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00')
-_live_s0_diff = {
-    key for key, value in asdict(live['portfolio_s0']).items()
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies: off')
+assert (live['portfolio_s0'].v_sol_birth_min,
+        live['portfolio_s0'].max_name_copies_120s) == (30.50, None)
+# S2 moves exactly two entry numbers and nothing else.
+assert live['portfolio_s2'].entry_band_label == (
+    '31.96 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; '
+    'name copies 120s <= 0'), live['portfolio_s2'].entry_band_label
+_live_s2_diff = {
+    key for key, value in asdict(live['portfolio_s2']).items()
     if key not in ('name', 'arm_id', 'entry_band_label')
-    and asdict(live['portfolio_s1'])[key] != value
+    and asdict(live['portfolio_s0'])[key] != value
 }
-assert _live_s0_diff == {'delta_min_sol'}, _live_s0_diff
+assert _live_s2_diff == {'v_sol_birth_min', 'max_name_copies_120s'}, _live_s2_diff
+# The catalogue's S2 carries the same declaration, not a different one.
+assert profiles['portfolio_s2'].max_name_copies_120s == 0
+assert profiles['portfolio_s2'].v_sol_birth_min == 31.96
 # One exit for both books, and it is the declared fee_cover rule.
 assert {p.exit_mode for p in live.values()} == {'fee_cover'}
 assert {(p.fee_cover_pct, p.time_exit_sec, p.hard_stop_pct) for p in live.values()} == {
     (3.5, 5.0, 10.0)}
 assert {p.entry_latency_ms for p in live.values()} == {0.0}
+# Run #9's ONE money stop is declared, and it is a stop, not a PnL rule.
+assert float(os.getenv('EARLY_STOP_NEGATIVE_EDGE_AT_SEC')) == 28800.0
+assert os.getenv('EARLY_STOP_NEGATIVE_EDGE_BOOK') == 'portfolio_s2'
 for name, profile in live.items():
     assert profile.position_size_rub == 500.0, name
     assert profile.initial_balance_rub == 1500.0, name
@@ -260,12 +280,13 @@ for name, profile in live.items():
 assert ABPaperSimulator.exit_reason_kind('Hard stop (−10.0%)') == 'hard_stop'
 assert ABPaperSimulator.exit_reason_kind('Fee cover (+3.5%)') == 'fee_cover'
 assert ABPaperSimulator.exit_reason_kind('Time exit (5.0s)') == 'time_exit'
-assert 'fee cover' in ABPaperSimulator._exit_rule_label(live['portfolio_s1'])
+assert 'fee cover' in ABPaperSimulator._exit_rule_label(live['portfolio_s0'])
 
 # --- observation schedule, mark cadence and passive features ----------------
 assert _observation_offsets() == (0, 5), _observation_offsets()
-assert mark_poll_sec_from_env() == 0.15, mark_poll_sec_from_env()
-assert MARK_POLL_RPS_LIMIT == 2.2 and MARK_POLL_ADAPTED_SEC == 0.25
+assert mark_poll_sec_from_env() == 0.25, mark_poll_sec_from_env()
+assert mark_poll_rps_limit_from_env() == 2.5, mark_poll_rps_limit_from_env()
+assert MARK_POLL_ADAPTED_SEC == 0.25
 assert _enrich_enabled() is True
 
 # --- stop-list thresholds (the 2 % floor may not be raised) ------------------
@@ -280,7 +301,7 @@ assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
 # Run #8: each book keeps its OWN 1500 RUB bank; nothing halves it.
 _bank_dir = Path(tempfile.mkdtemp())
 _book = PortfolioBook(
-    live['portfolio_s1'], _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
+    live['portfolio_s0'], _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
 _event = _book.maybe_top_up(at_epoch=1_700_000_000.0)
 assert _event is not None and _event['cash_before'] == 300.0
 assert _event['cash_after'] == 1500.0 and _event['amount_rub'] == 1200.0
@@ -290,12 +311,15 @@ assert _book.maybe_top_up() is None
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
-print('run #8 preflight OK: Helius host only; read-only; paper-only; one pumpfun '
-      'source; two books S1 (B1 itself) and S0 (S1 minus the momentum gate), no '
-      'A in this run; one fee_cover exit for both (hard stop -10 %, cover +3.5 %, '
-      'else 5 s, always 100 %); ENTRY_LATENCY_MS=0; MARK_POLL_SEC=0.15 with the '
-      '0.25 s adaptation at 2.2 rps/10 min; offsets 0/5; enrich on; each book '
-      'tops itself up to 1500 at cash<500; stop-list RPC floor 2 % not raised.')
+print('run #9 preflight OK: Helius host only; read-only; paper-only; one pumpfun '
+      'source; two books S0 (run #8 verbatim) and S2 (birth floor 31.96 = dev buy '
+      '>= 2 SOL, zero name copies in 120 s), no A in this run; one unchanged '
+      'fee_cover exit for both (hard stop -10 %, cover +3.5 %, else 5 s, always '
+      '100 %); ENTRY_LATENCY_MS=0; MARK_POLL_SEC=0.25 with the 2.5 rps window; '
+      'post-exit ghost 10 s at no extra RPC; price_at_5s on every trade; offsets '
+      '0/5; enrich on; each book tops itself up to 1500 at cash<500; stop-list '
+      'RPC floor 2 % not raised; the only money stop is negative_edge_S2 at '
+      'hour 8 with its CI95 entirely below zero.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.

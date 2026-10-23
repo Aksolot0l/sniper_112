@@ -82,11 +82,11 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'CREATOR_BLOCKLIST_PATH': str(RUNS / 'known_scam_sellers.txt'),
         'ENTRY_BIRTH_MIN_SOL': env.get('ENTRY_BIRTH_MIN_SOL', '30.5'),
         'ENTRY_BIRTH_MAX_SOL': env.get('ENTRY_BIRTH_MAX_SOL', '34.5'),
-        'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.10'),
-        'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '2.5'),
+        'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.00'),
+        'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '1.00'),
         # Run #7: each experimental arm moves ONE entry boundary of A.
-        # Run #8: two books, no reference arm (S1 is measured against S0).
-        'ARMS': env.get('ARMS', 'portfolio_s1,portfolio_s0'),
+        # Run #9: two books, S2 measured against S0, no reference arm A.
+        'ARMS': env.get('ARMS', 'portfolio_s0,portfolio_s2'),
         'ALLOW_SINGLE_ARM': env.get('ALLOW_SINGLE_ARM', '1'),
         'ENTRY_DELTA_MAX_SOL_B1': env.get('ENTRY_DELTA_MAX_SOL_B1', '1.00'),
         'ENTRY_BIRTH_MAX_SOL_B2': env.get('ENTRY_BIRTH_MAX_SOL_B2', '31.00'),
@@ -94,14 +94,27 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         # S1 = B1 verbatim; S0 = S1 with the momentum gate removed.
         'ENTRY_DELTA_MAX_SOL_S1': env.get('ENTRY_DELTA_MAX_SOL_S1', '1.00'),
         'ENTRY_DELTA_MIN_SOL_S0': env.get('ENTRY_DELTA_MIN_SOL_S0', '0.00'),
+        # Run #9: S0 keeps run #8's band and states it; S2 lifts the birth floor
+        # to 31.96 (dev buy >= 2 SOL) and refuses a repeat ticker inside 120 s.
+        'ENTRY_BIRTH_MIN_S0': env.get('ENTRY_BIRTH_MIN_S0', '30.50'),
+        'MAX_NAME_COPIES_S0': env.get('MAX_NAME_COPIES_S0', 'off'),
+        'ENTRY_BIRTH_MIN_S2': env.get('ENTRY_BIRTH_MIN_S2', '31.96'),
+        'MAX_NAME_COPIES_S2': env.get('MAX_NAME_COPIES_S2', '0'),
         # Run #8 exit: hard stop -> cover the round trip -> 5 s clock.
         'EXIT_MODE': env.get('EXIT_MODE', 'fee_cover'),
         'EXIT_FEE_COVER_PCT': env.get('EXIT_FEE_COVER_PCT', '3.5'),
         'EXIT_TIME_SEC': env.get('EXIT_TIME_SEC', '5.0'),
         'EXIT_HARD_STOP_PCT': env.get('EXIT_HARD_STOP_PCT', '10.0'),
-        # Run #8: no modelled entry delay, 0.15 s marks, offsets 0/5 only.
+        # Run #9: no modelled entry delay, 0.25 s marks (0.15 hit 3.21 rps in
+        # run #8), offsets 0/5 only.
         'ENTRY_LATENCY_MS': env.get('ENTRY_LATENCY_MS', '0'),
-        'MARK_POLL_SEC': env.get('MARK_POLL_SEC', '0.15'),
+        'MARK_POLL_SEC': env.get('MARK_POLL_SEC', '0.25'),
+        'MARK_POLL_RPS_LIMIT': env.get('MARK_POLL_RPS_LIMIT', '2.5'),
+        # The one pre-agreed money stop: at hour 8, S2 CI95 entirely below 0.
+        'EARLY_STOP_NEGATIVE_EDGE_AT_SEC': env.get(
+            'EARLY_STOP_NEGATIVE_EDGE_AT_SEC', '28800'),
+        'EARLY_STOP_NEGATIVE_EDGE_BOOK': env.get(
+            'EARLY_STOP_NEGATIVE_EDGE_BOOK', 'portfolio_s2'),
         'ENTRY_ENRICH': env.get('ENTRY_ENRICH', '1'),
         'CREATOR_GUARD_MIN_SIG': env.get('CREATOR_GUARD_MIN_SIG', '25'),
         'CREATOR_BURST_WINDOW_SEC': env.get('CREATOR_BURST_WINDOW_SEC', '3600'),
@@ -112,7 +125,9 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         ),
         # Each book keeps its own 1500 RUB bank; this legacy path is only the
         # anchor main_ab reads, the books live in wallet_<arm>.json files.
-        'WALLET_PATH': str(run_dir / 'wallet_portfolio_s1.json'),
+        'WALLET_PATH': str(
+            run_dir / f"wallet_{(env.get('ARMS') or 'portfolio_s0,portfolio_s2').split(',')[0].strip()}.json"
+        ),
         'TRADE_LOG': str(run_dir / 'trades.log'),
         'DB_PATH': str(run_dir / 'sniper.db'),
         'TELEMETRY_DB_PATH': str(run_dir / 'telemetry.sqlite'),
