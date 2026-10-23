@@ -3262,6 +3262,236 @@ class ABPaperSimulator:
             'entry_at_detection': book.profile.entry_at_detection,
         }
 
+    # --- run #8 §3: the five blocks the report must contain ---------------
+    LATENCY_STAGES = ('t_detect_ms', 't_filters_ms', 't_read_ms', 't_fill_ms', 't_total_ms')
+
+    def _latency_chain(self, book: PortfolioBook) -> dict[str, Any]:
+        """Median/p90/max of every stage, and the share of sub-200 ms entries."""
+        trades = list(book.closed_trades)
+        stages: dict[str, Any] = {}
+        for field in self.LATENCY_STAGES:
+            values = [
+                float(t[field]) for t in trades
+                if isinstance(t.get(field), (int, float))
+            ]
+            stages[field] = {
+                'n': len(values),
+                'median': round(float(median(values)), 2) if values else None,
+                'p90': (round(float(percentile(values, 0.90)), 2) if values else None),
+                'max': round(max(values), 2) if values else None,
+            }
+        totals = [
+            float(t['t_total_ms']) for t in trades
+            if isinstance(t.get('t_total_ms'), (int, float))
+        ]
+        return {
+            'n': len(totals),
+            'stages': stages,
+            'share_under_200ms': (
+                round(sum(1 for v in totals if v < 200.0) / len(totals), 4)
+                if totals else None
+            ),
+            'share_under_500ms': (
+                round(sum(1 for v in totals if v < 500.0) / len(totals), 4)
+                if totals else None
+            ),
+            'entry_latency_ms_model': float(book.profile.entry_latency_ms),
+        }
+
+    def _hold_replay(self, book: PortfolioBook) -> dict[str, Any]:
+        """What the same fills would have paid at 1/2/3/5 s, and with a stop.
+
+        Read from this position's own tick stream (`exports/ticks.csv`), so the
+        numbers are the marks the bot really saw — not an interpolated series.
+        Everything is in percent of the stake: the trade rows do not carry the
+        cost basis, and inventing one would turn a measurement into a model.
+        """
+        marks_by_mint: dict[str, list[tuple[float, float]]] = {}
+        for tick in self.ticks:
+            if tick.get('portfolio') != book.profile.name:
+                continue
+            if tick.get('event') == 'exit':
+                continue
+            pnl = tick.get('pnl_pct')
+            at = tick.get('t_sec')
+            if not isinstance(pnl, (int, float)) or not isinstance(at, (int, float)):
+                continue
+            marks_by_mint.setdefault(str(tick.get('mint')), []).append(
+                (float(at), float(pnl))
+            )
+        for marks in marks_by_mint.values():
+            marks.sort()
+
+        def pnl_at_or_before(marks, target: float) -> Optional[float]:
+            last = None
+            for at, pnl in marks:
+                if at > target:
+                    break
+                last = pnl
+            return last
+
+        def first_at_or_after(marks, target: float) -> Optional[float]:
+            for at, pnl in marks:
+                if at >= target:
+                    return pnl
+            return None
+
+        def stop_first(marks, upto: float, stop_pct: float) -> Optional[float]:
+            for at, pnl in marks:
+                if at > upto:
+                    break
+                if pnl <= stop_pct:
+                    return pnl
+            return first_at_or_after(marks, upto)
+
+        snapshots: dict[str, list[float]] = {f'pnl_pct_at_{h}s': [] for h in (1, 2, 3, 5)}
+        replays: dict[str, list[float]] = {
+            'hold_to_3s': [], 'hold_to_5s': [], 'hold_to_5s_stop_10': [],
+        }
+        for trade in book.closed_trades:
+            marks = marks_by_mint.get(str(trade.get('mint')))
+            if not marks:
+                continue
+            entry = pnl_at_or_before(marks, 0.0)
+            for hold in (1, 2, 3, 5):
+                value = pnl_at_or_before(marks, float(hold))
+                snapshots[f'pnl_pct_at_{hold}s'].append(
+                    value if value is not None else (entry if entry is not None else 0.0)
+                )
+            for key, value in (
+                ('hold_to_3s', first_at_or_after(marks, 3.0)),
+                ('hold_to_5s', first_at_or_after(marks, 5.0)),
+                ('hold_to_5s_stop_10', stop_first(marks, 5.0, -10.0)),
+            ):
+                if value is not None:
+                    replays[key].append(value)
+
+        def summarise(values: list[float]) -> dict[str, Any]:
+            return {
+                'n': len(values),
+                'mean_pct': round(sum(values) / len(values), 4) if values else None,
+                'median_pct': round(float(median(values)), 4) if values else None,
+            }
+
+        actual = [float(t.get('pnl_pct') or 0.0) for t in book.closed_trades]
+        return {
+            'n': len(actual),
+            'actual': summarise(actual),
+            'snapshots': {key: summarise(values) for key, values in snapshots.items()},
+            'replay': {key: summarise(values) for key, values in replays.items()},
+            'source': 'ticks.csv of each closed trade; percent of stake, not RUB',
+        }
+
+    def _round_trip_cost(self, book: PortfolioBook) -> dict[str, Any]:
+        """The measured cost of one round trip on trades whose price stood still.
+
+        A flat trade pays fees + impact and nothing else, so its PnL *is* the
+        round-trip cost. Run #7 measured 3.25 % this way over 202 trades, which
+        is why fee_cover aims at +3.5 %.
+        """
+        flat: list[float] = []
+        for trade in book.closed_trades:
+            mfe = trade.get('mfe_pct')
+            mae = trade.get('mae_pct')
+            if not isinstance(mfe, (int, float)) or not isinstance(mae, (int, float)):
+                continue
+            if float(mfe) - float(mae) <= 1.0:
+                flat.append(float(trade.get('pnl_pct') or 0.0))
+        premiums = [
+            float(t['entry_fill_premium_pct']) for t in book.closed_trades
+            if isinstance(t.get('entry_fill_premium_pct'), (int, float))
+        ]
+        return {
+            'flat_definition': 'mfe_pct - mae_pct <= 1.0 pp (price did not move)',
+            'n_flat': len(flat),
+            'round_trip_cost_pct_median': (
+                round(-float(median(flat)), 4) if flat else None
+            ),
+            'round_trip_cost_pct_mean': (
+                round(-sum(flat) / len(flat), 4) if flat else None
+            ),
+            'reference_round_trip_pct': 3.25,
+            'entry_fill_premium_pct_median': (
+                round(float(median(premiums)), 4) if premiums else None
+            ),
+            'reference_entry_fill_premium_pct': 1.41,
+        }
+
+    def _gate_price(self, book: PortfolioBook) -> dict[str, Any]:
+        """What the momentum gate costs: the fill vs the price at detection.
+
+        `entry_premium_pct` is (v_now / v_birth)^2 - 1 on the same read, i.e.
+        exactly the price paid for waiting until delta reached delta_min. For S0
+        (delta_min 0.00) the entry read IS the detection read, so this is the
+        number the gate is responsible for.
+        """
+        premiums = [
+            float(t['entry_premium_pct']) for t in book.closed_trades
+            if isinstance(t.get('entry_premium_pct'), (int, float))
+        ]
+        birth = [
+            float(t['entry_price_usd']) for t in book.closed_trades
+            if isinstance(t.get('entry_price_usd'), (int, float))
+        ]
+        return {
+            'n': len(premiums),
+            'delta_min_sol': float(book.profile.delta_min_sol),
+            'entry_premium_pct_median': (
+                round(float(median(premiums)), 4) if premiums else None
+            ),
+            'entry_premium_pct_p90': (
+                round(float(percentile(premiums, 0.90)), 4) if premiums else None
+            ),
+            'share_premium_above_1pct': (
+                round(sum(1 for v in premiums if v > 1.0) / len(premiums), 4)
+                if premiums else None
+            ),
+            'n_entry_price': len(birth),
+            'definition': (
+                'entry_premium_pct = (v_sol at the entry read / v_sol_birth)^2 - 1'
+            ),
+        }
+
+    def _exit_shares(self, book: PortfolioBook) -> dict[str, Any]:
+        """Shares of the exit categories, with run #8's three named explicitly."""
+        breakdown = self._exit_breakdown(book)
+        total = sum(int(slot.get('n') or 0) for slot in breakdown.values())
+        shares = {
+            kind: {
+                'n': int(slot.get('n') or 0),
+                'share': round(int(slot.get('n') or 0) / total, 4) if total else None,
+                'sum_rub': slot.get('sum_rub'),
+            }
+            for kind, slot in breakdown.items()
+        }
+        return {
+            'n': total,
+            'shares': shares,
+            # Run #8 acceptance: fee_cover must fire at least once per book.
+            'fee_cover_fired': int(shares.get('fee_cover', {}).get('n') or 0) > 0,
+            'fee_cover_n': int(shares.get('fee_cover', {}).get('n') or 0),
+            'time_exit_n': int(shares.get('time_exit', {}).get('n') or 0),
+            'hard_stop_n': int(shares.get('hard_stop', {}).get('n') or 0),
+            'ladder_kinds_present': sorted(
+                kind for kind in shares
+                if kind in {'tp', 'trail', 'stop_loss', 'shelf', 'no_progress', 'timeout'}
+            ),
+        }
+
+    def _run_line(self, rpc: dict[str, Any]) -> dict[str, Any]:
+        """Everything the acceptance line needs, in one dict (run #8 §3(7))."""
+        return {
+            'paper_only': True,
+            'signed_transactions': 0,
+            'early_stop_reason': self.early_stop_reason,
+            'requests_per_sec': rpc.get('requests_per_sec'),
+            'requests_per_sec_max_10min': rpc.get('requests_per_sec_max_10min'),
+            'http_429_count': int(rpc.get('http_429_count') or 0),
+            'unrecovered_rate': rpc.get('unrecovered_rate'),
+            'mark_poll_sec': round(self.mark_poll_sec, 4),
+            'mark_poll_adapted': self.mark_poll_adapted,
+        }
+
     def _rocket_peaks(self) -> dict[str, float]:
         """Peak % per mint on the 60 s observation window (empty if absent)."""
         collector = get_collector()
@@ -3344,6 +3574,12 @@ class ABPaperSimulator:
                 'stats': trade_stats([t.get('pnl_rub', 0.0) for t in book.closed_trades]),
                 # --- run #4: the number the run is about (acceptance #1, #4) ---
                 'entry_quality': self._entry_quality(book),
+                # --- run #8 §3: the five required blocks ---
+                'latency_chain': self._latency_chain(book),
+                'hold_replay': self._hold_replay(book),
+                'round_trip_cost': self._round_trip_cost(book),
+                'gate_price': self._gate_price(book),
+                'exit_shares': self._exit_shares(book),
                 # P0-4: what closed the trade, not just the total.
                 'exit_breakdown': self._exit_breakdown(book),
                 # Run #7 (§6): paired test vs the arm's own reference, hourly
@@ -3456,9 +3692,14 @@ class ABPaperSimulator:
                     name: {
                         'arm_id': book.profile.arm_id,
                         'entry_band_label': book.profile.entry_band_label,
-                        'single_boundary_vs_a': self._changed_boundaries(
-                            self.books['portfolio_a'].profile, book.profile,
+                        # Run #8 has no A: S0 is compared with S1 instead, and
+                        # S1 has no reference at all in that run.
+                        'single_boundary_vs_a': (
+                            self._changed_boundaries(
+                                self.books[reference_for[name]].profile, book.profile,
+                            ) if reference_for.get(name) else ['none']
                         ),
+                        'compared_with': reference_for.get(name),
                         'exit_rule': self._exit_rule_label(book.profile),
                     }
                     for name, book in self.books.items()
@@ -3483,4 +3724,6 @@ class ABPaperSimulator:
                 **rpc_metrics_snapshot(),
                 'requests_per_profile': dict(sorted(self.rpc_reads_by_profile.items())),
             },
+            # --- run #8 §3(7): the one line a reviewer reads first ---
+            'run_line': self._run_line(rpc_metrics_snapshot()),
         }

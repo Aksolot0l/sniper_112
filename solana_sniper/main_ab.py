@@ -29,7 +29,7 @@ from detector import (
 )
 from portfolio_ab import (
     ARM_IDS, ARM_REFERENCE, ABPaperSimulator, entry_band_label,
-    profiles_from_settings,
+    exit_mode_from_env, profiles_from_settings,
 )
 from price import (
     ReadOnlyRpcBatcher,
@@ -93,6 +93,31 @@ def shared_entry_latency_ms() -> float:
             return float(os.getenv('ENTRY_LATENCY_MS', '150').strip() or 150.0)
         except ValueError:
             return 150.0
+
+
+def _live_profiles() -> dict[str, Any]:
+    """The books this process will actually trade (env-aware)."""
+    try:
+        return profiles_from_settings(load_settings())
+    except Exception:
+        try:
+            return profiles_from_settings(object())
+        except Exception:
+            return {}
+
+
+def _live_exit_mode() -> str:
+    profiles = _live_profiles()
+    if profiles:
+        return str(next(iter(profiles.values())).exit_mode)
+    return exit_mode_from_env()
+
+
+def _exit_rule_text() -> str:
+    profiles = _live_profiles()
+    if profiles:
+        return ABPaperSimulator._exit_rule_label(next(iter(profiles.values())))
+    return 'ladder (could not build a profile; declared by hand)'
 
 
 def _arm_bands() -> dict[str, str]:
@@ -186,10 +211,326 @@ async def _periodic_snapshots(simulator: Any, run_dir: Path) -> None:
             log(f'⚠️ Снапшот артефактов не записан ({type(exc).__name__})', Color.YELLOW)
 
 
+def _is_run8(manifest: dict[str, Any]) -> bool:
+    """A run #8 report is written for the run #8 questions only."""
+    ab = manifest.get('ab_test') or {}
+    return (
+        ab.get('mode') == 'single_arm_smoke'
+        or manifest.get('exit_mode') == 'fee_cover'
+    )
+
+
+def _run8_summary_markdown(
+    manifest: dict[str, Any], funnel: dict[str, Any], summary: dict[str, Any],
+) -> str:
+    """The 30-minute fee_cover report: latency, cost and funnel, no PnL verdict."""
+    lines: list[str] = []
+    add = lines.append
+    arms = [
+        name for name, book in summary.items()
+        if isinstance(book, dict) and book.get('stats') is not None
+    ]
+    profiles = summary.get('profiles') or {}
+
+    def label(name: str) -> str:
+        return str((profiles.get(name) or {}).get('arm_id') or name)
+
+    def m(value: Any) -> str:
+        return _money(value)
+
+    add(f"# Прогон {manifest.get('run_id')}")
+    add('')
+    add(f"- build: `{manifest.get('build')}`")
+    add(f"- длительность: {manifest.get('actual_duration_sec')} c "
+        f"(план {manifest.get('planned_duration_sec')} c)")
+    add(f"- paper-only: {manifest.get('paper_only')}; подписано транзакций: "
+        f"{manifest.get('signed_transactions')}")
+    add(f"- **сравнения с A в этом прогоне нет**: торгуют только "
+        f"{' и '.join(label(name) for name in arms)}; S0 — контроль для S1.")
+    stats = manifest.get('telemetry') or {}
+    if stats:
+        add(f"- телеметрия: dropped={stats.get('dropped_events')}, "
+            f"write_errors={stats.get('write_errors')}, "
+            f"writer={stats.get('writer_error') or 'ok'}")
+    if manifest.get('early_stop_reason'):
+        add(f"- досрочная остановка: `{manifest.get('early_stop_reason')}` "
+            '(stop-list, не PnL; артефакты дописаны)')
+    poll = summary.get('mark_poll') or {}
+    if poll:
+        add(f"- опрос меток: {poll.get('mark_poll_sec')} с, "
+            f"адаптация: {'да' if poll.get('mark_poll_adapted') else 'нет'}, "
+            f"лимит 10-мин окна {poll.get('rps_limit_10min')} rps")
+    add('')
+
+    add('## Что за прогон')
+    add('')
+    add('| книга | полоса входа | что отличается | выход |')
+    add('|---|---|---|---|')
+    for name in arms:
+        prof = profiles.get(name) or {}
+        band = prof.get('entry_band_label') or '—'
+        changed = (
+            f"delta_min {prof.get('delta_min_sol')} (против S1)"
+            if name == 'portfolio_s0' else 'ничего: это B1'
+        )
+        add(f"| {label(name)} (`{name}`) | {band} | {changed} | "
+            f"fee_cover (общий для обеих книг) |")
+    add('')
+    add('Выход у обеих книг один и он не лестница Round 6: **hard stop −10 %**, '
+        'затем **продажа 100 % при +3.5 %** (измеренный round trip 3.25 % + 0.25 п.п. '
+        'запаса), затем **выход по времени 5 с**. TP1, трейл, shelf и no-progress в '
+        'этом режиме не вызываются вовсе, поэтому их нет и в разбивке выходов. '
+        'Ставка 500 ₽, банк 1 500 ₽ у каждой книги, 3 слота, вход и опрос одинаковые.')
+    add('')
+
+    add('## Результат по книгам')
+    add('')
+    add('| книга | n | сумма ₽ | ₽/сделку | медиана | sd | CI95 среднего | без топ-2 |')
+    add('|---|---:|---:|---:|---:|---:|---|---:|')
+    for name in arms:
+        book = summary.get(name) or {}
+        st = book.get('stats') or {}
+        ci = st.get('ci95_mean')
+        ci_text = f'[{ci[0]:.2f}, {ci[1]:.2f}]' if ci else '—'
+        add(f"| {label(name)} | {st.get('n')} | {m(st.get('sum'))} | "
+            f"{m(st.get('mean'))} | {m(st.get('median'))} | {m(st.get('sd'))} | "
+            f"{ci_text} | {m(st.get('sum_without_top2'))} |")
+    add('')
+    add('Деньги здесь — не результат прогона: 30–60 сделок на книгу ничего не '
+        'разрешают (см. «Чего этот прогон не говорит»).')
+    add('')
+
+    add('### Чем закрывались сделки')
+    add('')
+    add('| книга | fee_cover | time_exit | hard_stop | прочие категории |')
+    add('|---|---:|---:|---:|---|')
+    for name in arms:
+        shares = (summary.get(name) or {}).get('exit_shares') or {}
+        cells = []
+        for kind, key in (('fee_cover', 'fee_cover_n'), ('time_exit', 'time_exit_n'),
+                          ('hard_stop', 'hard_stop_n')):
+            n = int(shares.get(key) or 0)
+            share = ((shares.get('shares') or {}).get(kind) or {}).get('share')
+            # An absent kind is 0 %, not "not measured": the whole point is
+            # that e.g. hard_stop may legitimately never fire.
+            cells.append(f'{n} ({_share(0.0 if share is None else share)})')
+        other = shares.get('ladder_kinds_present') or []
+        add(f"| {label(name)} | {cells[0]} | {cells[1]} | {cells[2]} | "
+            f"{', '.join(other) if other else 'нет'} |")
+    add('')
+    add('«прочие категории» обязаны быть пустыми: в fee_cover-режиме лестница не '
+        'вызывается. Если там что-то появилось — это баг, а не результат.')
+    add('')
+
+    add('## Латентность входа: пять стадий, каждая измерена')
+    add('')
+    add('| стадия | n | медиана, мс | p90, мс | max, мс |')
+    add('|---|---:|---:|---:|---:|')
+    names = {
+        't_detect_ms': 'packet WSS → строка candidate',
+        't_filters_ms': 'candidate → вердикт security-батча',
+        't_read_ms': 'вердикт → чтение кривой, по которому посчитан филл',
+        't_fill_ms': 'чтение → строка филла',
+        't_total_ms': 'packet → строка филла',
+    }
+    for name in arms:
+        chain = (summary.get(name) or {}).get('latency_chain') or {}
+        stages = chain.get('stages') or {}
+        add(f"**{label(name)}** (n={chain.get('n', 0)})")
+        add('')
+        for field, text in names.items():
+            slot = stages.get(field) or {}
+            add(f"| `{field}` — {text} | {slot.get('n', 0)} | "
+                f"{m(slot.get('median'))} | {m(slot.get('p90'))} | "
+                f"{m(slot.get('max'))} |")
+        add('')
+        add(f"- доля входов быстрее 200 мс: {_share(chain.get('share_under_200ms'))}, "
+            f"быстрее 500 мс: {_share(chain.get('share_under_500ms'))}")
+        add(f"- модельная задержка входа в этом прогоне: "
+            f"{chain.get('entry_latency_ms_model')} мс")
+        add('')
+    add('`t_read_ms = 0` — это не потерянное измерение: security-батч и есть то '
+        'чтение, по которому считается цена входа, второй RPC на вход не делается. '
+        '`t_detect_ms` — время от пакета WSS до строки candidate в телеметрии, '
+        'то есть очередь воркера, а не сеть.')
+    add('')
+
+    add('## Стоимость круглого рейса и цена гейта импульса')
+    add('')
+    add('| книга | entry_fill_premium медиана, % | round trip на неподвижных, % (n) | '
+        'эталон | цена гейта: entry_premium медиана, % | p90, % | доля >1 % |')
+    add('|---|---:|---:|---:|---:|---:|---:|')
+    for name in arms:
+        book = summary.get(name) or {}
+        rt = book.get('round_trip_cost') or {}
+        gate = book.get('gate_price') or {}
+        add(f"| {label(name)} | {m(rt.get('entry_fill_premium_pct_median'))} | "
+            f"{m(rt.get('round_trip_cost_pct_median'))} "
+            f"({rt.get('n_flat', 0)}) | "
+            f"{m(rt.get('reference_round_trip_pct'))} % / "
+            f"{m(rt.get('reference_entry_fill_premium_pct'))} % | "
+            f"{m(gate.get('entry_premium_pct_median'))} | "
+            f"{m(gate.get('entry_premium_pct_p90'))} | "
+            f"{_share(gate.get('share_premium_above_1pct'))} |")
+    add('')
+    add('`round trip` — медиана PnL сделок, у которых цена не двигалась '
+        '(`mfe − mae ≤ 1 п.п.`): там PnL и есть стоимость комиссий и импакта. '
+        '`цена гейта` = `entry_premium_pct` = `(v_sol на входе / v_sol_birth)² − 1` — '
+        'надбавка, которую платит книга за ожидание, пока delta дойдёт до '
+        '`delta_min`. У S0 (`delta_min 0.00`) вход и есть первое чтение, поэтому '
+        'её число — эталон «без гейта».')
+    add('')
+
+    add('## PnL по времени удержания и реплей «держать до N секунд»')
+    add('')
+    add('| книга | факт | 1 с | 2 с | 3 с | 5 с | hold 3 с | hold 5 с | 5 с + стоп −10 % |')
+    add('|---|---:|---:|---:|---:|---:|---:|---:|---:|')
+    for name in arms:
+        replay = (summary.get(name) or {}).get('hold_replay') or {}
+        snap = replay.get('snapshots') or {}
+        rep = replay.get('replay') or {}
+
+        def mean_of(slot: dict) -> str:
+            return m((slot or {}).get('mean_pct'))
+
+        add(f"| {label(name)} | {mean_of(replay.get('actual'))} | "
+            f"{mean_of(snap.get('pnl_pct_at_1s'))} | "
+            f"{mean_of(snap.get('pnl_pct_at_2s'))} | "
+            f"{mean_of(snap.get('pnl_pct_at_3s'))} | "
+            f"{mean_of(snap.get('pnl_pct_at_5s'))} | "
+            f"{mean_of(rep.get('hold_to_3s'))} | "
+            f"{mean_of(rep.get('hold_to_5s'))} | "
+            f"{mean_of(rep.get('hold_to_5s_stop_10'))} |")
+    add('')
+    add('Всё в процентах от ставки, по меткам, которые бот реально видел '
+        '(`exports/ticks.csv`). «1 с … 5 с» — последняя метка не позже момента; '
+        '«hold N с» — первая метка в момент N с; «5 с + стоп» — выход по −10 %, '
+        'если он случился раньше пяти секунд. Это реплей самих сделок, а не '
+        'модель «что было бы, если бы мы вошли в другие монеты».')
+    add('')
+
+    add('## Воронка')
+    add('')
+    add('```')
+    add(str(funnel.get('chain') or 'n/a'))
+    add('')
+    add(f"entry_state             {funnel.get('entry_state')}")
+    for arm in arms:
+        for reason, count in ((funnel.get(f'{arm}_signal')) or {}).items():
+            add(f"  {label(arm)} signal: {reason:<48} {count}")
+        add(f"  {label(arm)} opened: "
+            f"{(funnel.get('opened') or {}).get(arm)}")
+        for reason, count in ((funnel.get('entry_skips') or {}).get(arm) or {}).items():
+            add(f"  {label(arm)} skip: {reason:<50} {count}")
+    add('```')
+    add('')
+    for name in arms:
+        book = summary.get(name) or {}
+        signals = funnel.get(f'{name}_signal') or {}
+        skips = (funnel.get('entry_skips') or {}).get(name) or {}
+        no_price = sum(
+            count for reason, count in skips.items()
+            if str(reason).startswith(('four_account', 'missing_or_invalid', 'sol_usd',
+                                       'curve_', 'pump_', 'unsupported_'))
+        )
+        add(f"- **{label(name)}**: отказов по `delta_min` "
+            f"(`no_live_momentum`) — {signals.get('no_live_momentum', 0)}, "
+            f"по `delta_max` (`momentum_too_late`) — "
+            f"{signals.get('momentum_too_late', 0)}, "
+            f"вне полосы рождения — {signals.get('birth_out_of_band', 0)}, "
+            f"слоты заняты — {book.get('slots_full', 0)}, "
+            f"нет цены/снимка — {no_price}")
+    add('')
+    add(f"Бакеты delta: {funnel.get('delta_buckets')}")
+    add('')
+
+    add('## Приёмка прогона #8')
+    add('')
+    rpc = manifest.get('rpc_metrics') or {}
+    telemetry = manifest.get('telemetry') or {}
+    poll = summary.get('mark_poll') or {}
+    open_positions = sum(
+        int((summary.get(name) or {}).get('open_position_count') or 0)
+        for name in arms
+    )
+    duration = float(manifest.get('actual_duration_sec') or 0.0)
+    peak = rpc.get('requests_per_sec_max_10min')
+    rows = (
+        ('paper_only = true, подписано 0',
+         bool(manifest.get('paper_only')) and int(manifest.get('signed_transactions') or 0) == 0,
+         f"{manifest.get('paper_only')} / {manifest.get('signed_transactions')}"),
+        ('длительность ≥ 1 790 c', duration >= 1_790.0, f'{duration:.0f} c'),
+        ('early_stop_reason = null', not manifest.get('early_stop_reason'),
+         manifest.get('early_stop_reason') or 'null'),
+        ('неисправленные ошибки RPC ≤ 2 %',
+         float(rpc.get('unrecovered_rate') or 0.0) <= 0.02,
+         f"{100.0 * float(rpc.get('unrecovered_rate') or 0.0):.2f} % "
+         f"({rpc.get('unrecovered_failures', 0)} из {rpc.get('requests', 0)})"),
+        ('средний rps ≤ 1.8', float(rpc.get('requests_per_sec') or 0.0) <= 1.8,
+         m(rpc.get('requests_per_sec'))),
+        ('худшее 10-мин окно ≤ 2.2 rps (или записана адаптация)',
+         peak is None or float(peak) <= 2.2 or bool(poll.get('mark_poll_adapted')),
+         (m(peak) if peak is not None else '— (окно не набрано)')
+         + (', каденция поднята до 0.25 с' if poll.get('mark_poll_adapted') else '')),
+        ('dropped_events = 0', int(telemetry.get('dropped_events') or 0) == 0,
+         int(telemetry.get('dropped_events') or 0)),
+        ('write_errors = 0', int(telemetry.get('write_errors') or 0) == 0,
+         int(telemetry.get('write_errors') or 0)),
+        ('0 открытых позиций в конце', open_positions == 0, open_positions),
+        ('fee_cover сработал ≥ 1 раза в каждой книге',
+         all(bool(((summary.get(name) or {}).get('exit_shares') or {})
+                  .get('fee_cover_fired')) for name in arms),
+         ', '.join(
+             f"{label(name)}={((summary.get(name) or {}).get('exit_shares') or {}).get('fee_cover_n', 0)}"
+             for name in arms
+         )),
+        ('медиана t_total_ms записана',
+         all(((summary.get(name) or {}).get('latency_chain') or {})
+             .get('stages', {}).get('t_total_ms', {}).get('median') is not None
+             for name in arms),
+         ', '.join(
+             str((((summary.get(name) or {}).get('latency_chain') or {})
+                  .get('stages', {}).get('t_total_ms', {}) or {}).get('median'))
+             for name in arms
+         )),
+    )
+    add('| проверка | факт | статус |')
+    add('|---|---|---|')
+    for text, ok, value in rows:
+        add(f"| {text} | {value} | {'✅' if ok else '❌'} |")
+    add('')
+    add(f"- 429 всего: {rpc.get('http_429_count', 0)}, ретраев: "
+        f"{rpc.get('retry_count', 0)}, восстановлено {rpc.get('recovered_failures', 0)} "
+        '(восстановленный 429 — back-pressure, а не сбой)')
+    add('')
+
+    add('## Чего этот прогон не говорит')
+    add('')
+    add('- **Нет сравнения с A.** В прогоне только S1 и S0; любая фраза вида '
+        '«S1 лучше A» здесь не проверялась.')
+    add('- **Нет вердикта по деньгам.** 30–60 сделок на книгу: реплей ожидает '
+        '≈ −4.9 % у S1 и ≈ −4.6 % у S0, лучший измеренный вариант ≈ +1 %. '
+        'Разница меньше ~15 ₽/сделку на такой выборке нерешаема, порог +8 ₽ '
+        'после Bonferroni требует ~1 700 пар.')
+    add('- **Ничего не подписывалось и не отправлялось**: `signed_transactions = 0`, '
+        'RPC только на чтение.')
+    add('- Измеряется латентность, стоимость исполнения и то, срабатывает ли '
+        'fee_cover вообще — не прибыльность.')
+    add('')
+    return '\n'.join(lines)
+
+
 def _summary_markdown(
     manifest: dict[str, Any], funnel: dict[str, Any], summary: dict[str, Any],
 ) -> str:
-    """Render the one-page post-run report next to the raw artifacts."""
+    """Render the one-page post-run report next to the raw artifacts.
+
+    Run #8 asks different questions (latency, execution cost, funnel) and has
+    no reference arm, so it gets its own report instead of a run #7 page with
+    empty paired columns.
+    """
+    if _is_run8(manifest):
+        return _run8_summary_markdown(manifest, funnel, summary)
     lines: list[str] = []
     add = lines.append
     ab = summary.get('ab_test') or {}
@@ -567,11 +908,55 @@ def _strategy_metadata() -> dict[str, Any]:
             'records how old the read was and entry_premium_pct compares the '
             'entry mid with the coin t0 mid of that read'
         ),
-        'exit_rule': (
-            'identical in every arm — the Round 6 4-mode ladder: SL -10% '
-            'before TP1/rocket, TP1 +30% sells 50%, rocket bypass +50%, trail '
-            '0.85x after +10%, shelf 4.5 s, no-progress 5 s, timeouts 35/90 s'
+        # Run #8: the exit is a property of the RUN, not of an arm, and it is
+        # read from the profiles that will trade, so a fee_cover run can never
+        # ship a manifest that promises the Round 6 ladder.
+        'exit_rule': _exit_rule_text(),
+        'exit_mode': _live_exit_mode(),
+        # --- run #8: 30 min, two books, one exit --------------------------
+        'run8_design': (
+            'S1 = B1 verbatim (birth 30.50-34.50, delta 0.10-1.00); S0 = S1 with '
+            'the momentum gate removed (delta_min 0.00). Both books carry one '
+            'exit: hard stop -10%, sell 100% at +3.5%, else the 5 s clock. No '
+            'reference arm A in this run, so S0 is compared with S1 and nothing '
+            'is compared with A.'
         ),
+        'run8_why_fee_cover': (
+            "the replay of run #7's 167 real B1 trades, priced from observations "
+            'and net of the measured 3.25% round trip: B1 + fee-cover 3.5% = '
+            '-4.93%; B1 held to 5 s = -2.22%; the whole t0 band + 5 s + stop '
+            '-10% = +1.46% (n=1533). Median entry premium: B1 2.89%, A 5.55%, '
+            'B3 0.00% — delta >= 0.10 buys somebody else\'s move and then '
+            'sells it at +3.5%.'
+        ),
+        'run8_out_of_scope': (
+            'no money verdict: 30-60 trades per book cannot resolve anything. '
+            'The replay expects about -4.9% for S1 and -4.6% for S0, the best '
+            'measured variant about +1%; what this run measures is latency, '
+            'execution cost and whether fee_cover fires at all. No comparison '
+            'with A, no better/worse claim.'
+        ),
+        'run8_acceptance': (
+            'paper_only=true and 0 signed; duration >= 1790 s; early_stop_reason '
+            '= null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst '
+            '10-min window <= 2.2 (or the 0.25 s cadence adaptation recorded); '
+            'dropped_events = 0; write_errors = 0; 0 open positions at the end; '
+            'fee_cover fired at least once in each book; t_total_ms median '
+            'recorded without a threshold'
+        ),
+        'run8_latency_chain': (
+            't_detect_ms WSS packet -> candidate row; t_filters_ms candidate row '
+            '-> security verdict; t_read_ms verdict -> the curve read the fill is '
+            'priced from (0 when the filter batch IS that read); t_fill_ms read '
+            '-> fill row; t_total_ms packet -> fill row'
+        ),
+        'run8_mark_poll': (
+            'MARK_POLL_SEC default 0.15 s (floor 0.05); if a 10-min window passes '
+            '2.2 rps the cadence rises to 0.25 s once and mark_poll_adapted=true '
+            'is reported. accountSubscribe is not used: a second mark source '
+            'would make exit timing depend on which stream arrived first'
+        ),
+        'run8_single_difference': 'delta_min_sol (S0 vs S1)',
         'arms': {
             'portfolio_a': {'arm_id': 'A', 'band': '30.5-34.5 / 0.10-2.50',
                             'role': 'reference, unchanged in every symbol'},
@@ -671,7 +1056,7 @@ def _strategy_metadata() -> dict[str, Any]:
                 'arm_id': meta['arm_id'],
                 'entry_band': meta['band'],
                 'changed_vs_a': meta.get('changed', 'none'),
-                'exit_rule': '4-mode ladder (identical in every arm)',
+                'exit_rule': _exit_rule_text(),
             }
             for name, meta in {
                 'portfolio_a': {'arm_id': 'A', 'band': '30.5-34.5 / 0.10-2.50'},
@@ -696,6 +1081,8 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'initial_balance_rub': 1500,
         'position_size_rub': 500,
         'max_slots': 3,
+        'exit_mode': _live_exit_mode(),
+        'exit_rule': _exit_rule_text(),
         'entry_note': (
             'live-momentum band replaces the 2026-10 anti-filter '
             '(v_sol_now <= v_sol_birth + 0.8 rejected every real runner '
