@@ -108,7 +108,7 @@
     },
     "power_note": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow"
   },
-  "status": "running",
+  "status": "completed",
   "early_stop_reason": null,
   "created_at_utc": "2026-10-23T06:20:49+00:00",
   "planned_duration_sec": 28800,
@@ -123,7 +123,12 @@
   ],
   "enrich": {
     "enabled": true,
-    "path": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/exports/enrich.csv"
+    "rows": 3340,
+    "ok": 3299,
+    "unavailable": 41,
+    "observed_share": 0.9877,
+    "status": "written",
+    "host_status": "ok"
   },
   "strategies": {
     "portfolio_a": {
@@ -563,5 +568,215 @@
   "started_at_utc": "2026-10-23T06:20:49+00:00",
   "pumpportal_fast_source": true,
   "helius_program_fallback": false,
-  "sources": "pumpfun"
+  "sources": "pumpfun",
+  "ended_at_utc": "2026-10-23T14:20:57+00:00",
+  "actual_duration_sec": 28807.967,
+  "external_stop_reason": null,
+  "run_error_type": null,
+  "rpc_metrics": {
+    "rpc_method": "getMultipleAccounts",
+    "requests": 31478,
+    "logical_requests": 33100,
+    "batch_groups": 31348,
+    "failed_requests": 0,
+    "http_429_count": 14,
+    "retry_count": 14,
+    "unrecovered_failures": 0,
+    "unrecovered_rate": 0.0,
+    "requests_per_sec": 1.093,
+    "requests_per_sec_max_10min": 2.21,
+    "requests_per_sec_max_60sec": 3.717,
+    "recovered_failures": 14,
+    "accounts_requested": 67287,
+    "null_accounts": 222,
+    "null_retries": 146,
+    "latency_ms_median": 42.34,
+    "latency_ms_p95": 87.9,
+    "latency_samples": 20000,
+    "error_types": {
+      "http_429": 14
+    },
+    "requests_per_profile": {
+      "portfolio_a": 3120,
+      "portfolio_b1_narrow": 1650,
+      "portfolio_b2_birth": 1858,
+      "portfolio_b3_t0": 8045
+    }
+  },
+  "portfolio_summary_file": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/ab_summary.json",
+  "telemetry": {
+    "dropped_events": 0,
+    "write_errors": 0,
+    "writer_error": null,
+    "failed": false
+  },
+  "funnel": {
+    "available": true,
+    "db": "telemetry.sqlite",
+    "candidates": 6025,
+    "security_pass": 3340,
+    "entry_state": 3340,
+    "arms": [
+      "portfolio_a",
+      "portfolio_b1_narrow",
+      "portfolio_b2_birth",
+      "portfolio_b3_t0"
+    ],
+    "portfolio_a_signal": {
+      "birth_out_of_band": 1805,
+      "live_momentum_entry": 296,
+      "momentum_too_late": 771,
+      "no_live_momentum": 468
+    },
+    "portfolio_b1_narrow_signal": {
+      "birth_out_of_band": 1805,
+      "live_momentum_entry": 167,
+      "momentum_too_late": 900,
+      "no_live_momentum": 468
+    },
+    "portfolio_b2_birth_signal": {
+      "birth_out_of_band": 2778,
+      "live_momentum_entry": 163,
+      "momentum_too_late": 117,
+      "no_live_momentum": 282
+    },
+    "portfolio_b3_t0_signal": {
+      "birth_out_of_band": 1805,
+      "entry_below_delta_min": 5,
+      "live_momentum_entry": 759,
+      "momentum_too_late": 771
+    },
+    "opened": {
+      "portfolio_a": 296,
+      "portfolio_b1_narrow": 167,
+      "portfolio_b2_birth": 163,
+      "portfolio_b3_t0": 758
+    },
+    "entry_skips": {
+      "portfolio_a": {},
+      "portfolio_b1_narrow": {},
+      "portfolio_b2_birth": {},
+      "portfolio_b3_t0": {
+        "three_slots_already_open_or_pending": 1
+      }
+    },
+    "delta_buckets": {
+      "0": 1511,
+      "0.1-1": 425,
+      "1-2.5": 210,
+      "2.5-4": 312,
+      "4-12": 733,
+      ">12": 149
+    },
+    "pass_if_cap": {
+      "pass_if_cap_1": 167,
+      "pass_if_cap_12": 1010,
+      "pass_if_cap_2.5": 296,
+      "pass_if_cap_3": 354,
+      "pass_if_cap_4": 527
+    },
+    "dev_buy_presence": {
+      "bought": 2813,
+      "unknown": 527
+    },
+    "chain": "candidates=6025 -> security_pass=3340 -> birth_reject=1805 -> no_live_momentum=468 -> momentum_too_late=771 -> admits=296 -> opened=296 -> cash_below_slot=0",
+    "admitted_by_current_cap": 296,
+    "security_fail_total": 2650,
+    "security_fail_observed": 624,
+    "security_fail_observed_share": 0.2355,
+    "security_fail_rockets": 0,
+    "security_fail_rocket_share": 0.0,
+    "security_fail_reasons": {
+      "pump_mayhem_mode": 608,
+      "mint_curve_read_failed": 9,
+      "curve_migrated": 7
+    },
+    "security_fail_skipped_deep": 2681,
+    "window_sample_skipped": 2214,
+    "observation_timing": {
+      "0": {
+        "rows": 5990,
+        "within_250ms": 5989,
+        "share": 0.9998
+      },
+      "5": {
+        "rows": 5990,
+        "within_250ms": 5759,
+        "share": 0.9614
+      },
+      "15": {
+        "rows": 5990,
+        "within_250ms": 5811,
+        "share": 0.9701
+      },
+      "60": {
+        "rows": 5989,
+        "within_250ms": 1056,
+        "share": 0.1763
+      }
+    },
+    "observation_status": {
+      "cancelled_at_session_end": 1,
+      "no_price": 7239,
+      "ok": 11825,
+      "skipped_security_deep": 2681,
+      "skipped_window_sample": 2214
+    },
+    "cancelled_observations": 1,
+    "cancelled_excluded_from_stats": true,
+    "excluded_observations": 1,
+    "error_detail_coverage": {
+      "probes": 5969,
+      "failed": 1073,
+      "with_detail": 1073,
+      "share": 1.0
+    }
+  },
+  "stop_policy": {
+    "reason": null,
+    "telemetry": {
+      "dropped_events": 0,
+      "write_errors": 0
+    },
+    "rpc": {
+      "window_requests": 866,
+      "window_failed_attempts": 0,
+      "window_unrecovered": 0,
+      "unrecovered_rate": 0.0,
+      "raw_error_rate": 0.0
+    },
+    "stall": {
+      "portfolio_a": {
+        "sec_without_entry": 131.6,
+        "entry_state_since_last_entry": 16
+      },
+      "portfolio_b1_narrow": {
+        "sec_without_entry": 207.7,
+        "entry_state_since_last_entry": 28
+      },
+      "portfolio_b2_birth": {
+        "sec_without_entry": 303.0,
+        "entry_state_since_last_entry": 40
+      },
+      "portfolio_b3_t0": {
+        "sec_without_entry": 81.6,
+        "entry_state_since_last_entry": 7
+      }
+    },
+    "resources": {
+      "disk_free_bytes": 21258874880,
+      "disk_free_gb": 19.799,
+      "helius_quota_remaining_pct": null
+    },
+    "thresholds": {
+      "rpc_error_rate": 0.02,
+      "rpc_window_sec": 600.0,
+      "rpc_latency_ms": 1000.0,
+      "rpc_latency_hold_sec": 300.0,
+      "stall_sec": 1800.0,
+      "disk_free_gb": 2.0,
+      "helius_quota_pct": 10.0
+    },
+    "pnl_never_stops_the_run": true
+  }
 }
