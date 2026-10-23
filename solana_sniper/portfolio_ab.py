@@ -14,6 +14,7 @@ import math
 import os
 import random
 import shutil
+import statistics
 import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -566,6 +567,10 @@ class SimPosition:
     # stream while the position is open or from the post-exit ghost after it
     # closed. None when no mark is within POST_EXIT_NEAREST_TOLERANCE_SEC of
     # the 5-second mark — an absent value is honest, an interpolated one is not.
+    # Mid price at the entry snapshot ((v_sol / v_token) of the curve read the
+    # fill was priced from): the ghost compares like with like, without the
+    # entry fee sitting inside the reference.
+    entry_mid_price_usd: Optional[float] = None
     price_at_5s: Optional[float] = None
     pnl_pct_at_5s: Optional[float] = None
     price_at_5s_source: Optional[str] = None
@@ -813,6 +818,17 @@ MARK_POLL_SEC_DEFAULT = 0.15
 MARK_POLL_SEC_MIN = 0.05
 # Run #7 acceptance is "no 10-minute window above 2.2 rps". Run #8 does not
 # stop on it (the run must survive to the end); the cadence adapts instead.
+# --- run #9 §2.3: the post-exit ghost -----------------------------------
+# A closed coin stays in the mark batch for this long. It adds addresses to a
+# getMultipleAccounts call that open positions already trigger, never a new
+# request: the ghost costs zero RPC.
+POST_EXIT_WINDOW_SEC = 10.0
+# The ghost is not a second opinion on the exit — it records the nearest mark
+# to the 5-second point so `price_at_5s` is a real observation. Beyond this
+# distance the value stays None instead of being interpolated.
+POST_EXIT_NEAREST_TOLERANCE_SEC = 0.75
+# The points the run has to be able to answer for every exit.
+POST_EXIT_REQUIRED_SEC: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0)
 MARK_POLL_RPS_LIMIT = 2.2
 MARK_POLL_ADAPTED_SEC = 0.25
 MARK_POLL_RPS_CHECK_SEC = 10.0
@@ -1191,6 +1207,8 @@ class ABPaperSimulator:
         # --- run #9 §2.3: post-exit ghosts --------------------------------
         self.post_exit_rows: list[dict[str, Any]] = []
         self._ghosts: list[dict[str, Any]] = []
+        self.post_exit_started: dict[str, int] = {}
+        self.post_exit_skipped: dict[str, int] = {}
         self._book_last_entry_epoch: dict[str, float] = {
             name: self.started_at_epoch for name in self.books
         }
@@ -1906,6 +1924,7 @@ class ABPaperSimulator:
                 entry_cost_rub=actual_cost_rub, entry_fee_rub=entry_fee_rub,
                 remaining_entry_fee_rub=entry_fee_rub,
                 entry_price_usd=entry_price_usd,
+                entry_mid_price_usd=round(mid_price_usd, 16) if mid_price_usd else None,
                 initial_tokens_raw=received_tokens,
                 remaining_tokens_raw=received_tokens,
                 entry_amount_lamports=amount_lamports,
@@ -2283,9 +2302,17 @@ class ABPaperSimulator:
                     self.rpc_reads_by_profile[name] = (
                         self.rpc_reads_by_profile.get(name, 0) + 1
                     )
-            if all_positions:
+            # Run #9 §2.3: ghosts ride along in the same batch. They add
+            # addresses, never a request — the RPC bill is unchanged.
+            now_epoch = time.time()
+            self._ghosts = [
+                ghost for ghost in self._ghosts
+                if now_epoch < ghost['until_epoch']
+            ]
+            if all_positions or self._ghosts:
                 curve_addresses = list(dict.fromkeys(
-                    pos.curve for _book, pos in all_positions if pos.curve
+                    [pos.curve for _book, pos in all_positions if pos.curve]
+                    + [ghost['curve'] for ghost in self._ghosts if ghost['curve']]
                 ))
                 addresses = curve_addresses + [
                     address for address in (PUMP_GLOBAL_PDA, PUMP_FEE_CONFIG_PDA)
@@ -2404,6 +2431,22 @@ class ABPaperSimulator:
                     )
                     pos.exit_trigger_at_epoch = None
                     changed_books.add(book.profile.name)
+                # Run #9 §2.3: the post-exit marks, from the batch above.
+                for ghost in self._ghosts:
+                    account = accounts.get(ghost['curve'])
+                    if not isinstance(account, dict) or account.get('owner') != PUMP_PROGRAM_ID:
+                        continue
+                    raw = decode_account_data(account)
+                    if not raw:
+                        continue
+                    try:
+                        ghost_curve = CurveState.decode(raw)
+                    except QuoteUnavailable:
+                        continue
+                    price = self._mid_price_usd(ghost_curve, sol_usd)
+                    if price is None:
+                        continue
+                    self._record_post_exit_mark(ghost, time.time(), price)
                 for book in self.books.values():
                     if book.profile.name in changed_books:
                         book.save(self.run_id)
@@ -2518,6 +2561,9 @@ class ABPaperSimulator:
             if previous_at is not None else None
         )
         self.ticks.append({
+            # Private, not a CSV column: the epoch of this mark, so a lookup by
+            # "nearest to entry+N s" never has to re-derive it from t_sec.
+            '_at_epoch': float(at_epoch),
             'portfolio': book.profile.name,
             'mint': pos.mint,
             't_sec': round(max(0.0, at_epoch - pos.opened_at_epoch), 3),
@@ -2545,6 +2591,135 @@ class ABPaperSimulator:
         pos.last_tick_pnl_pct = float(pnl_pct)
         pos.last_tick_at_epoch = float(at_epoch)
 
+    # --- run #9 §2.3: post-exit ghost -------------------------------------
+    @staticmethod
+    def _mid_price_usd(curve: CurveState, sol_usd: float) -> Optional[float]:
+        """(v_sol / v_token) * SOL price — the same mid the entry reports."""
+        try:
+            v_tokens_ui = curve.virtual_token_reserves / TOKEN_SCALE
+            v_sol = curve.virtual_quote_reserves / LAMPORTS_PER_SOL
+        except (AttributeError, TypeError):
+            return None
+        if v_tokens_ui <= 0 or v_sol <= 0 or sol_usd <= 0:
+            return None
+        return v_sol / v_tokens_ui * sol_usd
+
+    def _start_post_exit_ghost(
+        self,
+        book: PortfolioBook,
+        pos: SimPosition,
+        exit_epoch: float,
+        exit_mid_price_usd: Optional[float],
+        trade: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Follow the coin for POST_EXIT_WINDOW_SEC after it left the book."""
+        if not pos.curve or exit_mid_price_usd is None:
+            name = book.profile.name
+            self.post_exit_skipped[name] = self.post_exit_skipped.get(name, 0) + 1
+            return
+        self.post_exit_started[book.profile.name] = (
+            self.post_exit_started.get(book.profile.name, 0) + 1
+        )
+        self._ghosts.append({
+            'portfolio': book.profile.name,
+            'mint': pos.mint,
+            'curve': pos.curve,
+            'exit_at_epoch': float(exit_epoch),
+            'entry_at_epoch': float(pos.opened_at_epoch),
+            'entry_mid_price_usd': float(
+                pos.entry_mid_price_usd or pos.entry_price_usd or 0.0
+            ),
+            'exit_mid_price_usd': float(exit_mid_price_usd),
+            'until_epoch': float(exit_epoch) + POST_EXIT_WINDOW_SEC,
+            # Run #9 §2.4: the closed trade is still being written, so the
+            # ghost patches its price_at_5s instead of a second lookup.
+            'trade': trade,
+            'marks': 0,
+        })
+
+    def _price_at_offset(
+        self, book_name: str, mint: str, entry_epoch: float, offset_sec: float,
+    ) -> Optional[tuple[float, str]]:
+        """Nearest real mark to entry+offset, from ticks or the ghost.
+
+        No interpolation: the value is a price the bot actually read, and the
+        distance to the requested moment is bounded by
+        POST_EXIT_NEAREST_TOLERANCE_SEC.
+        """
+        target = entry_epoch + offset_sec
+        best: Optional[tuple[float, float, str]] = None
+        for tick in self.ticks:
+            if (tick.get('portfolio') != book_name or tick.get('mint') != mint
+                    or tick.get('event') != 'mark' or not tick.get('price_usd')):
+                continue
+            at = tick.get('_at_epoch')
+            if at is None:
+                continue
+            distance = abs(float(at) - target)
+            if best is None or distance < best[0]:
+                best = (distance, float(tick['price_usd']), 'tick')
+        for ghost in self._ghosts:
+            if ghost['portfolio'] != book_name or ghost['mint'] != mint:
+                continue
+            for mark in ghost.setdefault('_rows', []):
+                distance = abs(float(mark['_at_epoch']) - target)
+                if best is None or distance < best[0]:
+                    best = (distance, float(mark['price_usd']), 'post_exit')
+        if best is None or best[0] > POST_EXIT_NEAREST_TOLERANCE_SEC:
+            return None
+        return best[1], best[2]
+
+    def _record_post_exit_mark(
+        self, ghost: dict[str, Any], at_epoch: float, price_usd: float,
+    ) -> None:
+        sec_since_exit = at_epoch - ghost['exit_at_epoch']
+        entry_mid = ghost['entry_mid_price_usd']
+        exit_mid = ghost['exit_mid_price_usd']
+        row = {
+            'portfolio': ghost['portfolio'],
+            'mint': ghost['mint'],
+            'exit_at_epoch': round(ghost['exit_at_epoch'], 3),
+            'sec_since_exit': round(sec_since_exit, 3),
+            'price_usd': round(price_usd, 16),
+            'pnl_vs_entry_pct': (
+                round((price_usd / entry_mid - 1.0) * 100.0, 6) if entry_mid else None
+            ),
+            'pnl_vs_exit_pct': (
+                round((price_usd / exit_mid - 1.0) * 100.0, 6) if exit_mid else None
+            ),
+        }
+        ghost['marks'] += 1
+        ghost.setdefault('_rows', []).append({**row, '_at_epoch': at_epoch})
+        self.post_exit_rows.append(row)
+        # §2.4: fill price_at_5s as soon as a mark close to entry+5 s lands.
+        trade = ghost.get('trade')
+        if trade is not None:
+            target = ghost['entry_at_epoch'] + 5.0
+            distance = abs(at_epoch - target)
+            if distance <= POST_EXIT_NEAREST_TOLERANCE_SEC:
+                current = trade.get('price_at_5s_distance_sec')
+                if current is None or distance < float(current):
+                    trade['price_at_5s'] = round(price_usd, 16)
+                    trade['price_at_5s_source'] = 'post_exit'
+                    trade['price_at_5s_distance_sec'] = round(distance, 3)
+                    if entry_mid:
+                        trade['pnl_pct_at_5s'] = round(
+                            (price_usd / entry_mid - 1.0) * 100.0, 6,
+                        )
+
+    def write_post_exit(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('w', encoding='utf-8-sig', newline='') as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=(
+                    'portfolio', 'mint', 'exit_at_epoch', 'sec_since_exit',
+                    'price_usd', 'pnl_vs_entry_pct', 'pnl_vs_exit_pct',
+                ),
+            )
+            writer.writeheader()
+            writer.writerows(self.post_exit_rows)
+
     def write_ticks(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('w', encoding='utf-8-sig', newline='') as handle:
@@ -2557,6 +2732,7 @@ class ABPaperSimulator:
                     'mark_prev_pct', 'step_gap_pp', 'mark_gap_ms',
                     'exit_kind',
                 ),
+                extrasaction='ignore',
             )
             writer.writeheader()
             writer.writerows(self.ticks)
@@ -3027,6 +3203,26 @@ class ABPaperSimulator:
             average_exit_usd = (
                 pos.realized_exit_value_usd / max(1e-9, pos.sold_tokens_raw / TOKEN_SCALE)
             )
+            # Run #9: the mid at the exit snapshot, not the fee-loaded proceeds
+            # price. Comparing it with the entry mid is what makes "the price
+            # did not move" a decidable statement, and it is the right
+            # reference for the post-exit ghost.
+            exit_mid_price_usd = self._mid_price_usd(curve, sol_usd)
+            entry_mid_price_usd = pos.entry_mid_price_usd
+            flat_move = (
+                abs(exit_mid_price_usd / entry_mid_price_usd - 1.0) <= 1e-4
+                if exit_mid_price_usd and entry_mid_price_usd else False
+            )
+            # The cost of one round trip, measured on the trades where the
+            # market price did not move at all: there the PnL IS the cost.
+            round_trip_cost_pct = (
+                round(-total_pnl_pct, 6) if flat_move else None
+            )
+            price_at_5s = self._price_at_offset(
+                book.profile.name, pos.mint, pos.opened_at_epoch, 5.0,
+            )
+            if price_at_5s is not None and pos.price_at_5s is None:
+                pos.price_at_5s, pos.price_at_5s_source = price_at_5s[0], price_at_5s[1]
             record = TradeRecord(
                 mint=pos.mint, source=pos.source,
                 entry_price=pos.entry_price_usd,
@@ -3092,10 +3288,44 @@ class ABPaperSimulator:
                 ),
                 'trigger_pct': pos.exit_trigger_pnl_pct,
                 'fill_pct': round(total_pnl_pct, 6),
+                # --- run #9 §3 ------------------------------------------
+                'delta_at_entry_sol': (
+                    round(pos.entry_v_sol - pos.birth_v_sol, 6)
+                    if pos.entry_v_sol is not None and pos.birth_v_sol is not None
+                    else None
+                ),
+                'v_sol_birth': round(pos.birth_v_sol, 6) if pos.birth_v_sol else None,
+                # 29.96 SOL is a bare launch; the difference is the dev's own
+                # buy, which is what S2's 31.96 floor selects.
+                'dev_buy_sol': (
+                    round(pos.birth_v_sol - 29.96, 6) if pos.birth_v_sol else None
+                ),
+                'name_copies_120s': pos.name_copies_120s,
+                'entry_mid_price_usd': (
+                    round(entry_mid_price_usd, 16) if entry_mid_price_usd else None
+                ),
+                'exit_mid_price_usd': (
+                    round(exit_mid_price_usd, 16) if exit_mid_price_usd else None
+                ),
+                'flat_move': flat_move,
+                'round_trip_cost_pct': round_trip_cost_pct,
+                'price_at_5s': (
+                    round(pos.price_at_5s, 16) if pos.price_at_5s else None
+                ),
+                'pnl_pct_at_5s': (
+                    round((pos.price_at_5s / entry_mid_price_usd - 1.0) * 100.0, 6)
+                    if pos.price_at_5s and entry_mid_price_usd else None
+                ),
+                'price_at_5s_source': pos.price_at_5s_source,
                 'network_fees_rub': round(pos.realized_fee_rub, 6),
                 'onchain_fees_rub': round(pos.onchain_fees_paid_rub, 6),
             }
             book.closed_trades.append(closed)
+            # Run #9 §2.3: keep following the coin for 10 s. The ghost patches
+            # price_at_5s on this very dict when a mark near entry+5 s lands.
+            self._start_post_exit_ghost(
+                book, pos, time.time(), exit_mid_price_usd, trade=closed,
+            )
             if collector is not None:
                 collector.record_decision(
                     pos.mint, pos.source, f'{book.profile.name}_position', 'closed',
@@ -3206,6 +3436,7 @@ class ABPaperSimulator:
         written: list[str] = []
         for name, writer in (
             ('ticks.csv', self.write_ticks),
+            ('post_exit.csv', self.write_post_exit),
             ('enrich.csv', self.write_enrich),
         ):
             try:
@@ -3306,6 +3537,10 @@ class ABPaperSimulator:
             self.write_ticks(export_dir / 'ticks.csv')
         except Exception as exc:  # never let an artefact kill the finalization
             log(f'⚠️ ticks.csv не записан ({type(exc).__name__})', Color.YELLOW)
+        try:
+            self.write_post_exit(export_dir / 'post_exit.csv')
+        except Exception as exc:
+            log(f'⚠️ post_exit.csv не записан ({type(exc).__name__})', Color.YELLOW)
         try:
             self.write_enrich(export_dir / 'enrich.csv')
         except Exception as exc:
@@ -3721,6 +3956,92 @@ class ABPaperSimulator:
             ),
         }
 
+    def _post_exit_stats(self) -> dict[str, Any]:
+        """§2.3-2.4: how complete the ghost is, and what it measured.
+
+        Nothing here is interpolated: a required point counts as covered only
+        when a real mark landed within POST_EXIT_NEAREST_TOLERANCE_SEC of it.
+        """
+        by_exit: dict[tuple[str, str, float], list[dict[str, Any]]] = {}
+        for row in self.post_exit_rows:
+            key = (row['portfolio'], row['mint'], float(row['exit_at_epoch']))
+            by_exit.setdefault(key, []).append(row)
+        required = POST_EXIT_REQUIRED_SEC
+        per_book: dict[str, Any] = {}
+        for name, book in self.books.items():
+            exits = [
+                rows for key, rows in by_exit.items() if key[0] == name
+            ]
+            marks_per_exit = [len(rows) for rows in exits]
+            coverage: dict[str, float] = {}
+            for target in required:
+                covered = 0
+                for rows in exits:
+                    if any(abs(float(r['sec_since_exit']) - target)
+                           <= POST_EXIT_NEAREST_TOLERANCE_SEC for r in rows):
+                        covered += 1
+                coverage[f'+{target:g}s'] = (
+                    round(covered / len(exits), 4) if exits else 0.0
+                )
+
+            def metric(offset: float) -> Optional[float]:
+                picked: list[float] = []
+                for rows in exits:
+                    nearest = min(
+                        rows, key=lambda r: abs(float(r['sec_since_exit']) - offset),
+                        default=None,
+                    )
+                    if nearest is not None and abs(
+                        float(nearest['sec_since_exit']) - offset
+                    ) <= POST_EXIT_NEAREST_TOLERANCE_SEC:
+                        if nearest.get('pnl_vs_exit_pct') is not None:
+                            picked.append(float(nearest['pnl_vs_exit_pct']))
+                if not picked:
+                    return None
+                return round(sum(picked) / len(picked), 4)
+
+            five_s = [
+                round(float(t['pnl_pct_at_5s']), 4)
+                for t in book.closed_trades
+                if t.get('pnl_pct_at_5s') is not None
+            ]
+            per_book[name] = {
+                'exits_followed': self.post_exit_started.get(name, 0),
+                'exits_not_followed': self.post_exit_skipped.get(name, 0),
+                'exits_with_marks': len(exits),
+                'rows': sum(len(rows) for rows in exits),
+                'marks_per_exit_min': min(marks_per_exit) if marks_per_exit else 0,
+                'marks_per_exit_median': (
+                    statistics.median(marks_per_exit) if marks_per_exit else 0
+                ),
+                'required_point_coverage': coverage,
+                'mean_pnl_vs_exit_pct_at': {
+                    f'+{target:g}s': metric(target) for target in required
+                },
+                'price_at_5s_trades': len(five_s),
+                'price_at_5s_coverage': (
+                    round(len(five_s) / len(book.closed_trades), 4)
+                    if book.closed_trades else 0.0
+                ),
+                'pnl_pct_at_5s_median': (
+                    round(statistics.median(five_s), 4) if five_s else None
+                ),
+                'pnl_pct_at_5s_mean': (
+                    round(sum(five_s) / len(five_s), 4) if five_s else None
+                ),
+            }
+        return {
+            'window_sec': POST_EXIT_WINDOW_SEC,
+            'nearest_tolerance_sec': POST_EXIT_NEAREST_TOLERANCE_SEC,
+            'required_points_sec': list(required),
+            'source': (
+                'post_exit.csv: the same getMultipleAccounts batch the open '
+                'positions trigger, so no extra RPC. price_usd is the curve mid '
+                '(v_sol / v_token * SOL price); pnl_vs_exit_pct is mid-to-mid'
+            ),
+            'per_book': per_book,
+        }
+
     def _run_line(self, rpc: dict[str, Any]) -> dict[str, Any]:
         """Everything the acceptance line needs, in one dict (run #8 §3(7))."""
         return {
@@ -3969,6 +4290,7 @@ class ABPaperSimulator:
             },
             # --- run #8 §3(7): the one line a reviewer reads first ---
             'run_line': self._run_line(rpc_metrics_snapshot()),
+            'post_exit': self._post_exit_stats(),
             'drain': {
                 'max_wait_sec': DRAIN_OPEN_POSITIONS_MAX_SEC,
                 'waited_sec': round(self.drain_waited_sec, 3),

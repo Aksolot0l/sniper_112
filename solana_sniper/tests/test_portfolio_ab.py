@@ -2318,3 +2318,157 @@ class RunNineNameCopiesTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     simulator.books[name].positions['mint-solo'].name_copies_120s, 0,
                 )
+
+
+class RunNinePostExitTests(unittest.IsolatedAsyncioTestCase):
+    """§2.3-2.4: the ghost after the exit, and price_at_5s."""
+
+    def _profiles(self):
+        profile = replace(
+            arm_profiles()['portfolio_s0'], entry_latency_ms=0.0,
+            exit_mode='fee_cover', fee_cover_pct=3.5, time_exit_sec=5.0,
+            hard_stop_pct=10.0,
+        )
+        return {'portfolio_s0': profile}
+
+    async def _enter(self):
+        tmp = tempfile.mkdtemp()
+        simulator = make_simulator(Path(tmp), profiles=self._profiles())
+        coin = NewCoin(
+            mint='mint-ghost', source='Pump.fun', signature='sig-ghost',
+            curve='curve-ghost', packet={'v_sol': 32.5, 'symbol': 'GHOST'},
+        )
+        snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+        epoch = time.time()
+        with patch('portfolio_ab.get_collector', return_value=None):
+            await simulator._consider_entry(
+                simulator.books['portfolio_s0'], coin, snapshot,
+                32.5, 32.6, 200.0, {}, epoch,
+            )
+        return simulator, simulator.books['portfolio_s0'], epoch
+
+    async def _exit(self, simulator, book, pos, *, curve=None, pnl_pct=3.6):
+        curve = curve or make_curve()
+        fees = make_fee_context_for_test()
+        local = quote_sell_exact_tokens(
+            curve, fees, pos.remaining_tokens_raw, slippage_bps=100, context_slot=12,
+        )
+        swap = SwapQuote(
+            input_mint=pos.mint, output_mint=WSOL_MINT,
+            in_amount_raw=pos.remaining_tokens_raw,
+            out_amount_raw=local.out_amount_raw, min_out_raw=local.min_out_raw,
+            price_impact_pct=local.price_impact_pct,
+            route_labels=local.route_labels(), context_slot=12,
+        )
+        executable = ExecutableQuote(
+            swap, local.protocol_fee_raw, local.creator_fee_raw,
+            local.protocol_fee_bps, local.creator_fee_bps,
+            local.market_cap_lamports, local.tier_index, 'local exact quote',
+        )
+        with patch('portfolio_ab.get_collector', return_value=None):
+            await simulator._apply_sell_fill(
+                book, pos, pos.remaining_tokens_raw, 'Fee cover (+3.5%)',
+                executable, curve, fees, 12, 200.0, pnl_pct, 518.0,
+            )
+        return book.closed_trades[-1]
+
+    async def test_a_close_starts_a_ten_second_ghost(self) -> None:
+        simulator, book, _ = await self._enter()
+        pos = book.positions['mint-ghost']
+        trade = await self._exit(simulator, book, pos)
+        self.assertEqual(len(simulator._ghosts), 1)
+        ghost = simulator._ghosts[0]
+        self.assertEqual(ghost['portfolio'], 'portfolio_s0')
+        self.assertEqual(ghost['mint'], 'mint-ghost')
+        self.assertEqual(ghost['curve'], 'curve-ghost')
+        self.assertAlmostEqual(
+            ghost['until_epoch'] - ghost['exit_at_epoch'], 10.0, places=6,
+        )
+        # The closed trade is the object the ghost patches.
+        self.assertIs(ghost['trade'], trade)
+
+    async def test_the_ghost_writes_the_declared_columns_and_points(self) -> None:
+        simulator, book, _ = await self._enter()
+        pos = book.positions['mint-ghost']
+        trade = await self._exit(simulator, book, pos)
+        ghost = simulator._ghosts[0]
+        exit_at = ghost['exit_at_epoch']
+        for offset in (0.5, 1.0, 2.0, 5.0, 10.0):
+            simulator._record_post_exit_mark(
+                ghost, exit_at + offset, ghost['exit_mid_price_usd'] * 1.01,
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'post_exit.csv'
+            simulator.write_post_exit(path)
+            rows = path.read_text(encoding='utf-8-sig').splitlines()
+        self.assertEqual(
+            rows[0].split(','),
+            ['portfolio', 'mint', 'exit_at_epoch', 'sec_since_exit', 'price_usd',
+             'pnl_vs_entry_pct', 'pnl_vs_exit_pct'],
+        )
+        self.assertEqual(len(rows) - 1, 5)
+        stats = simulator.summary()['post_exit']
+        book_stats = stats['per_book']['portfolio_s0']
+        self.assertEqual(book_stats['exits_followed'], 1)
+        self.assertEqual(book_stats['marks_per_exit_min'], 5)
+        self.assertEqual(
+            book_stats['required_point_coverage'],
+            {'+0.5s': 1.0, '+1s': 1.0, '+2s': 1.0, '+5s': 1.0, '+10s': 1.0},
+        )
+        # A 1 % move above the exit mid is reported as +1 %.
+        self.assertAlmostEqual(
+            book_stats['mean_pnl_vs_exit_pct_at']['+1s'], 1.0, places=3,
+        )
+        self.assertIs(trade, ghost['trade'])
+
+    async def test_price_at_5s_is_patched_by_the_nearest_ghost_mark(self) -> None:
+        simulator, book, _ = await self._enter()
+        pos = book.positions['mint-ghost']
+        pos.opened_at_epoch = time.time() - 1.0
+        trade = await self._exit(simulator, book, pos)
+        ghost = simulator._ghosts[0]
+        five_at = pos.opened_at_epoch + 5.0
+        entry_mid = ghost['entry_mid_price_usd']
+        simulator._record_post_exit_mark(ghost, five_at + 0.10, entry_mid * 1.02)
+        self.assertIsNotNone(trade['price_at_5s'])
+        self.assertEqual(trade['price_at_5s_source'], 'post_exit')
+        self.assertAlmostEqual(trade['pnl_pct_at_5s'], 2.0, places=4)
+        # A farther mark does not replace the closer one.
+        simulator._record_post_exit_mark(ghost, five_at + 0.60, entry_mid * 1.5)
+        self.assertAlmostEqual(trade['pnl_pct_at_5s'], 2.0, places=4)
+        # And a mark far from the 5-second point never sets it.
+        simulator._record_post_exit_mark(ghost, five_at + 3.0, entry_mid * 3.0)
+        self.assertAlmostEqual(trade['pnl_pct_at_5s'], 2.0, places=4)
+
+    async def test_price_at_5s_falls_back_to_the_tick_stream(self) -> None:
+        simulator, book, _ = await self._enter()
+        pos = book.positions['mint-ghost']
+        pos.opened_at_epoch = time.time() - 6.0
+        simulator._record_tick(
+            book, pos, 1.0, pos.opened_at_epoch + 5.0, 0.012, event='mark',
+        )
+        trade = await self._exit(simulator, book, pos)
+        self.assertEqual(trade['price_at_5s_source'], 'tick')
+        self.assertAlmostEqual(trade['price_at_5s'], 0.012, places=9)
+        self.assertIsNone(trade['round_trip_cost_pct'])
+
+    async def test_round_trip_cost_is_recorded_only_on_a_flat_move(self) -> None:
+        simulator, book, _ = await self._enter()
+        pos = book.positions['mint-ghost']
+        curve = make_curve()
+        # Same curve on both sides: the mid did not move.
+        pos.entry_mid_price_usd = simulator._mid_price_usd(curve, 200.0)
+        trade = await self._exit(simulator, book, pos, curve=curve, pnl_pct=-3.25)
+        self.assertTrue(trade['flat_move'])
+        # On a flat move the PnL is exactly the cost of the round trip.
+        self.assertAlmostEqual(
+            trade['round_trip_cost_pct'], -trade['pnl_pct'], places=6,
+        )
+        self.assertGreater(trade['round_trip_cost_pct'], 0.0)
+
+        simulator2, book2, _ = await self._enter()
+        pos2 = book2.positions['mint-ghost']
+        pos2.entry_mid_price_usd = simulator2._mid_price_usd(make_curve(vquote=25_000_000_000), 200.0)
+        trade2 = await self._exit(simulator2, book2, pos2, curve=make_curve(), pnl_pct=20.0)
+        self.assertFalse(trade2['flat_move'])
+        self.assertIsNone(trade2['round_trip_cost_pct'])
