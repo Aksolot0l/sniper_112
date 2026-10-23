@@ -1,18 +1,18 @@
 run_id: run7-8h-20261023T062048Z
-snapshot_utc: 2026-10-23T10:01:06Z
+snapshot_utc: 2026-10-23T10:26:11Z
 mode: light
-run_dir_size: 68M
-opens: 461
-closes: 460
-[09:59:40] ✅ [portfolio_b2_birth] CLOSE DNGY…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-46.08 ₽ (-9.2%) | cash=1869.17 ₽
-[09:59:40] ✅ [portfolio_b3_t0] CLOSE DNGY…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-46.08 ₽ (-9.2%) | cash=1283.90 ₽
-[09:59:43] ✅ [portfolio_a] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1654.83 ₽
-[09:59:43] ✅ [portfolio_b1_narrow] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1950.74 ₽
-[09:59:43] ✅ [portfolio_b3_t0] CLOSE 6uuy…pump | No progress (5.0s; peak <+4.0%, PnL <+1.5%) | PnL=-3.18 ₽ (-0.6%) | cash=1780.72 ₽
-[09:59:49] 👁️ Новая монета: 5E7T45hhbWNjtNPaCwQ2SuxBUhLmH45f6remyQjypump (Pump.fun | Martín)
-[09:59:51] 👁️ Новая монета: 4fmREMywJ2Qoucp98GvVzmJE5jw9jvdnmAMcLGkkpump (Pump.fun | Martín)
-[09:59:51] 👁️ Новая монета: 3JxXPqHB9CqPbQKfFRaoGXCvhF6W38U51aYBg1N2pump (Pump.fun | Martín)
-[09:59:51] 👁️ Новая монета: 4XXABuA9ALVXakMVtSu6joAF3dYJx2r8a9RMRQsopump (Pump.fun | Martín)
-[09:59:51] 👁️ Новая монета: AJZgUYPKjSk544h5YZCS9jNne4THF377oh3PX7ncpump (Pump.fun | Martín)
-[10:00:05] 👁️ Новая монета: 5N98sGV2Gc7CLYdgz7iqXqEEvNtvwjbrHBhHf7tZpump (Pump.fun | Friendship)
-[10:00:05] 🧪 [portfolio_a] OPEN 5N98…pump | birth=33.00 now=34.50 delta=+1.50 SOL | cost≈500.00 ₽ | tokens(out)=1421952674946 | fee=95+30 bps | slots=1/3
+run_dir_size: 76M
+opens: 501
+closes: 501
+[10:24:50] 🛑 Dw9u…ZJLQ — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[10:24:55] 👁️ Новая монета: 8t94GdT2L76JY3m5cuPRPFwisBjrU5We4U2wDqcMpump (Pump.fun | ZKAO)
+[10:24:55] 🧪 [portfolio_b3_t0] OPEN 8t94…pump | birth=31.88 now=31.98 delta=+0.10 SOL | cost≈500.00 ₽ | tokens(out)=1654532035900 | fee=95+30 bps | slots=1/3
+[10:24:56] 👁️ Новая монета: HdCbc3nZqVEDYcd7oYJ2bRyd6QsAr6gA8N9SAF6ipump (Pump.fun | BENJAMIN)
+[10:25:03] ✅ [portfolio_b3_t0] CLOSE 8t94…pump | Shelf stagnation (4.8s; pnl=+9.0%) | PnL=+45.11 ₽ (+9.0%) | cash=1348.10 ₽
+[10:25:08] 👁️ Новая монета: 2cWGxmTMVK2Xa1d3H6EU5i26GXB9ZEPcVM88bvKGZ3S7 (Pump.fun | FIX6900)
+[10:25:08] 🛑 2cWG…Z3S7 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[10:25:08] 👁️ Новая монета: 7T7cp68qqZsp5zzHQprdJ92nw17jDuLvoiAQMrmZpump (Pump.fun | BENJAMIN)
+[10:25:21] 👁️ Новая монета: AxajjbK4P3R44zQaZAK4Kvrp6so2EmDHDZSc4LUbpump (Pump.fun | Martin)
+[10:25:27] 👁️ Новая монета: BJqeLE96me6d1fVQNEAFRLqXrLWhCEKsoP3AmtnPpump (Pump.fun | BENJAMIN)
+[10:25:27] 👁️ Новая монета: 4pGhLFnSeQWLE9u5BWdhhwoQ7qwv18ecdHiqNzEDpump (Pump.fun | BENJAMIN)
+[10:25:31] 👁️ Новая монета: RF7pa3GhzQZFaYVLERnjPazFDTECvu2FRNUUeV1yApQ (Pump.fun | HOTDOG)
