@@ -290,6 +290,15 @@ def _summary_markdown(
          int(telemetry.get('write_errors') or 0)),
         ('requests_per_sec ≤ 1.8', float(rpc.get('requests_per_sec') or 0.0) <= 1.8,
          _money(rpc.get('requests_per_sec'))),
+        # Run #7: a flat average hides a burst; the rule is per 10-min window.
+        # A run shorter than the window cannot prove anything either way, and
+        # the row says so instead of pretending to be green.
+        ('≤ 2.2 rps в любом 10-мин окне',
+         rpc.get('requests_per_sec_max_10min') is None
+         or float(rpc['requests_per_sec_max_10min']) <= 2.2,
+         _money(rpc.get('requests_per_sec_max_10min'))
+         if rpc.get('requests_per_sec_max_10min') is not None
+         else '— (окно 10 мин ещё не набрано)'),
         ('security_fail_skipped_deep > 0 (P0-2 работает)',
          int(funnel.get('security_fail_skipped_deep') or 0) > 0,
          int(funnel.get('security_fail_skipped_deep') or 0)),
@@ -403,6 +412,23 @@ def _summary_markdown(
         'какая доля сделок должна быть ракетами, чтобы арм вышел в ноль. Сравнивать '
         'с фактической долей в колонке слева.')
     add('')
+    sources = {
+        f"{_arm_name(name)}: {(summary.get(name) or {}).get('rocket_accounting', {}).get('peak_source')}"
+        f" (окно {(summary.get(name) or {}).get('rocket_accounting', {}).get('window_sec')} с, "
+        f"без наблюдений {(summary.get(name) or {}).get('rocket_accounting', {}).get('fallback_trades')})"
+        for name in arms
+    }
+    add('Пик считается по фиксированному окну наблюдений, а не по времени удержания '
+        'сделки (сделка живёт ~5 с, поэтому «пик внутри сделки» несравним между '
+        'армами). ' + '; '.join(sorted(sources)))
+    if any(
+        (summary.get(name) or {}).get('rocket_accounting', {}).get('peak_source') != 'observations'
+        for name in arms
+    ):
+        add('')
+        add('> ⚠️ части арм пик взят из сделки (`in_trade`): наблюдений в БД не хватило. '
+            'Долю ракет по таким армам читать как нижнюю границу.')
+    add('')
 
     # --- exit reasons -------------------------------------------------------
     add('### Что закрывало сделки (`exit_reason × арм`)')
@@ -436,6 +462,18 @@ def _summary_markdown(
                 f"худший {_money(gaps.get('worst'))} мс — это и есть причина пролёта, "
                 'а не задержка решения')
         add('')
+        fly = tick_quality.get('fly_through_by_exit') or {}
+        if fly:
+            add('| тип выхода | n | медиана пролёта, п.п. | p90, п.п. | худший, п.п. |')
+            add('|---|---:|---:|---:|---:|')
+            for kind, slot in fly.items():
+                add(f"| {kind} | {slot.get('n', 0)} | {_money(slot.get('median'))} | "
+                    f"{_money(slot.get('p90'))} | {_money(slot.get('worst'))} |")
+            add('')
+            add('Пролёт = `fill_pct − trigger_pct` на метке выхода, по типам выхода. '
+                'Положительный = правило сработало позже, чем указывало; это '
+                'характеристика шага опроса, а не «качество исполнения».')
+            add('')
         add('`trigger_pct == fill_pct` в прошлом прогоне был структурным нулём: '
             'сработавшая метка и была филлом. Здесь филл сравнивается с '
             'предыдущей меткой, поэтому пролёт виден числом.')
@@ -472,6 +510,9 @@ def _summary_markdown(
     add(f"- причины отказа: {funnel.get('security_fail_reasons')}")
     add(f"- чтения по этим монетам: только offset 0 и 15, "
         f"`skipped_security_deep` = {funnel.get('security_fail_skipped_deep', 0)}")
+    add('- offset 60 берётся у детерминированной **1/3 монет по хешу mint** '
+        '(0/5/15 — у всех); выборка не зависит ни от одного решения бота, '
+        f"пропущено по хешу: {funnel.get('window_sample_skipped', 0)}")
     add('')
 
     # --- funnel -------------------------------------------------------------
@@ -591,8 +632,10 @@ def _strategy_metadata() -> dict[str, Any]:
             'because the verdict was set after observe_candidate); ticks carry '
             'price_usd instead of a rouble price divided by sol_usd; '
             'security_fail_reasons use the LAST reason (the verdict, not the '
-            'passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms; '
-            'observation offsets 0/5/15/60 to fit the RPC budget'
+            'passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and '
+            'exit_kind; observation offsets 0/5/15/60, with the 60 s read taken '
+            'for a hash-selected third of the coins; entry_lag_ms replaces the '
+            '"floor violations" counter that measured the model, not a failure'
         ),
         'run7_not_doing': (
             'no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % '
@@ -849,7 +892,7 @@ async def main() -> None:
     await collector.start()
     set_collector(collector)
     collector.record_meta('run_id', run_id)
-    collector.record_meta('portfolio_scope', ['portfolio_a', 'portfolio_b'])
+    collector.record_meta('portfolio_scope', list(_arm_bands()))
     collector.record_meta('shadow_quotes_enabled', False)
     collector.record_meta('paper_only', True)
     collector.record_meta('rpc_host', rpc_host)
@@ -980,7 +1023,8 @@ async def main() -> None:
             _write_json(run_dir / 'manifest.json', manifest)
             log(
                 f'▶️ RUN_ID={run_id} started; planned duration={duration}s; '
-                'only portfolio_a + portfolio_b; no signed/submitted transactions.',
+                f'arms: {", ".join(_arm_bands())}; '
+                'no signed/submitted transactions.',
                 Color.GREEN,
             )
             # P0-5: artefacts every 60 s, so a stop-list trigger (or a killed

@@ -146,6 +146,40 @@ class RpcRetryTests(unittest.IsolatedAsyncioTestCase):
             metrics = price.rpc_metrics_snapshot()
         self.assertAlmostEqual(metrics['requests_per_sec'], 0.1, places=3)
 
+    async def test_ten_minute_window_sees_a_burst_the_average_hides(self) -> None:
+        """Run #7 acceptance: <= 1.8 rps on average AND <= 2.2 in any window.
+
+        A flat average is blind to a burst: 1 200 requests spread over an hour
+        is 0.33 rps, but the same 1 200 inside one minute is 20 rps.
+        """
+        start = price._rpc_metrics.started_wall
+        times = [start + 100.0 + 0.05 * index for index in range(1_200)]
+        times += [start + 2_000.0 + 10.0 * index for index in range(240)]
+        times.sort()
+        with patch.object(price.time, 'time', side_effect=times):
+            for _ in times:
+                price._rpc_metrics.record(1.0, 1)
+        with patch.object(price.time, 'time', return_value=times[-1]):
+            metrics = price.rpc_metrics_snapshot()
+        self.assertLessEqual(metrics['requests_per_sec'], 1.8)
+        # 1 200 requests inside ~60 s is ~20 rps in that window.
+        self.assertGreater(metrics['requests_per_sec_max_10min'], 2.2)
+        self.assertGreater(metrics['requests_per_sec_max_60sec'], 2.2)
+
+    async def test_steady_rate_passes_both_criteria(self) -> None:
+        start = price._rpc_metrics.started_wall
+        times = [start + 1.0 * index for index in range(1, 1_201)]
+        with patch.object(price.time, 'time', side_effect=times):
+            for _ in times:
+                price._rpc_metrics.record(1.0, 1)
+        with patch.object(price.time, 'time', return_value=times[-1]):
+            metrics = price.rpc_metrics_snapshot()
+        self.assertLessEqual(metrics['requests_per_sec'], 1.8)
+        # A window contains both endpoints, so 601 of 1 s requests in 600 s
+        # is 1.002-1.02 rps, not 1.0 exactly.
+        self.assertAlmostEqual(metrics['requests_per_sec_max_10min'], 1.0, places=1)
+        self.assertLessEqual(metrics['requests_per_sec_max_60sec'], 1.1)
+
 
 class SemaphoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrency_cap_is_bounded(self) -> None:

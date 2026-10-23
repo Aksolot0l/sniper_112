@@ -20,8 +20,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from telemetry import CandidateCollector, get_collector, utc_now
-
 import aiohttp
 
 from config import Settings
@@ -52,7 +50,12 @@ from price import (
     rpc_get_multiple_accounts,
     rpc_metrics_snapshot,
 )
-from telemetry import CandidateCollector, get_collector, utc_now
+from telemetry import (
+    CandidateCollector,
+    get_collector,
+    observation_peaks,
+    utc_now,
+)
 
 
 LAMPORTS_PER_SOL = 1_000_000_000
@@ -831,25 +834,49 @@ def stability_split(
             'second_half': second, 'sign_stable': stable}
 
 
+ROCKET_PEAK_PCT = 50.0
+ROCKET_WINDOW_SEC = 60.0
+
+
 def rocket_accounting(
-    trades: list[dict[str, Any]], *, rocket_peak_pct: float = 50.0,
+    trades: list[dict[str, Any]],
+    *,
+    peaks: Optional[dict[str, float]] = None,
+    rocket_peak_pct: float = ROCKET_PEAK_PCT,
+    window_sec: float = ROCKET_WINDOW_SEC,
 ) -> dict[str, Any]:
     """How much of the result rides on coins that peaked >= +50 % (run #6).
+
+    The peak MUST come from a fixed observation window (60 s), not from the
+    trade: a trade lives ~5 s, so its in-trade peak measures a different thing
+    per arm and is not comparable. Run #6 on the 60 s window: 13 of 167 coins
+    were rockets (7.8 %) with p* = 6.89 %, while the in-trade peak would have
+    counted 3 (1.8 %) and reported a p* of 1.34 % — five times too optimistic.
+
+    ``peaks`` maps mint -> peak % inside the window (telemetry observations).
+    A trade whose mint has no observation falls back to its own in-trade peak
+    and is counted in ``fallback_trades`` so the reader can see the mix.
 
     `break_even_rocket_share` is the fraction of trades that must be rockets
     for the strategy to break even: p* = -mean(others) / (mean(rockets) -
     mean(others)). Run #6: p* = 6.9 % against an actual 7.8 %.
     """
-    rockets = [
-        float(t.get('pnl_rub') or 0.0) for t in trades
-        if isinstance(t.get('peak_pct'), (int, float))
-        and float(t['peak_pct']) >= rocket_peak_pct
-    ]
-    others = [
-        float(t.get('pnl_rub') or 0.0) for t in trades
-        if not (isinstance(t.get('peak_pct'), (int, float))
-                and float(t['peak_pct']) >= rocket_peak_pct)
-    ]
+    resolved: list[tuple[float, Optional[float]]] = []
+    fallback = 0
+    for trade in trades:
+        mint = str(trade.get('mint') or '')
+        peak = (peaks or {}).get(mint)
+        if peak is None:
+            raw = trade.get('peak_pct')
+            peak = float(raw) if isinstance(raw, (int, float)) else None
+            fallback += 1
+        resolved.append((float(trade.get('pnl_rub') or 0.0), peak))
+
+    def is_rocket(peak: Optional[float]) -> bool:
+        return peak is not None and peak >= rocket_peak_pct
+
+    rockets = [pnl for pnl, peak in resolved if is_rocket(peak)]
+    others = [pnl for pnl, peak in resolved if not is_rocket(peak)]
     n = len(rockets) + len(others)
     mean_rockets = sum(rockets) / len(rockets) if rockets else None
     mean_others = sum(others) / len(others) if others else None
@@ -861,6 +888,9 @@ def rocket_accounting(
         break_even = round(-mean_others / (mean_rockets - mean_others), 4)
     return {
         'rocket_pct_threshold': rocket_peak_pct,
+        'window_sec': window_sec,
+        'peak_source': 'observations' if peaks else 'in_trade',
+        'fallback_trades': fallback,
         'n': n,
         'rockets': len(rockets),
         'rocket_share': round(len(rockets) / n, 4) if n else None,
@@ -918,7 +948,10 @@ class ABPaperSimulator:
         # --- run #3 addendum: early-stop bookkeeping (no new RPC) ---
         self._entry_state_total = 0
         # Run #4: entry-latency accounting (acceptance #4).
-        self.entry_latency_floor_violations = 0
+        # Run #7: no 'floor violations' counter. `entry_lag_ms` already says how
+        # old the curve read was; in run #6 the counter fired on 143/167 trades
+        # while the median read age was 101 ms, i.e. it measured the model, not
+        # a failure.
         self.last_entry_latency_wait_sec = 0.0
         self.entry_lag_ms_by_profile: dict[str, list[float]] = {}
         self._book_last_entry_epoch: dict[str, float] = {
@@ -1531,8 +1564,6 @@ class ABPaperSimulator:
             book.positions[coin.mint] = pos
             self._book_last_entry_epoch[book.profile.name] = decision_epoch
             self.entry_lag_ms_by_profile.setdefault(book.profile.name, []).append(entry_lag_ms)
-            if not latency_floor_met:
-                self.entry_latency_floor_violations += 1
             self._entry_state_at_last_entry[book.profile.name] = self._entry_state_total
             # t=0 of this position's own tick stream.
             self._record_tick(book, pos, 0.0, decision_epoch, entry_price_usd, event='entry')
@@ -2026,6 +2057,7 @@ class ABPaperSimulator:
         at_epoch: float,
         price_usd: Optional[float],
         event: str = 'mark',
+        exit_kind: Optional[str] = None,
     ) -> None:
         """One row of this position's own tick stream (exports/ticks.csv).
 
@@ -2078,6 +2110,9 @@ class ABPaperSimulator:
             ),
             'step_gap_pp': step_gap_pp,
             'mark_gap_ms': mark_gap_ms,
+            # Run #7: which rule closed it, so fly-through can be split by
+            # exit type instead of averaged over everything.
+            'exit_kind': exit_kind,
         })
         pos.last_tick_pnl_pct = float(pnl_pct)
         pos.last_tick_at_epoch = float(at_epoch)
@@ -2092,6 +2127,7 @@ class ABPaperSimulator:
                     'trigger_pct', 'fill_pct', 'exit_latency_ms',
                     'peak_pct', 'peak_t_sec',
                     'mark_prev_pct', 'step_gap_pp', 'mark_gap_ms',
+                    'exit_kind',
                 ),
             )
             writer.writeheader()
@@ -2483,6 +2519,7 @@ class ABPaperSimulator:
         self._record_tick(
             book, pos, realized_pct_now, time.time(),
             exit_price_usd, event='exit',
+            exit_kind=self.exit_reason_kind(str(reason).split(' + ')[-1]),
         )
         pos.exit_reasons.append(reason)
         pos.exit_pending_reason = None
@@ -2822,20 +2859,27 @@ class ABPaperSimulator:
         columns we can answer the real question: the SL fires at -10 %, but at
         which price did the trade actually leave?
         """
-        def stats(values: list[float]) -> dict[str, Any]:
+        def stats(values: list[float], *, largest_is_worst: bool = False) -> dict[str, Any]:
+            # `worst` is direction-aware: for a fill % the minimum is the worst
+            # fill, for a gap in milliseconds the maximum is. Printing the
+            # minimum of the mark gaps ("median 5553 ms, worst 714 ms") was a
+            # straight mislabel.
             if not values:
-                return {'n': 0, 'median': None, 'mean': None, 'worst': None}
+                return {'n': 0, 'median': None, 'mean': None, 'p90': None,
+                        'worst': None}
             ordered = sorted(values)
             middle = len(ordered) // 2
             median = (
                 ordered[middle] if len(ordered) % 2
                 else (ordered[middle - 1] + ordered[middle]) / 2.0
             )
+            p90_index = max(0, min(len(ordered) - 1, math.ceil(0.9 * len(ordered)) - 1))
             return {
                 'n': len(values),
                 'median': round(median, 4),
                 'mean': round(sum(values) / len(values), 4),
-                'worst': round(min(values), 4),
+                'p90': round(ordered[p90_index], 4),
+                'worst': round(ordered[-1] if largest_is_worst else ordered[0], 4),
             }
 
         exits = [t for t in self.ticks if t.get('event') == 'exit']
@@ -2849,11 +2893,27 @@ class ABPaperSimulator:
             float(t['mark_gap_ms']) for t in self.ticks
             if isinstance(t.get('mark_gap_ms'), (int, float))
         ]
+        # Fly-through per exit type: how far past its own trigger the exit mark
+        # already was, in percentage points of PnL. Positive = the rule fired
+        # late (the fill is worse than the trigger); the median is the number
+        # the ladder can actually be blamed for.
+        by_kind: dict[str, list[float]] = {}
+        for tick in exits:
+            trigger = tick.get('trigger_pct')
+            fill = tick.get('fill_pct')
+            if not isinstance(trigger, (int, float)) or not isinstance(fill, (int, float)):
+                continue
+            kind = str(tick.get('exit_kind') or 'unknown')
+            by_kind.setdefault(kind, []).append(float(fill) - float(trigger))
         return {
             'stop_loss_fills': stats(stop_exits),
             'stop_loss_worse_than_minus15': sum(1 for v in stop_exits if v < -15.0),
             'stop_loss_trigger_pct': -10.0,
-            'mark_gap_ms': stats(gaps),
+            'mark_gap_ms': stats(gaps, largest_is_worst=True),
+            'fly_through_by_exit': {
+                kind: {'n': len(values), **stats(values)}
+                for kind, values in sorted(by_kind.items())
+            },
             'rows': len(self.ticks),
         }
 
@@ -2915,15 +2975,22 @@ class ABPaperSimulator:
             'entry_lag_ms_max': round(max(lags), 2) if lags else None,
             'entry_lag_ms_over_1000': sum(1 for lag in lags if lag > 1_000.0),
             'entry_latency_ms_model': float(book.profile.entry_latency_ms),
-            'entry_latency_floor_violations': sum(
-                1 for t in trades if t.get('entry_latency_floor_met') is False
-            ) + sum(
-                1 for p in open_positions if p.entry_latency_floor_met is False
-            ),
+            # Run #7: `entry_lag_ms_*` above is the honest version of the old
+            # `entry_latency_floor_violations` (143/167 in run #6, which only
+            # said the on-chain read was older than the modelled 150 ms).
             'entry_at_detection': book.profile.entry_at_detection,
         }
 
+    def _rocket_peaks(self) -> dict[str, float]:
+        """Peak % per mint on the 60 s observation window (empty if absent)."""
+        collector = get_collector()
+        db_path = getattr(collector, 'db_path', None) or os.getenv('TELEMETRY_DB_PATH')
+        if not db_path:
+            return {}
+        return observation_peaks(db_path, window_sec=ROCKET_WINDOW_SEC)
+
     def summary(self) -> dict[str, Any]:
+        peaks = self._rocket_peaks()
         portfolios: dict[str, Any] = {}
         for name, book in self.books.items():
             open_positions = [p.to_dict() for p in book.positions.values() if p.status == 'open']
@@ -3008,7 +3075,9 @@ class ABPaperSimulator:
                         (self.ended_at_epoch or time.time()) - self.started_at_epoch,
                     )
                 ),
-                'rocket_accounting': rocket_accounting(book.closed_trades),
+                'rocket_accounting': rocket_accounting(
+                    book.closed_trades, peaks=peaks,
+                ),
             }
         return {
             'run_id': self.run_id,

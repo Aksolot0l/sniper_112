@@ -1173,7 +1173,13 @@ class RunFourEntryQualityTests(unittest.IsolatedAsyncioTestCase):
             quality = simulator._entry_quality(simulator.books['portfolio_a'])
             self.assertEqual(quality['entry_lag_ms_over_1000'], 0)
             self.assertEqual(quality['entry_latency_ms_model'], 150.0)
-            self.assertEqual(simulator.entry_latency_floor_violations, 0)
+            # Run #7: the old `entry_latency_floor_violations` counter is gone —
+            # it read like an error while only saying the read was older than
+            # the modelled 150 ms (143/167 in run #6, median lag 101 ms). The
+            # honest number is the read age itself.
+            self.assertFalse(hasattr(simulator, 'entry_latency_floor_violations'))
+            self.assertNotIn('entry_latency_floor_violations', quality)
+            self.assertEqual(quality['entry_lag_ms_median'], 550.0)
 
     async def test_entry_latency_floor_delays_the_decision_without_an_rpc(self) -> None:
         simulator = make_simulator(tempfile.mkdtemp())
@@ -1358,6 +1364,31 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(flipped['sign_stable'])
         self.assertIsNone(stability_split(a_trades, arm_trades, None, 7_200.0)['sign_stable'])
 
+    def test_rocket_accounting_uses_the_observation_window_not_the_trade(self) -> None:
+        trades = [
+            # In-trade peak was tiny, but the coin ran +80 % inside 60 s.
+            {'mint': 'late-runner', 'pnl_rub': 12.0, 'peak_pct': 4.0},
+            # In-trade peak looked like a rocket, but inside 60 s it only made 3 %.
+            {'mint': 'in-trade-spike', 'pnl_rub': -30.0, 'peak_pct': 70.0},
+            # No observation at all -> falls back to the trade, and says so.
+            {'mint': 'unobserved', 'pnl_rub': -5.0, 'peak_pct': 60.0},
+        ]
+        peaks = {'late-runner': 80.0, 'in-trade-spike': 3.0}
+        stats = rocket_accounting(trades, peaks=peaks)
+        self.assertEqual(stats['peak_source'], 'observations')
+        self.assertEqual(stats['window_sec'], 60.0)
+        self.assertEqual(stats['fallback_trades'], 1)
+        self.assertEqual(stats['rockets'], 2)  # late-runner + unobserved
+        self.assertAlmostEqual(stats['rockets_sum_rub'], 7.0, places=6)
+        self.assertAlmostEqual(stats['others_sum_rub'], -30.0, places=6)
+        self.assertAlmostEqual(stats['rocket_share'], 2 / 3, places=4)
+        # Without peaks the same trades are counted on their in-trade peak —
+        # the number that made run #6 look five times better than it was.
+        fallback = rocket_accounting(trades)
+        self.assertEqual(fallback['peak_source'], 'in_trade')
+        self.assertEqual(fallback['rockets'], 2)
+        self.assertEqual(fallback['fallback_trades'], 3)
+
     def test_rocket_accounting_reports_the_break_even_share(self) -> None:
         # Run #6 shape: a few rockets pay for many small losses.
         trades = (
@@ -1411,6 +1442,29 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
         for column in ('price_usd', 'mark_prev_pct', 'step_gap_pp', 'mark_gap_ms'):
             self.assertIn(column, header)
 
+    def test_mark_gap_worst_is_the_largest_gap_and_fly_through_splits_by_exit(self) -> None:
+        simulator = make_simulator(tempfile.mkdtemp())
+        book = simulator.books['portfolio_a']
+        pos = make_position(opened_ago=1.0)
+        # Marks 700 ms apart, then an 8 300 ms hole before the exit: the WORST
+        # gap is the 8 300 one. Reporting min() there printed the best gap.
+        simulator._record_tick(book, pos, -1.0, pos.opened_at_epoch + 1.0, 0.01)
+        simulator._record_tick(book, pos, -2.0, pos.opened_at_epoch + 1.7, 0.01)
+        simulator._record_tick(book, pos, -3.0, pos.opened_at_epoch + 2.4, 0.01)
+        pos.exit_trigger_pnl_pct = -10.0
+        simulator._record_tick(
+            book, pos, -12.5, pos.opened_at_epoch + 10.7, 0.01,
+            event='exit', exit_kind='stop_loss',
+        )
+        quality = simulator.tick_quality()
+        self.assertAlmostEqual(quality['mark_gap_ms']['median'], 700.0, places=2)
+        self.assertAlmostEqual(quality['mark_gap_ms']['worst'], 8300.0, places=2)
+        # Fly-through is split by exit type: fill - trigger on the exit mark.
+        self.assertAlmostEqual(
+            quality['fly_through_by_exit']['stop_loss']['median'], -2.5, places=4,
+        )
+        self.assertEqual(quality['fly_through_by_exit']['stop_loss']['n'], 1)
+
     def test_tick_quality_measures_the_stop_loss_fly_through(self) -> None:
         simulator = make_simulator(tempfile.mkdtemp())
         book = simulator.books['portfolio_a']
@@ -1454,6 +1508,96 @@ class RunSevenReportTests(unittest.IsolatedAsyncioTestCase):
             else:
                 self.assertEqual(entry['paired_vs_a']['n_pairs'], 0)
             self.assertEqual(entry['exit_rule'], summary['profiles'][name]['exit_rule'])
+
+    async def test_enrich_on_and_off_produce_identical_paper_fills(self) -> None:
+        """§5 accept: the flag may not change a single number of a trade."""
+        from enrich import EnrichCollector
+
+        class _Response:
+            status = 200
+
+            async def json(self):
+                return [{'id': 'mint-enrich', 'holderCount': 999,
+                         'topHoldersPercentage': 41.0, 'organicScore': 12.0}]
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _Session:
+            def get(self, *args, **kwargs):
+                return _Response()
+
+        async def one_run(enrich_enabled: bool) -> dict:
+            with tempfile.TemporaryDirectory() as tmp:
+                simulator = make_simulator(Path(tmp))
+                if enrich_enabled:
+                    simulator.enrich = EnrichCollector(_Session(), enabled=True)
+                    # Same moment as the live path: enqueued right after the
+                    # security filters, long before the exit is priced.
+                    simulator.enrich.enqueue('mint-enrich')
+                book = simulator.books['portfolio_a']
+                coin = NewCoin(
+                    mint='mint-enrich', source='Pump.fun', signature='sig-enrich',
+                    curve='curve-test', packet={'v_sol': 30.8},
+                )
+                snapshot = EntrySnapshot(
+                    make_curve(), make_fee_context_for_test(), 12, time.time(),
+                )
+                epoch = time.time()
+                with patch('portfolio_ab.get_collector', return_value=None):
+                    await simulator._consider_entry(
+                        book, coin, snapshot, 30.8, 31.2, 200.0, {}, epoch,
+                    )
+                    pos = book.positions['mint-enrich']
+                    curve = make_curve()
+                    fee_context = make_fee_context_for_test()
+                    local = quote_sell_exact_tokens(
+                        curve, fee_context, pos.remaining_tokens_raw,
+                        slippage_bps=100, context_slot=12,
+                    )
+                    swap = SwapQuote(
+                        input_mint=pos.mint, output_mint=WSOL_MINT,
+                        in_amount_raw=pos.remaining_tokens_raw,
+                        out_amount_raw=local.out_amount_raw,
+                        min_out_raw=local.min_out_raw,
+                        price_impact_pct=local.price_impact_pct,
+                        route_labels=local.route_labels(), context_slot=12,
+                    )
+                    executable = ExecutableQuote(
+                        swap, local.protocol_fee_raw, local.creator_fee_raw,
+                        local.protocol_fee_bps, local.creator_fee_bps,
+                        local.market_cap_lamports, local.tier_index,
+                        'Pump.fun bonding curve local exact quote',
+                    )
+                    await simulator._apply_sell_fill(
+                        book, pos, pos.remaining_tokens_raw, 'Timeout 35s',
+                        executable, curve, fee_context, 12, 200.0, -4.0, 480.0,
+                    )
+                    if enrich_enabled:
+                        await simulator.enrich.flush()
+                trade = book.closed_trades[-1]
+                return {
+                    'pnl_rub': round(float(trade['pnl_rub']), 9),
+                    'pnl_pct': round(float(trade['pnl_pct']), 9),
+                    'reason': trade['reason'],
+                    'entry_price_usd': trade['entry_price_usd'],
+                    'average_exit_price_usd': trade['average_exit_price_usd'],
+                    'conservative_100bps_pnl_rub': trade['conservative_100bps_pnl_rub'],
+                    'enrich_rows': len(simulator.enrich.rows),
+                }
+
+        off = await one_run(False)
+        on = await one_run(True)
+        self.assertEqual(off['enrich_rows'], 0)
+        self.assertEqual(on['enrich_rows'], 1)
+        # Everything except the enrich counter is bit-for-bit the same.
+        self.assertEqual(
+            {k: v for k, v in on.items() if k != 'enrich_rows'},
+            {k: v for k, v in off.items() if k != 'enrich_rows'},
+        )
 
     async def test_enrich_is_collected_once_and_never_blocks_a_decision(self) -> None:
         from enrich import EnrichCollector

@@ -125,12 +125,18 @@ class ReadOnlyRpcMetrics:
         self.latencies_ms: deque[float] = deque(maxlen=20_000)
         # Wall-clock window for requests_per_sec (P0-3 acceptance: <= 1.8).
         self.started_wall = time.time()
+        # Run #7: the acceptance rule is "<= 1.8 rps on average AND <= 2.2 in
+        # ANY 10-minute window". The average alone cannot see a burst, so the
+        # timestamps are kept (an 8 h run is ~47 k floats) and the rolling
+        # maximum is computed at snapshot time.
+        self.request_times: deque[float] = deque(maxlen=200_000)
 
     def record(
         self, latency_ms: float, account_count: int, null_count: int = 0,
         error_type: Optional[str] = None,
     ) -> None:
         self.requests += 1
+        self.request_times.append(time.time())
         self.accounts_requested += max(0, int(account_count))
         self.null_accounts += max(0, int(null_count))
         self.latencies_ms.append(max(0.0, float(latency_ms)))
@@ -143,6 +149,29 @@ class ReadOnlyRpcMetrics:
             self.errors[str(error_type)] += 1
             if str(error_type) == 'http_429':
                 self.http_429_count += 1
+
+    def _max_rate_in_window(self, window_sec: float) -> Optional[float]:
+        """Highest requests/second over any window_sec sliding window."""
+        times = list(self.request_times)
+        if not times:
+            return 0.0
+        # A window shorter than its own length cannot be measured: dividing a
+        # handful of early requests by a fraction of a second invents bursts.
+        if time.time() - self.started_wall < window_sec:
+            return None
+        best = 0.0
+        left = 0
+        for right, now in enumerate(times):
+            while times[left] < now - window_sec:
+                left += 1
+            if left == 0:
+                # The window still touches the start of the run: divide by the
+                # elapsed time, not by a window that has not filled yet.
+                span = max(1e-9, now - self.started_wall)
+            else:
+                span = window_sec
+            best = max(best, (right - left + 1) / span)
+        return round(best, 3)
 
     def snapshot(self) -> dict[str, Any]:
         values = sorted(self.latencies_ms)
@@ -166,6 +195,9 @@ class ReadOnlyRpcMetrics:
             'requests_per_sec': round(
                 self.requests / max(1e-9, time.time() - self.started_wall), 3,
             ) if self.requests else 0.0,
+            # Run #7 acceptance: no 10-minute window may exceed 2.2 rps.
+            'requests_per_sec_max_10min': self._max_rate_in_window(600.0),
+            'requests_per_sec_max_60sec': self._max_rate_in_window(60.0),
             'recovered_failures': self.recovered_requests,
             'accounts_requested': self.accounts_requested,
             'null_accounts': self.null_accounts,

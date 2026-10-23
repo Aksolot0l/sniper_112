@@ -318,7 +318,7 @@ class CandidateCollector:
         db_path: str,
         export_dir: str,
         shadow_notional_rub: float = 250.0,
-        observation_offsets_sec: tuple[int, ...] = (0, 5, 10, 15, 60, 120),
+        observation_offsets_sec: tuple[int, ...] = (0, 5, 15, 60),
         queue_limit: int = 20_000,
         creator_watch: Any = None,
         enable_shadow_quotes: bool = True,
@@ -348,6 +348,13 @@ class CandidateCollector:
         # Deep offsets kept for coins that failed the security filters.
         self.security_fail_deep_offsets_sec = (0, 15)
         self.security_fail_deep_skipped = 0
+        # Run #7 (§8.1): the 60 s read is the expensive one, so it is taken for
+        # a deterministic third of the coins — chosen by the mint hash, never by
+        # a bot decision, so the sample cannot be selected by the thing we
+        # measure. 0/5/15 stay for every coin that passed the filters.
+        self.window_sample_offset_sec = 60
+        self.window_sample_every_n = 3
+        self.window_sample_skipped = 0
 
     async def start(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -598,6 +605,12 @@ class CandidateCollector:
         """
         self._security_verdicts[mint] = bool(passed)
 
+    def window_sampled(self, mint: str) -> bool:
+        """Is this mint in the deterministic third that gets the 60 s read?"""
+        digest = hashlib.sha256(str(mint).encode('utf-8')).digest()
+        bucket = int.from_bytes(digest[:4], 'big') % max(1, self.window_sample_every_n)
+        return bucket == 0
+
     def _deep_offsets_for(self, mint: str) -> Optional[tuple[int, ...]]:
         """Offsets worth an RPC for this mint; None = no trim (verdict unknown)."""
         verdict = self._security_verdicts.get(mint)
@@ -791,6 +804,21 @@ class CandidateCollector:
                     )
                     completed.add(offset)
                     continue
+                if (
+                    offset == self.window_sample_offset_sec
+                    and not self.window_sampled(coin.mint)
+                ):
+                    # §8.1: the 60 s read is taken for one coin in three, by
+                    # hash. The skipped row keeps the count honest.
+                    self.window_sample_skipped += 1
+                    self.record_observation(
+                        coin.mint, coin.source, offset,
+                        _utc_from_epoch(target_epoch + offset),
+                        'skipped_window_sample',
+                        error_type='hash_sample_not_selected',
+                    )
+                    completed.add(offset)
+                    continue
                 # Absolute target in the monotonic clock. The old form added
                 # the remaining wall-clock delay to the moment the collector
                 # started, so offsets drifted by the collector's own latency
@@ -948,7 +976,7 @@ class CandidateCollector:
             '- `creator_probes`: read-only getSignaturesForAddress(limit=25) and creator ATA balance results; RPC failures are non-blocking.\n'
             '- `watchlist_events`: independent Watchlist candidate polls, quote-confirmed entries/exits, and portfolio summaries.\n'
             '- `quotes`: buy/sell observations, including shadow quotes; `quote_only=1` means no transaction/fill.\n'
-            '- `observations`: price/source at a scheduled offset from first discovery; Pump.fun samples are fresh curve RPC reads (no indexer fallback or interpolation), and late/cancelled/missing rows are explicit. `excluded_from_stats=1` marks rows that must stay out of every statistic (session-end cancellation); `status=skipped_security_deep` means the coin failed the security filters, so offsets beyond 0 and 15 were deliberately not read.\n'
+            '- `observations`: price/source at a scheduled offset from first discovery; Pump.fun samples are fresh curve RPC reads (no indexer fallback or interpolation), and late/cancelled/missing rows are explicit. `excluded_from_stats=1` marks rows that must stay out of every statistic (session-end cancellation); `status=skipped_security_deep` means the coin failed the security filters, so offsets beyond 0 and 15 were deliberately not read; `status=skipped_window_sample` means the coin is outside the deterministic one-in-three hash sample for the 60 s read.\n'
             '- `paper_fills`: simulated sale legs only; `out_amount_raw`/`snapshot_pnl_rub` are the primary snapshot fill, while `min_out_raw` and `conservative_100bps_*` preserve the separate 100 bps shadow; `portfolio` separates A and B; no on-chain executions.\n'
             '- `collector_meta`: queue drops and writer errors. Timestamps are UTC; raw token amounts are strings.\n'
             '- Future observations are labels/targets only; never use them as features available at discovery time.\n',
@@ -978,6 +1006,9 @@ class CandidateCollector:
             'quote_rows_are_fills': False, 'shadow_quotes_enabled': self.enable_shadow_quotes,
             'shadow_notional_rub': self.shadow_notional_rub,
             'observation_offsets_sec': self.observation_offsets_sec,
+            'window_sample_offset_sec': self.window_sample_offset_sec,
+            'window_sample_every_n': self.window_sample_every_n,
+            'window_sample_skipped': self.window_sample_skipped,
             'rpc_http_host': http_host, 'rpc_wss_host': wss_host,
             'counts': counts, 'timestamps': 'UTC ISO-8601',
             'bias_controls': ['append-only events', 'future outcomes separated from discovery-time features',
@@ -1114,7 +1145,58 @@ def _security_fail_report(db: Any, rows_of: Any, scalar: Any) -> dict[str, Any]:
         'security_fail_skipped_deep': scalar(
             "SELECT COUNT(*) FROM observations WHERE status='skipped_security_deep'"
         ),
+        # §8.1: rows not read because the mint is outside the hash-selected
+        # third for the 60 s offset.
+        'window_sample_skipped': scalar(
+            "SELECT COUNT(*) FROM observations WHERE status='skipped_window_sample'"
+        ),
     }
+
+
+def observation_peaks(
+    db_path: str | os.PathLike, *, window_sec: float = 60.0,
+) -> dict[str, float]:
+    """Per-mint peak % inside a fixed observation window, read-only.
+
+    The rocket share must NOT be measured on the trade: a trade lives ~5 s, so
+    its own peak says nothing about coins that became rockets after the ladder
+    left. Run #6 on the 60 s window had 13 rockets of 167 (7.8 %); the same
+    set measured on in-trade peaks gave 3 (1.8 %).
+
+    Peak = max(price_usd at 0..window) / price_usd at offset 0 - 1. Mints with
+    no usable offset-0 price return nothing, so the caller falls back to the
+    trade and counts it. Never raises: a missing or locked DB means "no peaks"
+    and the report says so instead of failing at the end of a long run.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return {}
+    peaks: dict[str, float] = {}
+    try:
+        with sqlite3.connect(f'file:{path.resolve()}?mode=ro', uri=True) as db:
+            rows = db.execute(
+                'SELECT mint, target_offset_sec, price_usd FROM observations '
+                'WHERE target_offset_sec <= ? AND price_usd IS NOT NULL '
+                'AND price_usd > 0 AND COALESCE(excluded_from_stats, 0) = 0 '
+                'ORDER BY mint, target_offset_sec',
+                (float(window_sec),),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    base: dict[str, float] = {}
+    top: dict[str, float] = {}
+    for mint, offset, price in rows:
+        mint = str(mint)
+        price = float(price)
+        if float(offset) <= 0.0:
+            base.setdefault(mint, price)
+            continue
+        top[mint] = max(top.get(mint, 0.0), price)
+    for mint, price in top.items():
+        base_price = base.get(mint)
+        if base_price:
+            peaks[mint] = round(100.0 * (price / base_price - 1.0), 4)
+    return peaks
 
 
 def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:

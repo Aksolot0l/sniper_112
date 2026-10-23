@@ -18,6 +18,7 @@ from telemetry import (
     _observation_target_monotonic,
     _security_fail_report,
     _utc_from_epoch as telemetry_utc_from_epoch,
+    observation_peaks,
 )
 
 
@@ -505,6 +506,142 @@ class SecurityFailObservationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows.get(120), 'skipped_security_deep')
         self.assertEqual(collector.security_fail_deep_skipped, 4)
         self.assertEqual(collector.stats()['write_errors'], 0)
+
+    async def test_verdict_resolved_between_offsets_trims_the_rest(self) -> None:
+        """The run #6 race, reproduced: the verdict lands after offset 0.
+
+        Run #6 resolved `_deep_offsets_for` once BEFORE the offset loop, so the
+        loop saw `None` forever and read all six offsets (`skipped_deep = 0`
+        over 1 634 rejects). Here the security filter only fails while the
+        collector is already observing, and the remaining offsets must be
+        trimmed — the test fails on the old single-read code.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = self._collector(root)
+            await collector.start()
+            coin = NewCoin(
+                mint='MintLateVerdict', source='Pump.fun', signature='sig-late',
+                curve='curve-late', packet={'v_sol': 32.0},
+            )
+            settings = SimpleNamespace(http_rpc_url='https://rpc.invalid')
+            calls = {'n': 0}
+
+            async def price_side_effect(*args, **kwargs):
+                calls['n'] += 1
+                if calls['n'] == 1:
+                    # The verdict arrives while offset 0 is being read.
+                    collector.set_security_verdict(coin.mint, False)
+                return 1e-7
+
+            real_lookup = collector._deep_offsets_for
+            lookups = {'n': 0}
+
+            def counting_lookup(mint: str):
+                lookups['n'] += 1
+                return real_lookup(mint)
+
+            collector._deep_offsets_for = counting_lookup  # type: ignore[assignment]
+            with patch('telemetry.pump_curve_price_usd',
+                       AsyncMock(side_effect=price_side_effect)):
+                await collector._collect_followups(
+                    coin, object(), settings, time.monotonic(), time.time(), set(),
+                )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                rows = dict(db.execute(
+                    'SELECT target_offset_sec, status FROM observations '
+                    'WHERE mint=?', (coin.mint,),
+                ).fetchall())
+        self.assertEqual(rows.get(0), 'ok')
+        for offset in (5, 10, 60, 120):
+            self.assertEqual(rows.get(offset), 'skipped_security_deep', offset)
+        self.assertEqual(collector.security_fail_deep_skipped, 4)
+        # One lookup per offset, not one for the whole schedule.
+        self.assertEqual(lookups['n'], len(collector.observation_offsets_sec))
+
+    async def test_offset_60_is_read_for_a_hash_selected_third_only(self) -> None:
+        """§8.1: the 60 s read must not depend on anything but the mint hash."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            collector = self._collector(root, offsets=(0, 5, 15, 60))
+            await collector.start()
+            mints = [f'Mint{i:04d}' for i in range(300)]
+            sampled = [mint for mint in mints if collector.window_sampled(mint)]
+            # Deterministic: the same mint always lands in the same bucket.
+            self.assertEqual(
+                sampled, [mint for mint in mints if collector.window_sampled(mint)],
+            )
+            share = len(sampled) / len(mints)
+            self.assertGreater(share, 0.25)
+            self.assertLess(share, 0.42)
+            # A coin outside the sample gets a skipped row for 60 and no RPC.
+            chosen = next(mint for mint in mints if collector.window_sampled(mint))
+            skipped = next(mint for mint in mints if not collector.window_sampled(mint))
+            settings = SimpleNamespace(http_rpc_url='https://rpc.invalid')
+            calls = {'n': 0}
+
+            async def price(*args, **kwargs):
+                calls['n'] += 1
+                return 1e-7
+
+            for mint in (chosen, skipped):
+                coin = NewCoin(
+                    mint=mint, source='Pump.fun', signature=f'sig-{mint}',
+                    curve='curve', packet={'v_sol': 32.0},
+                )
+                with patch('telemetry.pump_curve_price_usd', AsyncMock(side_effect=price)):
+                    # The run is already past every offset: no sleeping in tests.
+                    await collector._collect_followups(
+                        coin, object(), settings, time.monotonic() - 200.0,
+                        time.time() - 200.0, set(),
+                    )
+            await collector.close()
+            with sqlite3.connect(root / 'telemetry.sqlite') as db:
+                rows = dict(db.execute(
+                    'SELECT mint || ":" || target_offset_sec, status FROM observations'
+                ).fetchall())
+        self.assertEqual(rows[f'{chosen}:60'], 'ok')
+        self.assertEqual(rows[f'{skipped}:60'], 'skipped_window_sample')
+        # Four reads for the sampled coin, three for the other one.
+        self.assertEqual(calls['n'], 7)
+        self.assertEqual(collector.window_sample_skipped, 1)
+
+    def test_observation_peaks_measure_against_offset_zero_in_the_window(self) -> None:
+        """Rocket peaks come from observations, inside a fixed 60 s window."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            db_path = root / 'telemetry.sqlite'
+            with sqlite3.connect(db_path) as db:
+                db.execute(
+                    'CREATE TABLE observations (id INTEGER PRIMARY KEY, '
+                    'mint TEXT, target_offset_sec INTEGER, price_usd REAL, '
+                    'excluded_from_stats INTEGER DEFAULT 0)'
+                )
+                rows = [
+                    # Offset 0 is the reference for the peak.
+                    ('Run', 0, 1.0, 0), ('Run', 15, 1.2, 0), ('Run', 60, 1.8, 0),
+                    # After the window: must not count (would be +300 %).
+                    ('Run', 120, 4.0, 0),
+                    # Flat coin.
+                    ('Flat', 0, 2.0, 0), ('Flat', 60, 2.1, 0),
+                    # Excluded observations are ignored, not counted as zero.
+                    ('OnlyExcluded', 0, 1.0, 1), ('OnlyExcluded', 60, 9.0, 1),
+                    # No offset 0 -> no reference -> no peak.
+                    ('NoBase', 60, 5.0, 0),
+                ]
+                db.executemany(
+                    'INSERT INTO observations (mint, target_offset_sec, price_usd, '
+                    'excluded_from_stats) VALUES (?,?,?,?)', rows,
+                )
+                db.commit()
+            peaks = observation_peaks(db_path, window_sec=60.0)
+            # Missing offset 0 -> no peak at all (never a fabricated zero).
+            self.assertEqual(sorted(peaks), ['Flat', 'Run'])
+            self.assertAlmostEqual(peaks['Run'], 80.0, places=4)
+            self.assertAlmostEqual(peaks['Flat'], 5.0, places=4)
+            # A missing database is an answer, not an exception at the end of a run.
+            self.assertEqual(observation_peaks(root / 'nope.sqlite'), {})
 
     def test_security_fail_report_counts_rockets_over_observed_coins(self) -> None:
         rejected = [
