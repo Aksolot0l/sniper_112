@@ -17,7 +17,7 @@ DIST = PROJECT.parent / 'dist'
 
 INCLUDE_FILES = [
     'config.py', 'console.py', 'creator_probe.py', 'creator_watch.py', 'detector.py',
-    'filters.py', 'live_ab_dashboard.py', 'main_ab.py', 'make_ab_checkpoint.py',
+    'enrich.py', 'filters.py', 'live_ab_dashboard.py', 'main_ab.py', 'make_ab_checkpoint.py',
     'models.py', 'portfolio_ab.py', 'price.py', 'pump_curve_quote.py',
     'pumpportal_validation.py', 'run_local_session.py', 'run_overnight_ab_paper.py',
     'smoke_test.py', 'sqlite_snapshots.py', 'storage.py', 'telemetry.py',
@@ -30,16 +30,21 @@ INCLUDE_GLOBS = ['tests/test_*.py', 'tools/preflight_budget.py']
 EXCLUDE_DIRS = {'.venv', 'runs', '__pycache__', 'log_exports', '.git', 'dist', 'exports'}
 
 READ_ME_FIRST = """\
-SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
+SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (8 часов по умолчанию)
 =======================================================
 
 ЧТО ЭТО
-  Бумажный (paper-only) двойной портфель A/B на Pump.fun.
-  Ни одна транзакция не подписывается и не отправляется. RPC — только чтение.
-  Портфель A: вход по живому импульсу (ждёт Δv_sol >= 0.10 SOL).
-  Портфель B: вход на первом чтении кривой (Δv_sol >= 0.00), без ожидания.
-  Всё остальное у A и B одинаково: полоса рождения 30.5-34.5, лестница
-  выходов, 3 слота по 500 ₽. Creator-guard живёт только в тени shadow_gate.
+  Бумажный (paper-only) прогон на Pump.fun: ни одна транзакция не
+  подписывается и не отправляется, RPC — только чтение.
+  Четыре арма, у каждого свой банк 1500 ₽ и 3 слота по 500 ₽:
+
+    A  portfolio_a         30.50-34.50 / 0.10-2.50   эталон, не меняется
+    B1 portfolio_b1_narrow 30.50-34.50 / 0.10-1.00   потолок delta ниже
+    B2 portfolio_b2_birth  30.50-31.00 / 0.10-2.50   потолок рождения ниже
+    B3 portfolio_b3_wide   30.50-34.50 / 0.10-8.00   потолок delta выше
+
+  Каждый экспериментальный арм отличается от A РОВНО одной границей входа.
+  Выход, момент входа, слоты, ставка и частота опроса — одинаковые.
 
 ЗАПУСК
   Windows:      двойной клик по START_WINDOWS.bat
@@ -52,55 +57,53 @@ SOLANA PUMP.FUN — PAPER A/B — ЛОКАЛЬНЫЙ ПРОГОН (2ч30м)
       bash START_MAC_LINUX.sh --smoke 150
       START_WINDOWS.bat --smoke 150
 
+  Длительность: DURATION_SEC=10800 для 3 часов, по умолчанию 28800 (8 часов).
   Окно терминала НЕ закрывать: процесс идёт в foreground.
   Остановка — Ctrl+C: бот завершится аккуратно, без синтетических выходов.
 
 ГДЕ СМОТРЕТЬ
-  Дашборд открывается сам: http://127.0.0.1:8767/
-  Можно открыть файл paper_ab_dashboard.html напрямую (он сам найдёт монитор
-  на 127.0.0.1:8767).
+  Дашборд открывается сам: http://127.0.0.1:8767/ — по вкладке на каждый арм,
+  плюс «Сравнение арм» и «Логи».
   Данные прогона: runs/rocket2-ab-paper-<RUN_ID>/
-      wallet_portfolio_a.json / wallet_portfolio_b.json  — состояние портфелей
-      wallet_shadow_gate.json / wallet_shadow_exit25.json /
-      wallet_shadow_t0_5s.json — тени (капитал 0 ₽)
-      exports/ticks.csv          — своя лента тиков каждой позиции
-      exports/shadow_fills.csv   — закрытые сделки теней
-      ab_summary.json                                    — итоги
-      telemetry.sqlite                                   — вся воронка решений
-      sniper.db                                          — закрытые сделки
-      run.log                                            — лог
+      wallet_portfolio_a.json / wallet_portfolio_b1_narrow.json /
+      wallet_portfolio_b2_birth.json / wallet_portfolio_b3_wide.json
+      exports/ticks.csv    — своя лента меток каждой позиции
+                             (price_usd — цена в USD как есть; mark_prev_pct,
+                             step_gap_pp, mark_gap_ms — пролёт правила)
+      exports/enrich.csv   — пассивные признаки монет (0 RPC, на решения не влияет)
+      SUMMARY.md           — итоговый отчёт: армы, парный тест, P0, блоки, ракеты
+      ab_summary.json      — машинные итоги
+      telemetry.sqlite     — вся воронка решений
+      sniper.db            — закрытые сделки
+      run.log              — лог
 
-ПРОГОН №4 (в чём эксперимент)
-  A и B различаются РОВНО одним числом — delta_min: A 0.10, B 0.00.
-  B входит на первом чтении кривой после детекта, поэтому не платит премию
-  за ожидание момента (~2.1 %/сделку в прогоне №3). Цена входа берётся из
-  этого чтения, никогда из WSS-пакета; entry_latency_ms (150 мс) записан в
-  манифест, а измеренная задержка чтения — в каждую сделку (entry_lag_ms).
-  Тень shadow_t0_5s входит как B и продаёт всё ровно через 5 с по рынку,
-  без SL/TP/полки/таймаута. Честное ожидание: ОБА плеча убыточны; в лучшем
-  случае у B остаётся ~ -1.06 %/сделку. Прогон измеряет цену ожидания, а не
-  ищет прибыль — «стало прибыльно» здесь сказать нельзя.
+В ЧЁМ ЭКСПЕРИМЕНТ (прогон №7)
+  Гипотеза проверяется ПАРНО: берутся только монеты, которые торговали оба
+  арма, и считается среднее разностей (arm − A). Арм подтверждён, если
+  paired mean >= +8 ₽, интервал 98.75 % (Bonferroni на три гипотезы) не
+  содержит нуля и знак совпал в обеих половинах прогона.
+  Ожидания, записанные ДО старта: B1 −3…+5 ₽, B2 ≈0 (риск −8 ₽), B3 −10…+5 ₽.
+  Если все три в пределах ±5 ₽ — подбор полос исчерпан.
+  Шумовой пол ±19 ₽ при n=167 на арм, поэтому разница меньше ~15 ₽ на 3 часах
+  нерешаема; «стало прибыльно» по этому прогону сказать нельзя.
 
 ЧТО ПРОВЕРИТЬ ПОСЛЕ ПРОГОНА
-  1) В telemetry.sqlite (таблица decisions) стадии portfolio_a_signal и
-     portfolio_b_signal: сколько раз сработало live_momentum_entry / first_read_entry
-     против entry_below_delta_min / no_live_momentum / birth_out_of_band /
-     momentum_too_late.
-  2) <portfolio>_creator_gate (прогон №3 — это shadow_gate_creator_gate):
-     pass / fail_history / fail_risk / unavailable и причины
-     (creator_burst_activity = раг-ферма, creator_history_too_short и т.д.).
-     fail_history — прочитанная короткая история, это вердикт, а не слепая зона.
-  3) Сравнить realized_pnl_rub портфелей A и B за один и тот же период.
+  1) SUMMARY.md: таблица арм (парная разница + CI), таблица P0, критерии.
+  2) P0: early_stop_reason = null, неисправленные ошибки RPC <= 2 %,
+     dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8,
+     security_fail_skipped_deep > 0, теней нет, enrich.csv записан.
+  3) В telemetry.sqlite (decisions) стадии <arm>_signal: live_momentum_entry
+     против birth_out_of_band / momentum_too_late / no_live_momentum.
   4) Банк: top_ups / capital_injected_rub / equity_no_topups / bust_at_trade
-     по каждому профилю в ab_summary.json (и строка «Банк» в SUMMARY.md).
-     bust_at_trade — на какой сделке реальный банк 1500 ₽ умер бы без пополнений.
-  5) Досрочная остановка: manifest.early_stop_reason — одна из четырёх причин
+     по каждому арму.
+  5) Досрочная остановка: manifest.early_stop_reason — техническая причина
      stop-list с численным условием; PnL остановкой не является.
 
 ОГРАНИЧЕНИЯ
   * Один процесс за раз (лимит Helius RPS). Второй запуск будет отклонён.
-  * 3 слота × 500 ₽ на портфель, старт 1500 ₽.
-  * фильтр дублей по символу по символу отключён.
+  * 3 слота × 500 ₽ на арм, старт 1500 ₽, пополнение только при cash < 500 ₽.
+  * Наблюдения 0/5/15/60 с; отброшенные security читаются только на 0 и 15 с.
+  * Ничего не подписывается и не отправляется: signed_transactions = 0.
 """
 
 
