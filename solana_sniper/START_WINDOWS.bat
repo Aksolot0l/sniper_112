@@ -50,9 +50,16 @@ if "%HELIUS_API_KEY%"=="" (
 )
 
 :have_key
-rem Run #3: the only difference between arms is the delta cap: A 2.5, B 3.0.
+rem Run #7: four arms; each experimental arm moves ONE entry boundary of A.
+rem A is the reference (30.5-34.5 / 0.10-2.50); exit, slots and stake are shared.
 if "%ENTRY_DELTA_MAX_SOL%"=="" set "ENTRY_DELTA_MAX_SOL=2.5"
-if "%ENTRY_DELTA_MAX_SOL_B%"=="" set "ENTRY_DELTA_MAX_SOL_B=3.0"
+if "%ENTRY_DELTA_MAX_SOL_B1%"=="" set "ENTRY_DELTA_MAX_SOL_B1=1.00"
+if "%ENTRY_BIRTH_MAX_SOL_B2%"=="" set "ENTRY_BIRTH_MAX_SOL_B2=31.00"
+if "%ENTRY_DELTA_MAX_SOL_B3%"=="" set "ENTRY_DELTA_MAX_SOL_B3=8.00"
+rem Passive Jupiter datapi feature collection: zero RPC, decisions unaffected.
+if "%ENTRY_ENRICH%"=="" set "ENTRY_ENRICH=1"
+rem Observation schedule: 0/5/15/60 s, four reads instead of six.
+if "%TELEMETRY_OBSERVATION_OFFSETS_SEC%"=="" set "TELEMETRY_OBSERVATION_OFFSETS_SEC=0,5,15,60"
 echo.
 echo Dashboard: http://127.0.0.1:8767/  - closed with Ctrl+C
 echo This window must stay open for the whole run.

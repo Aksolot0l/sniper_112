@@ -10,14 +10,16 @@ from live_ab_dashboard import HTML, make_snapshot
 
 
 class LiveABDashboardTests(unittest.TestCase):
-    def test_page_has_separate_tabs_per_portfolio_plus_compare_and_logs(self) -> None:
+    def test_page_has_one_tab_per_arm_plus_compare_and_logs(self) -> None:
         self.assertIn('/api/status', HTML)
-        self.assertIn('data-view="portfolio_a"', HTML)
-        self.assertIn('data-view="portfolio_b"', HTML)
+        # Run #7: the arm tabs are built from the snapshot, so the page holds
+        # no hardcoded A/B view names any more.
+        self.assertIn('syncArmTabs', HTML)
         self.assertIn('data-view="compare"', HTML)
         self.assertIn('data-view="logs"', HTML)
-        self.assertIn('id="view-portfolio_a"', HTML)
-        self.assertIn('id="view-portfolio_b"', HTML)
+        self.assertIn('id="view-compare"', HTML)
+        self.assertIn('id="armViews"', HTML)
+        self.assertNotIn('data-view="portfolio_a"', HTML)
         # Each portfolio lives in its own section: no shared stacked grid.
         self.assertNotIn('id="portfolioGrid"', HTML)
         self.assertNotIn('data-view="overview"', HTML)
@@ -25,7 +27,8 @@ class LiveABDashboardTests(unittest.TestCase):
         self.assertIn('max_slots', HTML)
         self.assertIn('profit_retain_ratio', HTML)
         self.assertIn('rocket_bypass_pct', HTML)
-        self.assertIn('creator_gate', HTML)
+        # No creator gate anywhere in arm #7.
+        self.assertNotIn('creator_gate', HTML)
         self.assertIn('closed_trades', HTML)
         self.assertIn('Слот ${index + 1}', HTML)  # three numbered slot tiles
         self.assertNotIn('20261021T174318Z-28258057', HTML)
@@ -38,6 +41,7 @@ class LiveABDashboardTests(unittest.TestCase):
             run_dir.mkdir()
             (run_dir / 'manifest.json').write_text(json.dumps({
                 'run_id': 'unique-run', 'status': 'running', 'paper_only': True,
+                'portfolio_scope': ['portfolio_a', 'portfolio_b1_narrow'],
                 'strategies': {'portfolio_a': {'initial_balance_rub': 1500,
                     'position_size_rub': 500, 'max_slots': 3}},
             }), encoding='utf-8')
@@ -53,6 +57,9 @@ class LiveABDashboardTests(unittest.TestCase):
                 'closed_trade_count': 1, 'updated_at_utc': '2026-10-22T06:00:00Z',
             }), encoding='utf-8')
             snapshot = make_snapshot(run_dir)
+        # Only A has a wallet file: the other arms come from the manifest's
+        # declared scope and are shown as unknown, never as 1500 RUB.
+        self.assertEqual([p['name'] for p in snapshot['portfolios']][0], 'portfolio_a')
         portfolio_a = snapshot['portfolios'][0]
         self.assertEqual(portfolio_a['max_slots'], 3)
         self.assertEqual(portfolio_a['position_size_rub'], 500)
@@ -60,6 +67,9 @@ class LiveABDashboardTests(unittest.TestCase):
         self.assertEqual(portfolio_a['closed_trade_count'], 1)
         self.assertEqual(portfolio_a['strategy']['v_sol_birth_min'], 30.5)
         self.assertEqual(portfolio_a['closed_trades'][0]['mint'], 'closed-mint')
+        # The declared second arm has no wallet file yet: unknown, not 1500.
+        self.assertEqual([p['name'] for p in snapshot['portfolios']],
+                         ['portfolio_a', 'portfolio_b1_narrow'])
         self.assertIsNone(snapshot['portfolios'][1]['cash_balance_rub'])
 
     def test_missing_run_state_is_unknown_not_fabricated_as_1500_rub(self) -> None:

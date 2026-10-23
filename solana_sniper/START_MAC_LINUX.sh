@@ -37,10 +37,16 @@ if [[ -z "${HELIUS_API_KEY:-}" ]]; then
     export HELIUS_API_KEY
 fi
 
-# Прогон №3: единственное различие плеч — потолок delta. A = 2.5 (как раньше),
-# B = 3.0; гейт креатора вынесен в тень shadow_gate с нулевым капиталом.
+# Прогон №7: четыре арма, каждый отличается от A ОДНОЙ границей входа.
+# A — эталон (30.5–34.5 / 0.10–2.50), выход, слоты и ставка у всех одинаковые.
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
-export ENTRY_DELTA_MAX_SOL_B="${ENTRY_DELTA_MAX_SOL_B:-3.0}"
+export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
+export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
+export ENTRY_DELTA_MAX_SOL_B3="${ENTRY_DELTA_MAX_SOL_B3:-8.00}"
+# Пассивный сбор признаков Jupiter datapi (0 RPC, на решения не влияет).
+export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
+# Расписание наблюдений: 0/5/15/60 с — 4 чтения вместо 6.
+export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5,15,60}"
 
 # --smoke 150 → короткая проверка; без аргументов → 8 часов.
 # Длительность задаётся переменной DURATION_SEC (например, 10800 для 3 часов).

@@ -207,7 +207,7 @@ async def run(seconds: float) -> int:
         profiles=profiles,
     )
     kept: list[tuple[Any, Any, Scenario, Any]] = []  # (book, position, scenario, fee ctx)
-    counters = {'candidates': 0, 'entries_a': 0, 'entries_b': 0, 'closed': 0}
+    counters = {'candidates': 0, 'entries': {}, 'closed': 0}
     started = time.monotonic()
     next_candidate = started
     tick = 0
@@ -240,35 +240,19 @@ async def run(seconds: float) -> int:
             simulator.record_entry_state(
                 coin, snapshot, scenario.birth, v_now, time.time(),
             )
-            before_a = len(simulator.books['portfolio_a'].positions)
-            before_b = len(simulator.books['portfolio_b'].positions)
-            # Live arms first, then the mirrors (they copy A's entries), the
-            # same order _on_candidate uses in production.
+            before = {name: len(book.positions) for name, book in simulator.books.items()}
+            # Every arm sees the same candidate and the same shared snapshot,
+            # exactly as _on_candidate dispatches it in production.
             await asyncio.gather(*(
                 simulator._consider_entry(
                     book, coin, snapshot, scenario.birth, v_now, SOL_USD, {},
                     time.time(),
                 )
-                for book in simulator.books.values() if not book.profile.mirror_of
+                for book in simulator.books.values()
             ))
-            await asyncio.gather(*(
-                simulator._consider_entry(
-                    book, coin, snapshot, scenario.birth, v_now, SOL_USD, {},
-                    time.time(),
-                )
-                for book in simulator.books.values() if book.profile.mirror_of
-            ))
-            shadow_names = [name for name in simulator.books if simulator.books[name].profile.is_shadow]
-            for name, before in (('portfolio_a', before_a), ('portfolio_b', before_b)):
-                book = simulator.books[name]
-                if len(book.positions) > before:
-                    counters['entries_a' if name == 'portfolio_a' else 'entries_b'] += 1
-                    for pos in book.positions.values():
-                        if pos.mint == mint:
-                            kept.append((book, pos, scenario, _curve(v_now)))
-            # Shadows are marked and exited too; they are not A/B counters.
-            for name in shadow_names:
-                book = simulator.books[name]
+            for name, book in simulator.books.items():
+                if len(book.positions) > before[name]:
+                    counters['entries'][name] = counters['entries'].get(name, 0) + 1
                 for pos in book.positions.values():
                     if pos.mint == mint:
                         kept.append((book, pos, scenario, _curve(v_now)))
@@ -315,8 +299,7 @@ async def run(seconds: float) -> int:
                     )
                     book.save(run_id)
                     if pos.mint not in book.positions:
-                        if not book.profile.is_shadow:
-                            counters['closed'] += 1
+                        counters['closed'] += 1
                         kept = [row for row in kept if row[1] is not pos]
         await asyncio.sleep(0.1)
 
@@ -334,8 +317,7 @@ async def run(seconds: float) -> int:
             pnl_rub + pos.remaining_cost_rub,
         )
         book.save(run_id)
-        if not book.profile.is_shadow:
-            counters['closed'] += 1
+        counters['closed'] += 1
 
     # Run #3 artefacts: own mark stream + shadow fills. The snapshot helper is
     # the same one the live run calls every 60 s (P0-5), so the smoke proves it.
@@ -345,21 +327,26 @@ async def run(seconds: float) -> int:
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     (run_dir / 'manifest.json').write_text(json.dumps({
         'run_id': run_id, 'status': 'completed', 'smoke': True, 'paper_only': True,
+        'portfolio_scope': list(profiles),
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
-        'entry': (
-            '30.5 <= v_sol_birth <= 34.5 and '
-            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5  (identical for A and B)'
-        ),
+        'entry': 'four arms, each one entry boundary away from A',
         'entry_latency_ms': 150.0,
-        'run4_single_difference': 'exit_rule',
+        'run7_single_difference': 'entry_band',
         'ab_test': {
-            # Run #4: the exit rule is the one live difference.
-            'single_difference': 'exit_rule',
+            # Run #7: every experimental arm moves ONE entry boundary.
+            'single_difference': 'entry_band',
+            'reference_arm': 'portfolio_a',
+            'arms': {
+                name: {
+                    'arm_id': profile.arm_id,
+                    'entry_band_label': profile.entry_band_label,
+                }
+                for name, profile in profiles.items()
+            },
             'decision_rule': (
-                'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% '
-                'bootstrap CI of the difference excludes 0 (20 000 resamples); '
-                'shadow_no_trail beats A iff >= +6 RUB with a CI excluding 0; '
-                'several comparisons -> exploratory, Bonferroni alpha 0.0125'
+                'an arm confirms its hypothesis iff the PAIRED mean(arm - A) '
+                '>= +8 RUB, the 98.75% bootstrap CI (Bonferroni alpha 0.0125) '
+                'excludes 0, and the sign is the same in both halves'
             ),
         },
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},
@@ -381,13 +368,17 @@ async def run(seconds: float) -> int:
 
     print()
     log('SMOKE RESULT', Color.GREEN)
-    print(f"  кандидатов: {counters['candidates']}  "
-          f"входов A={counters['entries_a']} B={counters['entries_b']}  "
+    entries_text = ', '.join(
+        f"{simulator.books[name].profile.arm_id}={count}"
+        for name, count in sorted(counters['entries'].items())
+    )
+    print(f"  кандидатов: {counters['candidates']}  входов: {entries_text}  "
           f"закрыто сделок: {counters['closed']}")
     print('\n'.join(portfolio_lines))
     funnel = snapshot_view.get('funnel', {})
-    print('  A вход:', funnel.get('entry_reasons', {}).get('portfolio_a'))
-    print('  B guard:', funnel.get('guard_reasons'))
+    for arm in profiles:
+        print(f"  {profiles[arm].arm_id} вход:",
+              funnel.get('entry_reasons', {}).get(arm))
     # Bank addendum: top-ups and the moment a real 1500 RUB bank would die.
     for name, book in summary.items():
         if not isinstance(book, dict) or 'top_ups' not in book:
@@ -401,8 +392,9 @@ async def run(seconds: float) -> int:
         print(line)
     print(f'  run_dir: {run_dir}')
     print(f'  dashboard freshness: {snapshot_view["freshness"]}')
-    print('\nSMOKE OK' if counters['entries_a'] else '\nSMOKE WARNING: no entries happened')
-    return 0 if counters['entries_a'] else 2
+    entered = sum(counters['entries'].values())
+    print('\nSMOKE OK' if entered else '\nSMOKE WARNING: no entries happened')
+    return 0 if entered else 2
 
 
 def _bucket_report(db_path: Path) -> list[str]:

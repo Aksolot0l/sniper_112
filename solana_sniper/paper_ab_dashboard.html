@@ -102,20 +102,14 @@
 </header>
 <div class="notice" id="notice" hidden></div>
 <nav>
-  <button id="tab-portfolio_a" data-view="portfolio_a" class="active">Портфель A</button>
-  <button id="tab-portfolio_b" data-view="portfolio_b">Портфель B</button>
-  <button id="tab-compare" data-view="compare">A/B сравнение</button>
+  <span id="armTabs"></span>
+  <button id="tab-compare" data-view="compare">Сравнение арм</button>
   <button id="tab-logs" data-view="logs">Логи</button>
 </nav>
 <main>
-  <section id="view-portfolio_a">
-    <div class="single" id="portfolioA"></div>
-  </section>
-  <section id="view-portfolio_b" hidden>
-    <div class="single" id="portfolioB"></div>
-  </section>
+  <div id="armViews"></div>
   <section id="view-compare" hidden>
-    <div class="section-title">A/B воронка решений</div>
+    <div class="section-title">Воронка решений по армам</div>
     <div class="compare" id="compareBox"></div>
     <div class="section-title">Сводка и сделки</div>
     <div class="cols2" id="tradesGrid"></div>
@@ -139,8 +133,38 @@
 // to be running locally on the default port.
 const API_BASE = location.protocol === 'file:' ? 'http://127.0.0.1:8767' : '';
 const REFRESH_MS = 3000;
-const VIEWS = ['portfolio_a', 'portfolio_b', 'compare', 'logs'];
-const state = { snapshot: null, view: 'portfolio_a', logs: [], errors: 0 };
+// Run #7: the arms are dynamic — the tab list is built from the snapshot,
+// so adding or renaming an arm needs no change here.
+let VIEWS = ['compare', 'logs'];
+const state = { snapshot: null, view: 'compare', logs: [], errors: 0 };
+const armLabel = (portfolio) => portfolio.arm_id || portfolio.name;
+
+function syncArmTabs(snap) {
+  const nav = $('armTabs');
+  const views = $('armViews');
+  const arms = (snap.portfolios || []).map((portfolio) => portfolio.name);
+  for (const name of arms) {
+    if (!$(`tab-${name}`)) {
+      const button = document.createElement('button');
+      button.id = `tab-${name}`;
+      button.dataset.view = name;
+      button.addEventListener('click', () => setView(name));
+      nav.appendChild(button);
+    }
+    if (!$(`view-${name}`)) {
+      const section = document.createElement('section');
+      section.id = `view-${name}`;
+      section.hidden = true;
+      const box = document.createElement('div');
+      box.className = 'single';
+      box.id = `arm-${name}`;
+      section.appendChild(box);
+      views.appendChild(section);
+    }
+  }
+  VIEWS = [...arms, 'compare', 'logs'];
+  if (!VIEWS.includes(state.view)) state.view = arms[0] || 'compare';
+}
 
 const $ = (id) => document.getElementById(id);
 const num = (value, digits = 2) => {
@@ -240,14 +264,14 @@ function renderHeader(snap) {
 }
 
 function renderPortfolio(portfolio) {
-  const arm = portfolio.name === 'portfolio_a' ? 'A' : 'B';
-  const tagCls = arm === 'A' ? 'tagA' : 'tagB';
-  const role = arm === 'A'
-    ? 'контроль · вход по живому импульсу'
-    : 'лечение · вход + creator_gate';
-  const card = el('div', arm === 'A' ? 'card cardArmA' : 'card cardArmB');
+  const arm = armLabel(portfolio);
+  const tagCls = portfolio.name === 'portfolio_a' ? 'tagA' : 'tagB';
+  const role = portfolio.name === 'portfolio_a'
+    ? 'эталон · полоса 30.5–34.5 / 0.10–2.50'
+    : (portfolio.entry_band_label || 'одна граница против A');
+  const card = el('div', portfolio.name === 'portfolio_a' ? 'card cardArmA' : 'card cardArmB');
   const head = el('h2');
-  head.appendChild(el('span', tagCls, `ПОРТФЕЛЬ ${arm}`));
+  head.appendChild(el('span', tagCls, `АРМ ${arm}`));
   head.appendChild(el('span', 'muted', role));
   if (!portfolio.has_state) head.appendChild(el('span', 'pill warn', 'состояние ещё не записано'));
   card.appendChild(head);
@@ -286,7 +310,7 @@ function renderPortfolio(portfolio) {
     ['SL до пика', `−${num(strategy.stop_loss_pct, 0)}%`],
     ['stagnation', `${num(strategy.shelf_stagnation_sec, 1)} с`],
     ['no-progress', `${num(strategy.no_progress_sec, 1)} с`],
-    ['creator_gate', strategy.require_creator_gate ? 'ON (B)' : 'OFF (A)'],
+    ['полоса входа', strategy.entry_band_label || '—'],
   ];
   for (const [label, value] of pairs) {
     const line = el('div');
@@ -388,20 +412,16 @@ function renderCompare(snap) {
     return;
   }
   const stages = funnel.stages || {};
-  const cardA = el('div', 'card');
-  cardA.appendChild(el('h2', '', 'A · вход'));
-  cardA.appendChild(barsFrom(funnel.entry_reasons?.portfolio_a));
-  box.appendChild(cardA);
-
-  const cardB = el('div', 'card');
-  cardB.appendChild(el('h2', '', 'B · вход'));
-  cardB.appendChild(barsFrom(funnel.entry_reasons?.portfolio_b));
-  box.appendChild(cardB);
-
-  const guard = el('div', 'card');
-  guard.appendChild(el('h2', '', 'B · creator_gate'));
-  guard.appendChild(barsFrom(funnel.guard_reasons, '#a97bff'));
-  box.appendChild(guard);
+  const colors = ['#37d39b', '#6ea8ff', '#f0b95a', '#a97bff', '#ff7a8a'];
+  let index = 0;
+  for (const [arm, reasons] of Object.entries(funnel.entry_reasons || {})) {
+    const card = el('div', 'card');
+    const portfolio = portfolioByName(snap, arm);
+    card.appendChild(el('h2', '', `${portfolio ? armLabel(portfolio) : arm} · вход`));
+    card.appendChild(barsFrom(reasons, colors[index % colors.length]));
+    box.appendChild(card);
+    index += 1;
+  }
 
   const sums = el('div', 'card');
   sums.appendChild(el('h2', '', 'этапы (все портфели)'));
@@ -421,8 +441,7 @@ function renderTradesGrid(snap) {
   grid.textContent = '';
   for (const portfolio of snap.portfolios || []) {
     const card = el('div', 'card');
-    const arm = portfolio.name === 'portfolio_a' ? 'A' : 'B';
-    card.appendChild(el('h2', '', `Сводка · портфель ${arm}`));
+    card.appendChild(el('h2', '', `Сводка · арм ${armLabel(portfolio)}`));
     const rows = [
       ['кэш', rub(portfolio.cash_balance_rub)],
       ['реализовано', rub(portfolio.realized_pnl_rub)],
@@ -461,7 +480,7 @@ function portfolioByName(snap, name) {
 }
 
 function renderSingle(snap, view) {
-  const box = $(view === 'portfolio_a' ? 'portfolioA' : 'portfolioB');
+  const box = $(`arm-${view}`);
   box.textContent = '';
   const portfolio = portfolioByName(snap, view);
   if (!portfolio) {
@@ -470,16 +489,18 @@ function renderSingle(snap, view) {
   }
   box.appendChild(renderPortfolio(portfolio));
   // Keep the tab label informative: which arm and how it is doing.
-  const label = view === 'portfolio_a' ? 'Портфель A' : 'Портфель B';
+  const label = `Арм ${armLabel(portfolio)}`;
   const pnl = portfolio.realized_pnl_rub;
   const suffix = pnl === null || pnl === undefined ? '' : ` · ${rub(pnl)}`;
-  $(`tab-${view}`).textContent = `${label}${suffix}`;
+  const tab = $(`tab-${view}`);
+  if (tab) tab.textContent = `${label}${suffix}`;
 }
 
 function render(snap) {
   state.snapshot = snap;
+  syncArmTabs(snap);
   renderHeader(snap);
-  if (state.view === 'portfolio_a' || state.view === 'portfolio_b') {
+  if (!['compare', 'logs'].includes(state.view)) {
     renderSingle(snap, state.view);
   } else if (state.view === 'compare') {
     renderCompare(snap);
@@ -490,7 +511,7 @@ function render(snap) {
 }
 
 function setView(view) {
-  if (!VIEWS.includes(view)) view = 'portfolio_a';
+  if (!VIEWS.includes(view)) view = VIEWS[0] || 'compare';
   state.view = view;
   for (const name of VIEWS) {
     const section = $(`view-${name}`);
@@ -528,7 +549,7 @@ for (const name of VIEWS) {
   if (tab) tab.addEventListener('click', () => setView(name));
 }
 document.addEventListener('keydown', (event) => {
-  const map = { '1': 'portfolio_a', '2': 'portfolio_b', '3': 'compare', '4': 'logs' };
+  const map = { '1': VIEWS[0], '2': VIEWS[1], '3': 'compare', '4': 'logs' };
   if (event.target && ['INPUT', 'TEXTAREA'].includes(event.target.tagName)) return;
   if (map[event.key]) setView(map[event.key]);
 });

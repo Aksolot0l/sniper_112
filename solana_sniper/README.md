@@ -62,65 +62,65 @@ Shigure 33.16→38.59) while buying dead `delta == 0` decoys (8 of 9 such fills
 lost money). CAVELON (36.0) and PERFORMA (39.88) are **not** affected by that
 anti-filter any more: the 34.5 birth ceiling rejects them as `birth_out_of_band`.
 
-Exits — approved 4-mode ladder, A only (B is the run #4 experiment): SL −10% before TP1/rocket; no-progress
-(5 s, peak < +4%, PnL < +1.5%); positive stagnation (4.5 s, PnL ≥ +1.5%);
-TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`; rocket bypass at +50%
-keeps 100%. Timeouts 35 s / 90 s remain as slot-safety nets.
+Exits — one ladder for every arm (Round 6, unchanged): SL −10% before
+TP1/rocket; no-progress (5 s, peak < +4%, PnL < +1.5%); positive stagnation
+(4.5 s, PnL ≥ +1.5%); TP1 +30% sells 50%; peak retain `pnl <= 0.85 * best`;
+rocket bypass at +50% keeps 100%. Timeouts 35 s / 90 s remain as slot-safety
+nets. The exit is **not** an experiment any more: run #6 showed the 15 s time
+exit indistinguishable from the ladder (paired B−A −4.24 ₽, CI [−19.2; +10.7]).
 
-**Run #4 arms (active): the exit rule is the single difference.**
+**Run #7 arms (active): each arm moves ONE entry boundary of A.**
 
-Same entry in both live arms — `30.5 ≤ v_sol_birth ≤ 34.5` and
-`0.10 ≤ v_sol_now − v_sol_birth ≤ 2.5`, priced from the first on-chain curve
-read after detection. Only the exit differs:
+A is the untouched reference. Every experimental arm changes exactly one band
+edge; exit, entry timing, slots, stake and poll rate are identical. Any other
+change would make the paired comparison meaningless.
 
-| | A (Round 6, frozen) | B (run #4) |
-|---|---|---|
-| time exit | 35 s / 90 s safety nets | **100 % at t ≥ 15.0 s** (`time_exit_15s`) |
-| stop loss | −10 % before TP1/rocket | **−20 %, for the whole life of the position** |
-| take profit | TP1 +30 % sells 50 % | **+100 % sells 50 %** |
-| trail 0.85× best | on after +10 % | **off** |
-| shelf / no-progress | 4.5 s / 5 s | **off** |
+| arm | `v_sol_birth` | `delta` (`v_sol_now − v_sol_birth`) | what it moves |
+|---|---|---|---|
+| A `portfolio_a` | 30.50 … 34.50 | 0.10 … 2.50 | reference |
+| B1 `portfolio_b1_narrow` | 30.50 … 34.50 | 0.10 … **1.00** | delta ceiling ↓ |
+| B2 `portfolio_b2_birth` | 30.50 … **31.00** | 0.10 … 2.50 | birth ceiling ↓ |
+| B3 `portfolio_b3_wide` | 30.50 … 34.50 | 0.10 … **8.00** | delta ceiling ↑ |
 
-Why: on the same 84 trades, holding to 15 s without SL/TP/trail gives −265 ₽
-instead of −1 344 ₽ (+12.8 ₽/trade), and the loss comes from the take-profits
-(SL/trail +674 ₽ on 13 trades, SL +175 ₽ on 21, no-progress −81 ₽ on 44). The
-horizon is sharp: 5 s −4.9 ₽, **15 s −3.2 ₽**, 60 s −32.6 ₽, 120 s −46.7 ₽.
-Slots (3), stake (500 ₽), bank (1500 ₽) and the entry are unchanged.
+`delta_min = 0.10` in all four: the t0 entry stays a deferred experiment.
+600 RPC is the bottleneck, so the observation schedule shrank to
+`0, 5, 15, 60` s (was `0, 5, 10, 15, 60, 120`); coins that failed the security
+filter are read only at 0 and 15 s (`status=skipped_security_deep`), which is
+the P0-2 fix — in run #6 the verdict was resolved before the loop ran, so this
+trim never happened (`security_fail_skipped_deep = 0` over 1 634 rejects).
 
-Shadows, both zero capital, 1 position each, polled at 0.5 Hz on A's entries:
-`shadow_gate` (Round 6 creator gate) and `shadow_no_trail` (A's entry with
-TP1 +30 %/50 % kept, trail/shelf/no-progress off, remainder sold at 15 s).
-`shadow_exit25` and `shadow_t0_5s` are deleted. A shadow can never change A/B
-fills; `shadow_poll_dropped` in the report counts polls skipped by the budget.
+Pre-registered decision rule:
 
-The pre-registered rule stays: B beats A iff `mean(B) − mean(A) ≥ +8 ₽` per
-trade and the 95 % bootstrap CI of the difference excludes 0 (20 000
-resamples); `shadow_no_trail` beats A iff ≥ +6 ₽ with a CI excluding 0;
-several comparisons make the result exploratory (Bonferroni α = 0.0125).
-**Honest expectation: B stays negative**, −8…−4 ₽/trade against −15…−17 ₽ for
-A. The run measures what the current exit costs, not profit; no number from it
-may be described as "being profitable now". If B ≈ A, say so and go to the
-deferred `delta_min = 0` experiment (§5.1) in a separate run.
+1. an arm confirms its hypothesis iff the **paired** `mean(arm − A) ≥ +8 ₽`
+   (mean over the coins both books traded), the 98.75 % bootstrap CI
+   (20 000 resamples) excludes 0, and the sign matches in both halves;
+2. three hypotheses → Bonferroni, α = 0.0125 (98.75 % interval);
+3. a stable sign with a CI covering 0 is written up as "разведочно, нужен
+   повтор" — the live config does not change;
+4. every arm inside ±5 ₽ means band tuning is exhausted.
 
-Run #4 instrumentation (no behaviour change): per tick `trigger_pct`,
-`fill_pct`, `exit_latency_ms`, `peak_pct`, `peak_t_sec` (`exports/ticks.csv`);
-per trade `entry_premium_pct`, `entry_lag_ms`, `held_sec`, `mfe_pct`, `mae_pct`,
-`peak_pct`, `captured_pct_of_peak`; per arm/shadow `n, sum, mean, median, sd,
-ci95_mean`, `n_for_significance`, `sum_without_top2`, `sum_without_worst2`;
-`exit_reason × portfolio` table; `ab_test.single_difference = exit_rule`;
-security-rejected coins read only at offsets 0 and 15 (others stay visible as
-`status=skipped_security_deep`) and `security_fail_rockets` reports how many of
-them ran ≥ +50 % in 15 s; 429s retried (0.2/0.5/1.2 s + jitter, `Retry-After`
-honoured, ≤ 3 retries, concurrency ≤ 6) and only `unrecovered_failures`
-(≤ 2 % over 600 s) can trip the stop-list; artefacts (`ticks.csv`,
-`shadow_fills.csv`, `ab_summary.json`, wallets, `STATUS.txt`) are rewritten
-every 60 s and once more in the stop handler; session-end cancellations carry
-`excluded_from_stats = 1`.
+Honest expectations, written before the start: B1 −3…+5 ₽, B2 ≈ 0 with a
+plausible −8 ₽, B3 −10…+5 ₽ per trade. Run #6's noise floor is ±19 ₽ at n=167
+per arm, so any difference below ~15 ₽ on a 3-hour run is undecidable and is
+reported as such. No number from this run may be described as "being
+profitable now": arm A's median trade in run #6 was −15.20 ₽ and the whole
+plus rested on two pump tails.
 
-Pre-launch gate for the 10-minute check:
-`python tools/preflight_budget.py runs/<RUN_DIR>` — RPC requests ≤ 1.5 ×
-(security-passing coins × 6), and either `http_429_count = 0` or zero
-unrecovered failures with a non-empty retry counter.
+Run #7 instrumentation (no behaviour change):
+`exports/ticks.csv` gained `mark_prev_pct`, `step_gap_pp`, `mark_gap_ms` and
+`price_usd` is now a plain USD unit price (run #6 divided a rouble price by
+`sol_usd × fx`, so every entry/mark row was off by `1 / sol_usd`);
+`security_fail_reasons` is read from the **last** reason of the verdict with
+short codes (run #6 read `parsed[0]` and mis-split 1 634 rejects); `SUMMARY.md`
+gained a fly-through section that answers "the SL sits at −10 %, at what price
+did the trade actually leave?" with the median fill and the mark-to-mark gap.
+
+`exports/enrich.csv` (block 3, `ENTRY_ENRICH=1`): one passive call per
+security-passing coin to `datapi.jup.ag/v1/assets/search` (batches of seven,
+2 s timeout, one attempt, zero RPC) with `topHoldersPercentage`, `holderCount`,
+`organicScore`, `devMints`, `devMigrations`, `devFundedAt`, `stats1h.*`,
+`twitter`, `primaryTwitter.followerCount`. It never influences an entry or an
+exit — it is data collection for run #8. `status = ok | enrich_unavailable`.
 
 **Run #3 arms (closed).** The live arms differ in exactly one number, `delta_max_sol`:
 `portfolio_a = 2.5`, `portfolio_b = 3.0`; both have the creator gate switched
@@ -166,7 +166,9 @@ unavailable rather than silently passing.
 Session length is a parameter, not a constant: `run_local_session.py
 --duration-sec 28800` (8 h default), e.g. `--duration-sec 10800` for 3 h.
 
-Creator guard v2 (now `shadow_gate` only): identity resolved to
+Creator guard v2 — **telemetry only, no arm filters on it** (run #7: the
+gate lost against the average in 4/4 independent samples, -4.0…-6.4 %):
+identity resolved to
 `pumpportal_event_actor` when the curve creator is an empty fee wallet,
 `creator_burst_activity` rejects 25+ signatures inside one hour,
 `creator_repeat_deploy_in_session` rejects a wallet already launching 2+ other

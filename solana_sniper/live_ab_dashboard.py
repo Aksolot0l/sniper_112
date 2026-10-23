@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from portfolio_ab import ARM_IDS
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_ROOT = (PROJECT_ROOT / 'runs').resolve()
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
@@ -61,12 +63,10 @@ def telemetry_counts(path: Path) -> dict[str, int]:
 
 def telemetry_funnel(path: Path) -> dict:
     """Decision funnel per A/B arm; read-only, tolerant to a live WAL db."""
-    empty = {'stages': {}, 'entry_reasons': {'portfolio_a': {}, 'portfolio_b': {}},
-             'guard_reasons': {}, 'available': False}
+    empty = {'stages': {}, 'entry_reasons': {}, 'available': False}
     if not path.exists():
         return empty
-    out = {'stages': {}, 'entry_reasons': {'portfolio_a': {}, 'portfolio_b': {}},
-           'guard_reasons': {}, 'available': True}
+    out = {'stages': {}, 'entry_reasons': {}, 'available': True}
     try:
         uri = path.as_uri() + '?mode=ro'
         with sqlite3.connect(uri, uri=True, timeout=0.5) as db:
@@ -78,21 +78,16 @@ def telemetry_funnel(path: Path) -> dict:
                 'SELECT stage, decision, count(*) FROM decisions GROUP BY stage, decision'
             ):
                 out['stages'].setdefault(str(stage), {})[str(decision)] = int(count)
+            # Run #7: the arms are four and their names are read from the
+            # telemetry itself, so the dashboard never needs a code change.
             for stage, reasons in db.execute(
-                "SELECT stage, reasons_json FROM decisions WHERE stage IN "
-                "('portfolio_a_signal','portfolio_b_signal') "
-                "OR stage LIKE '%_creator_gate'"
+                "SELECT stage, reasons_json FROM decisions WHERE stage LIKE '%_signal'"
             ):
                 bucket = None
                 stage = str(stage)
-                # Run #3 moved the creator gate into the shadow_gate book, so
-                # the stage name is dynamic ('shadow_gate_creator_gate').
-                if stage.endswith('_creator_gate'):
-                    bucket = out['guard_reasons']
-                elif stage == 'portfolio_a_signal':
-                    bucket = out['entry_reasons']['portfolio_a']
-                elif stage == 'portfolio_b_signal':
-                    bucket = out['entry_reasons']['portfolio_b']
+                if stage.endswith('_signal'):
+                    arm = stage[: -len('_signal')]
+                    bucket = out['entry_reasons'].setdefault(arm, {})
                 try:
                     parsed = json.loads(reasons or '[]')
                 except (TypeError, ValueError):
@@ -113,8 +108,20 @@ def make_snapshot(run_dir: Path) -> dict:
     manifest_profiles = manifest.get('strategies', {})
     if not isinstance(manifest_profiles, dict):
         manifest_profiles = {}
-    for filename, name in (('wallet_portfolio_a.json', 'portfolio_a'), ('wallet_portfolio_b.json', 'portfolio_b')):
-        wallet_path = run_dir / filename
+    # Run #7: one tab per arm. The wallet files present in the run directory
+    # define the list, so adding an arm needs no dashboard change.
+    # The manifest declares every arm of the run; wallet files are added in
+    # case a run directory carries one the manifest does not mention. Before
+    # the first wallet state exists the arms are shown as unknown, never as a
+    # fabricated 1500 RUB.
+    wallet_names = [
+        path.stem[len('wallet_'):] for path in sorted(run_dir.glob('wallet_*.json'))
+    ]
+    declared = manifest.get('portfolio_scope') or list(manifest_profiles) or list(ARM_IDS)
+    arm_names = [str(name) for name in declared]
+    arm_names += [name for name in wallet_names if name not in arm_names]
+    for name in arm_names:
+        wallet_path = run_dir / f'wallet_{name}.json'
         data = read_json(wallet_path)
         has_state = wallet_path.is_file() and bool(data)
         raw_open = data.get('open_positions', []) if has_state else []
@@ -144,6 +151,11 @@ def make_snapshot(run_dir: Path) -> dict:
             closed_count = len(closed_trades)
         portfolios.append({
             'name': name,
+            # Run #7: the tab label and the band come from the run itself.
+            'arm_id': (strategy.get('arm_id') or name) if isinstance(strategy, dict) else name,
+            'entry_band_label': (
+                strategy.get('entry_band_label') if isinstance(strategy, dict) else None
+            ),
             'has_state': has_state,
             'state_run_id': data.get('run_id') if has_state else None,
             'updated_at_utc': data.get('updated_at_utc') if has_state else None,
@@ -191,7 +203,7 @@ def make_snapshot(run_dir: Path) -> dict:
 
     tracked = [
         run_dir / 'run.log', run_dir / 'manifest.json', heartbeat_path,
-        run_dir / 'wallet_portfolio_a.json', run_dir / 'wallet_portfolio_b.json',
+        *run_dir.glob('wallet_*.json'),
         run_dir / 'telemetry.sqlite', run_dir / 'telemetry.sqlite-wal',
         run_dir / 'sniper.db', run_dir / 'sniper.db-wal',
     ]
