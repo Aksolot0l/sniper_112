@@ -356,8 +356,8 @@ class FunnelReportTests(unittest.TestCase):
         parser = build_parser()
         self.assertEqual(parser.parse_args(['--duration-sec', '10800']).duration, 10_800)
         self.assertEqual(parser.parse_args(['--duration', '10800']).duration, 10_800)
-        # The 8 h default is a default, not a hard-coded run length.
-        self.assertEqual(parser.parse_args([]).duration, 28_800)
+        # The default is a default, not a hard-coded run length (run #8: 30 min).
+        self.assertEqual(parser.parse_args([]).duration, 1_800)
 
     def test_summary_surfaces_lost_telemetry_rows(self) -> None:
         manifest = self._manifest()

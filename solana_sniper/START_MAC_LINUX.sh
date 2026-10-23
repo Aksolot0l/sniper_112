@@ -6,7 +6,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 echo "=============================================================="
-echo " Solana Pump.fun · PAPER · 4 арма · длительность из DURATION_SEC (по умолчанию 8 ч)"
+echo " Solana Pump.fun · PAPER · 2 книги S1/S0 · выход fee_cover"
+echo " длительность из DURATION_SEC (по умолчанию 30 мин)"
 echo " paper-only: транзакции не подписываются и не отправляются"
 echo "=============================================================="
 
@@ -37,20 +38,36 @@ if [[ -z "${HELIUS_API_KEY:-}" ]]; then
     export HELIUS_API_KEY
 fi
 
-# Прогон №7: четыре арма, каждый отличается от A ОДНОЙ границей входа.
-# A — эталон (30.5–34.5 / 0.10–2.50), выход, слоты и ставка у всех одинаковые.
+# Прогон №8: две книги, эталона A в этом прогоне нет (сравнения с A нет).
+# S1 = ровно B1 (30.5–34.5 / 0.10–1.00); S0 = S1 без гейта импульса (0.00–1.00).
+# Выход у обеих книг один: hard stop −10 %, покрытие комиссий +3.5 %, иначе 5 с.
+export ARMS="${ARMS:-portfolio_s1,portfolio_s0}"
+export ALLOW_SINGLE_ARM="${ALLOW_SINGLE_ARM:-1}"
+export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
+export ENTRY_BIRTH_MAX_SOL="${ENTRY_BIRTH_MAX_SOL:-34.5}"
+export ENTRY_DELTA_MIN_SOL="${ENTRY_DELTA_MIN_SOL:-0.10}"
 export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
-export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
-export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
-export ENTRY_DELTA_MIN_SOL_B3="${ENTRY_DELTA_MIN_SOL_B3:-0.00}"
+export ENTRY_DELTA_MAX_SOL_S1="${ENTRY_DELTA_MAX_SOL_S1:-1.00}"
+export ENTRY_DELTA_MIN_SOL_S0="${ENTRY_DELTA_MIN_SOL_S0:-0.00}"
+export EXIT_MODE="${EXIT_MODE:-fee_cover}"
+export EXIT_FEE_COVER_PCT="${EXIT_FEE_COVER_PCT:-3.5}"
+export EXIT_TIME_SEC="${EXIT_TIME_SEC:-5.0}"
+export EXIT_HARD_STOP_PCT="${EXIT_HARD_STOP_PCT:-10.0}"
+# Быстрый вход и опрос: без искусственной задержки, метка каждые 0.15 с.
+export ENTRY_LATENCY_MS="${ENTRY_LATENCY_MS:-0}"
+export MARK_POLL_SEC="${MARK_POLL_SEC:-0.15}"
+# Слоты и ставка заморожены: 3 слота по 500 ₽, банк 1 500 ₽ у каждой книги.
+export MAX_POSITIONS="${MAX_POSITIONS:-3}"
+export MAX_TRADE_RUB="${MAX_TRADE_RUB:-500}"
+export DEPOSIT_RUB="${DEPOSIT_RUB:-1500}"
 # Пассивный сбор признаков Jupiter datapi (0 RPC, на решения не влияет).
 export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
-# Расписание наблюдений: 0/5/15/60 с — 4 чтения вместо 6.
-export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5,15,60}"
+# Расписание наблюдений в этом прогоне — только 0 и 5 с (бюджет RPS).
+export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5}"
 
-# --smoke 150 → короткая проверка; без аргументов → 8 часов.
+# --smoke 150 → короткая проверка; без аргументов → 30 минут.
 # Длительность задаётся переменной DURATION_SEC (например, 10800 для 3 часов).
 exec "$VENV_PY" run_local_session.py \
-    --duration-sec "${DURATION_SEC:-28800}" \
+    --duration-sec "${DURATION_SEC:-1800}" \
     --open-browser \
     "$@"

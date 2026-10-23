@@ -85,22 +85,34 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'ENTRY_DELTA_MIN_SOL': env.get('ENTRY_DELTA_MIN_SOL', '0.10'),
         'ENTRY_DELTA_MAX_SOL': env.get('ENTRY_DELTA_MAX_SOL', '2.5'),
         # Run #7: each experimental arm moves ONE entry boundary of A.
-        'ARMS': env.get(
-            'ARMS',
-            'portfolio_a,portfolio_b1_narrow,portfolio_b2_birth,portfolio_b3_t0',
-        ),
+        # Run #8: two books, no reference arm (S1 is measured against S0).
+        'ARMS': env.get('ARMS', 'portfolio_s1,portfolio_s0'),
+        'ALLOW_SINGLE_ARM': env.get('ALLOW_SINGLE_ARM', '1'),
         'ENTRY_DELTA_MAX_SOL_B1': env.get('ENTRY_DELTA_MAX_SOL_B1', '1.00'),
         'ENTRY_BIRTH_MAX_SOL_B2': env.get('ENTRY_BIRTH_MAX_SOL_B2', '31.00'),
         'ENTRY_DELTA_MIN_SOL_B3': env.get('ENTRY_DELTA_MIN_SOL_B3', '0.00'),
+        # S1 = B1 verbatim; S0 = S1 with the momentum gate removed.
+        'ENTRY_DELTA_MAX_SOL_S1': env.get('ENTRY_DELTA_MAX_SOL_S1', '1.00'),
+        'ENTRY_DELTA_MIN_SOL_S0': env.get('ENTRY_DELTA_MIN_SOL_S0', '0.00'),
+        # Run #8 exit: hard stop -> cover the round trip -> 5 s clock.
+        'EXIT_MODE': env.get('EXIT_MODE', 'fee_cover'),
+        'EXIT_FEE_COVER_PCT': env.get('EXIT_FEE_COVER_PCT', '3.5'),
+        'EXIT_TIME_SEC': env.get('EXIT_TIME_SEC', '5.0'),
+        'EXIT_HARD_STOP_PCT': env.get('EXIT_HARD_STOP_PCT', '10.0'),
+        # Run #8: no modelled entry delay, 0.15 s marks, offsets 0/5 only.
+        'ENTRY_LATENCY_MS': env.get('ENTRY_LATENCY_MS', '0'),
+        'MARK_POLL_SEC': env.get('MARK_POLL_SEC', '0.15'),
         'ENTRY_ENRICH': env.get('ENTRY_ENRICH', '1'),
         'CREATOR_GUARD_MIN_SIG': env.get('CREATOR_GUARD_MIN_SIG', '25'),
         'CREATOR_BURST_WINDOW_SEC': env.get('CREATOR_BURST_WINDOW_SEC', '3600'),
         'CREATOR_CACHE_TTL_SEC': env.get('CREATOR_CACHE_TTL_SEC', '300'),
         'TELEMETRY_RUN_ID': run_id,
         'TELEMETRY_OBSERVATION_OFFSETS_SEC': env.get(
-            'TELEMETRY_OBSERVATION_OFFSETS_SEC', '0,5,15,60',
+            'TELEMETRY_OBSERVATION_OFFSETS_SEC', '0,5',
         ),
-        'WALLET_PATH': str(run_dir / 'wallet_portfolio_a.json'),
+        # Each book keeps its own 1500 RUB bank; this legacy path is only the
+        # anchor main_ab reads, the books live in wallet_<arm>.json files.
+        'WALLET_PATH': str(run_dir / 'wallet_portfolio_s1.json'),
         'TRADE_LOG': str(run_dir / 'trades.log'),
         'DB_PATH': str(run_dir / 'sniper.db'),
         'TELEMETRY_DB_PATH': str(run_dir / 'telemetry.sqlite'),
@@ -230,9 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     """CLI, kept separate so `--duration-sec` is covered by tests."""
     parser = argparse.ArgumentParser(description='PAPER A/B local session runner')
     parser.add_argument(
-        '--duration', '--duration-sec', dest='duration', type=int, default=28800,
+        '--duration', '--duration-sec', dest='duration', type=int, default=1800,
         help='длительность сессии в секундах (алиас --duration-sec; по умолчанию '
-             '28800 = 8 ч. После 10-минутной проверки ставится 10800 = 3 ч)',
+             '1800 = 30 мин — прогон №8. 10800 = 3 ч, 28800 = 8 ч)',
     )
     parser.add_argument('--smoke', type=int, default=0,
                         help='короткий проверочный прогон: --smoke 150')

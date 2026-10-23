@@ -50,8 +50,8 @@ mkdir -p "$RUN_DIR/exports"
 # process environment only; no keyed URL is exported to disk or printed.
 unset SOLANA_HTTP_RPC_URL SOLANA_WSS_RPC_URL
 export RUN_ID RUN_DIR
-# Прогон №7: 8 часов, один процесс, четыре арма, одна граница на арм.
-export RUN_DURATION_SEC="${RUN_DURATION_SEC:-28800}"
+# Прогон №8: 30 минут, один процесс, две книги (S1/S0), выход fee_cover.
+export RUN_DURATION_SEC="${RUN_DURATION_SEC:-1800}"
 export PAPER_ONLY='1'
 export MODE='portfolio'
 export SOURCES='pumpfun'
@@ -75,7 +75,8 @@ export CREATOR_RISK_POLICY='warn'
 export CREATOR_HISTORY_DIR="$PROJECT/runs"
 export CREATOR_BLOCKLIST_PATH="$PROJECT/runs/known_scam_sellers.txt"
 # --- entry v3: live momentum; the arm name is the ONLY thing that differs ---
-export ARMS="${ARMS:-portfolio_a,portfolio_b1_narrow,portfolio_b2_birth,portfolio_b3_t0}"
+export ARMS="${ARMS:-portfolio_s1,portfolio_s0}"
+export ALLOW_SINGLE_ARM="${ALLOW_SINGLE_ARM:-1}"
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"
 # Потолок рождения 34.5 (а не 50): v_sol_birth = 29.96 + dev_buy, потолок 50
 # пускал монеты с покупкой дева 4-6 SOL; 36 из 50 таких падали <= -25%.
@@ -86,15 +87,26 @@ export ENTRY_DELTA_MAX_SOL="${ENTRY_DELTA_MAX_SOL:-2.5}"
 export ENTRY_DELTA_MAX_SOL_B1="${ENTRY_DELTA_MAX_SOL_B1:-1.00}"
 export ENTRY_BIRTH_MAX_SOL_B2="${ENTRY_BIRTH_MAX_SOL_B2:-31.00}"
 export ENTRY_DELTA_MIN_SOL_B3="${ENTRY_DELTA_MIN_SOL_B3:-0.00}"
+# --- run #8: S1 is B1 verbatim, S0 is S1 minus the momentum gate ------------
+export ENTRY_DELTA_MAX_SOL_S1="${ENTRY_DELTA_MAX_SOL_S1:-1.00}"
+export ENTRY_DELTA_MIN_SOL_S0="${ENTRY_DELTA_MIN_SOL_S0:-0.00}"
+# --- run #8 exit: hard stop -> cover the round trip -> 5 s clock ------------
+export EXIT_MODE="${EXIT_MODE:-fee_cover}"
+export EXIT_FEE_COVER_PCT="${EXIT_FEE_COVER_PCT:-3.5}"
+export EXIT_TIME_SEC="${EXIT_TIME_SEC:-5.0}"
+export EXIT_HARD_STOP_PCT="${EXIT_HARD_STOP_PCT:-10.0}"
+# --- run #8 fast entry and fast marks ---------------------------------------
+export ENTRY_LATENCY_MS="${ENTRY_LATENCY_MS:-0}"
+export MARK_POLL_SEC="${MARK_POLL_SEC:-0.15}"
 # --- passive coin features (0 RPC, decisions never read them) ---------------
 export ENTRY_ENRICH="${ENTRY_ENRICH:-1}"
 export CREATOR_GUARD_MIN_SIG="${CREATOR_GUARD_MIN_SIG:-25}"
 export CREATOR_BURST_WINDOW_SEC="${CREATOR_BURST_WINDOW_SEC:-3600}"
 export CREATOR_CACHE_TTL_SEC="${CREATOR_CACHE_TTL_SEC:-300}"
 export TELEMETRY_RUN_ID="$RUN_ID"
-# Run #7: offsets 0/5/15/60 fit the RPC budget; 10 and 120 are gone.
-export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5,15,60}"
-export WALLET_PATH="$RUN_DIR/wallet_portfolio_a.json"
+# Run #8: only 0 and 5 s — the poll cadence moved from 0.40 to 0.15 s.
+export TELEMETRY_OBSERVATION_OFFSETS_SEC="${TELEMETRY_OBSERVATION_OFFSETS_SEC:-0,5}"
+export WALLET_PATH="$RUN_DIR/wallet_portfolio_s1.json"
 export TRADE_LOG="$RUN_DIR/trades.log"
 export DB_PATH="$RUN_DIR/sniper.db"
 export TELEMETRY_DB_PATH="$RUN_DIR/telemetry.sqlite"
@@ -137,9 +149,11 @@ from detector import PUMP_PROGRAM_ID, select_programs
 from main_ab import _enrich_enabled, _observation_offsets
 from portfolio_ab import (
     ARM_ENV_KEYS, ARM_IDS, ARM_LABELS,
+    MARK_POLL_ADAPTED_SEC, MARK_POLL_RPS_LIMIT,
     STOP_DISK_FREE_BYTES, STOP_HELIUS_QUOTA_PCT, STOP_RPC_ERROR_RATE,
     STOP_RPC_LATENCY_HOLD_SEC, STOP_STALL_SEC,
-    PortfolioBook, arm_profiles,
+    ABPaperSimulator, PortfolioBook, arm_profiles, mark_poll_sec_from_env,
+    profiles_from_settings,
 )
 from pump_curve_quote import PUMP_FEE_CONFIG_PDA, PUMP_GLOBAL_PDA
 
@@ -215,8 +229,43 @@ for profile in profiles.values():
 # PERFORMA (born 39.88) is rejected by the 34.5 birth ceiling.
 assert profiles['portfolio_a'].entry_check(39.88, 40.41)[1] == 'birth_out_of_band'
 
-# --- observation schedule and passive features ------------------------------
-assert _observation_offsets() == (0, 5, 15, 60), _observation_offsets()
+# --- run #8: the LIVE set of books, built the way the run builds it ---------
+# `arm_profiles()` above is the pure catalogue; these are the books that will
+# actually trade, read through the same env this launcher exports.
+live = profiles_from_settings(s)
+assert tuple(live) == ('portfolio_s1', 'portfolio_s0'), tuple(live)
+assert 'portfolio_a' not in live
+assert os.getenv('ALLOW_SINGLE_ARM') == '1'
+assert live['portfolio_s1'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00')
+assert live['portfolio_s0'].entry_band_label == (
+    '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00')
+_live_s0_diff = {
+    key for key, value in asdict(live['portfolio_s0']).items()
+    if key not in ('name', 'arm_id', 'entry_band_label')
+    and asdict(live['portfolio_s1'])[key] != value
+}
+assert _live_s0_diff == {'delta_min_sol'}, _live_s0_diff
+# One exit for both books, and it is the declared fee_cover rule.
+assert {p.exit_mode for p in live.values()} == {'fee_cover'}
+assert {(p.fee_cover_pct, p.time_exit_sec, p.hard_stop_pct) for p in live.values()} == {
+    (3.5, 5.0, 10.0)}
+assert {p.entry_latency_ms for p in live.values()} == {0.0}
+for name, profile in live.items():
+    assert profile.position_size_rub == 500.0, name
+    assert profile.initial_balance_rub == 1500.0, name
+    assert profile.max_slots == 3, name
+    assert profile.auto_top_up is True, name
+# The three run #8 exit labels map to their own categories, never to unknown.
+assert ABPaperSimulator.exit_reason_kind('Hard stop (−10.0%)') == 'hard_stop'
+assert ABPaperSimulator.exit_reason_kind('Fee cover (+3.5%)') == 'fee_cover'
+assert ABPaperSimulator.exit_reason_kind('Time exit (5.0s)') == 'time_exit'
+assert 'fee cover' in ABPaperSimulator._exit_rule_label(live['portfolio_s1'])
+
+# --- observation schedule, mark cadence and passive features ----------------
+assert _observation_offsets() == (0, 5), _observation_offsets()
+assert mark_poll_sec_from_env() == 0.15, mark_poll_sec_from_env()
+assert MARK_POLL_RPS_LIMIT == 2.2 and MARK_POLL_ADAPTED_SEC == 0.25
 assert _enrich_enabled() is True
 
 # --- stop-list thresholds (the 2 % floor may not be raised) ------------------
@@ -228,9 +277,10 @@ assert STOP_DISK_FREE_BYTES == 2 * 1024 ** 3
 assert PUMP_GLOBAL_PDA and PUMP_FEE_CONFIG_PDA
 
 # --- bank: top-up only when cash < 500, stake and slots never change --------
+# Run #8: each book keeps its OWN 1500 RUB bank; nothing halves it.
 _bank_dir = Path(tempfile.mkdtemp())
 _book = PortfolioBook(
-    profiles['portfolio_a'], _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
+    live['portfolio_s1'], _bank_dir / 'wallet_bank.json', cash_balance_rub=300.0)
 _event = _book.maybe_top_up(at_epoch=1_700_000_000.0)
 assert _event is not None and _event['cash_before'] == 300.0
 assert _event['cash_after'] == 1500.0 and _event['amount_rub'] == 1200.0
@@ -240,10 +290,12 @@ assert _book.maybe_top_up() is None
 assert s.entry_fee_sol == 0.00008 and s.exit_fee_sol == 0.00005
 assert os.getenv('PAPER_ONLY') == '1'
 assert os.getenv('SOLANA_HTTP_RPC_URL') is None and os.getenv('SOLANA_WSS_RPC_URL') is None
-print('run #7 preflight OK: Helius host only; read-only; paper-only; one pumpfun source; '
-      'four arms A/B1/B2/B3 with exactly one entry boundary each (B3 = t0, '
-      'delta_min 0.00); one Round 6 exit ladder; offsets 0/5/15/60; enrich on; '
-      'bank top-up at cash<500 up to 1500; stop-list RPC floor 2 % not raised.')
+print('run #8 preflight OK: Helius host only; read-only; paper-only; one pumpfun '
+      'source; two books S1 (B1 itself) and S0 (S1 minus the momentum gate), no '
+      'A in this run; one fee_cover exit for both (hard stop -10 %, cover +3.5 %, '
+      'else 5 s, always 100 %); ENTRY_LATENCY_MS=0; MARK_POLL_SEC=0.15 with the '
+      '0.25 s adaptation at 2.2 rps/10 min; offsets 0/5; enrich on; each book '
+      'tops itself up to 1500 at cash<500; stop-list RPC floor 2 % not raised.')
 PY
 
 # Stream logs without echoing environment variables or keyed URLs.
