@@ -148,6 +148,15 @@ class ABProfile:
     fee_cover_pct: float = 3.5
     time_exit_sec: float = 5.0
     hard_stop_pct: float = 10.0
+    # --- run #9: name-copy filter, a per-book entry parameter ---------------
+    # `None` (the default) means the filter is off. An integer N means: reject
+    # a candidate if the same symbol (case-insensitive) was already launched
+    # within `name_copies_window_sec` before it, N or more times. N=0 is the
+    # strictest setting — "this symbol has been launched in the last 120 s, do
+    # not enter". An empty symbol is never filtered: there is nothing to match.
+    # Pure in-memory bookkeeping, no RPC.
+    max_name_copies_120s: Optional[int] = None
+    name_copies_window_sec: float = 120.0
     # Accounting only; a book never shares cash with another arm.
     capital_rub: float = 1_500.0
     initial_balance_rub: float = 1_500.0
@@ -228,6 +237,11 @@ ARM_IDS: tuple[str, ...] = (
     # with S1, not with B1 — so `ARM_REFERENCE` says who each arm is measured
     # against. A is still the reference of every run #7 arm.
     'portfolio_s1', 'portfolio_s0',
+    # Run #9 (12-hour S0 vs S2 run): S0 is run #8's S0 unchanged, S2 moves two
+    # entry numbers only — the birth floor 31.96 (dev buy >= 2 SOL) and the
+    # name-copy filter. The exit, the stake, the slots and the cadence are
+    # identical in both books.
+    'portfolio_s2',
 )
 
 # Default boundaries of the three experimental arms. They live in env as well
@@ -244,7 +258,14 @@ ARM_DEFAULTS: dict[str, dict[str, float]] = {
     'portfolio_b3_t0': {'delta_min_sol': 0.00},
     # S1 = B1 verbatim. S0 = S1 with ONE boundary moved: delta_min 0.10 -> 0.00.
     'portfolio_s1': {'delta_max_sol': 1.00},
-    'portfolio_s0': {'delta_max_sol': 1.00, 'delta_min_sol': 0.00},
+    # Run #9: S0 keeps the run #8 band AND states its birth floor explicitly,
+    # so the one thing that differs from S2 is readable at a glance.
+    'portfolio_s0': {'delta_max_sol': 1.00, 'delta_min_sol': 0.00,
+                     'v_sol_birth_min': 30.50, 'max_name_copies_120s': None},
+    # 31.96 = 29.96 (bare launch) + 2 SOL of the dev's own buy; run #9's only
+    # change to the reference book is this floor plus the name-copy rule.
+    'portfolio_s2': {'v_sol_birth_min': 31.96, 'delta_max_sol': 1.00,
+                     'delta_min_sol': 0.00, 'max_name_copies_120s': 0},
 }
 ARM_LABELS: dict[str, str] = {
     'portfolio_a': 'A',
@@ -253,6 +274,7 @@ ARM_LABELS: dict[str, str] = {
     'portfolio_b3_t0': 'B3',
     'portfolio_s1': 'S1',
     'portfolio_s0': 'S0',
+    'portfolio_s2': 'S2',
 }
 # arm -> (env key, profile field). Each experimental arm names ONE boundary
 # it may move; everything else about it is an explicit ARM_DEFAULTS entry, so
@@ -263,6 +285,23 @@ ARM_ENV_KEYS: dict[str, tuple[str, str]] = {
     'portfolio_b3_t0': ('ENTRY_DELTA_MIN_SOL_B3', 'delta_min_sol'),
     'portfolio_s1': ('ENTRY_DELTA_MAX_SOL_S1', 'delta_max_sol'),
     'portfolio_s0': ('ENTRY_DELTA_MIN_SOL_S0', 'delta_min_sol'),
+    'portfolio_s2': ('ENTRY_BIRTH_MIN_S2', 'v_sol_birth_min'),
+}
+
+# Additional per-book env keys, beyond the ONE boundary `ARM_ENV_KEYS` gives
+# each arm. Kept flat (arm -> tuple of (env key, profile field)) for the same
+# reason: every number a run uses is named in the manifest, and a key that is
+# set in the environment is never silently ignored.
+#
+# `MAX_NAME_COPIES_*` takes an integer or `off` (filter disabled).
+ARM_ENV_EXTRA: dict[str, tuple[tuple[str, str], ...]] = {
+    'portfolio_s0': (
+        ('ENTRY_BIRTH_MIN_S0', 'v_sol_birth_min'),
+        ('MAX_NAME_COPIES_S0', 'max_name_copies_120s'),
+    ),
+    'portfolio_s2': (
+        ('MAX_NAME_COPIES_S2', 'max_name_copies_120s'),
+    ),
 }
 # Which profile each arm is compared with. S0 is a control for S1, not for A:
 # the question is "does the momentum gate help", not "does S0 beat A".
@@ -273,14 +312,27 @@ ARM_REFERENCE: dict[str, str] = {
     'portfolio_b3_t0': 'portfolio_a',
     'portfolio_s1': 'portfolio_a',
     'portfolio_s0': 'portfolio_s1',
+    # Run #9 asks whether the dev-buy floor plus the name-copy filter beat the
+    # unchanged book, so S2 is measured against S0 — not against A.
+    'portfolio_s2': 'portfolio_s0',
 }
 
 
 def entry_band_label(profile: 'ABProfile') -> str:
-    """The band of one arm, printed in the report next to its name."""
-    return (
+    """The band of one arm, printed in the report next to its name.
+
+    Run #9 adds the name-copy rule here as well: it is an entry parameter, and
+    a reader must not have to open the code to learn that S2 refuses a second
+    launch of the same ticker."""
+    label = (
         f'{profile.v_sol_birth_min:.2f} <= v_sol_birth <= {profile.v_sol_birth_max:.2f}; '
         f'{profile.delta_min_sol:.2f} <= delta <= {profile.delta_max_sol:.2f}'
+    )
+    if profile.max_name_copies_120s is None:
+        return f'{label}; name copies: off'
+    return (
+        f'{label}; name copies {profile.name_copies_window_sec:.0f}s '
+        f'<= {profile.max_name_copies_120s}'
     )
 
 
@@ -320,6 +372,22 @@ def exit_mode_from_env(default: str = 'ladder') -> str:
     return raw
 
 
+def _parse_name_copies(env_key: str, raw: str) -> Optional[int]:
+    """`off` disables the filter; any other value is a non-negative count."""
+    text = (raw or '').strip().lower()
+    if text in {'off', 'none', 'no', 'false', 'null', 'disabled'}:
+        return None
+    try:
+        value = int(float(text))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f'{env_key} must be an integer or off, got {raw!r}'
+        ) from exc
+    if value < 0:
+        raise ValueError(f'{env_key} must be >= 0, got {raw!r}')
+    return value
+
+
 def allow_single_arm() -> bool:
     return (os.getenv('ALLOW_SINGLE_ARM') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
@@ -357,7 +425,9 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
     }
     overrides: dict[str, dict[str, float]] = {}
     for arm, (env_key, field) in ARM_ENV_KEYS.items():
-        defaults = {key: float(val) for key, val in ARM_DEFAULTS.get(arm, {}).items()}
+        # Non-numeric defaults (the name-copy rule: an int or None) are kept
+        # as they are; the single boundary below is always a float.
+        defaults = {key: val for key, val in ARM_DEFAULTS.get(arm, {}).items()}
         raw = (os.getenv(env_key) or '').strip()
         if raw:
             defaults[field] = float(raw)
@@ -366,6 +436,19 @@ def profiles_from_settings(settings: Any) -> dict[str, 'ABProfile']:
                 getattr(settings, settings_attr.get(arm, ''), defaults[field])
             )
         overrides[arm] = defaults
+    # Run #9: the extra per-book keys (birth floor of the control book, the
+    # name-copy rule). Applied after the single boundary so an explicit
+    # ENTRY_BIRTH_MIN_S0 always wins over the ARM_DEFAULTS value.
+    for arm, extra_keys in ARM_ENV_EXTRA.items():
+        for env_key, field in extra_keys:
+            raw = (os.getenv(env_key) or '').strip()
+            if not raw:
+                continue
+            value: Any = (
+                _parse_name_copies(env_key, raw)
+                if field == 'max_name_copies_120s' else float(raw)
+            )
+            overrides.setdefault(arm, {})[field] = value
     wanted = [
         name.strip() for name in
         os.getenv('ARMS', ','.join(ARM_IDS)).split(',') if name.strip()
@@ -479,6 +562,18 @@ class SimPosition:
     #   t_total_ms   WSS packet -> the fill row
     # t_read_ms is 0 whenever the filter batch IS the entry read, which is the
     # production path: no second entry RPC is issued to make a stage look busy.
+    # Run #9 §2.4: the real price 5 s after the entry, taken from the tick
+    # stream while the position is open or from the post-exit ghost after it
+    # closed. None when no mark is within POST_EXIT_NEAREST_TOLERANCE_SEC of
+    # the 5-second mark — an absent value is honest, an interpolated one is not.
+    price_at_5s: Optional[float] = None
+    pnl_pct_at_5s: Optional[float] = None
+    price_at_5s_source: Optional[str] = None
+    # Run #9 §3: how many times this ticker had already been launched in the
+    # 120 s before entry (0 = first launch of that symbol we saw).
+    name_copies_120s: Optional[int] = None
+    # Run #9 §2.3: the post-exit ghost marks for this position.
+    post_exit_marks: list[dict[str, Any]] = field(default_factory=list)
     t_detect_ms: Optional[float] = None
     t_filters_ms: Optional[float] = None
     t_read_ms: Optional[float] = None
@@ -541,6 +636,13 @@ class PortfolioBook:
     # the sample, the comparison must switch to RUB per trade.
     slots_full_count: int = 0
     cash_below_slot_count: int = 0
+    # Run #9 §3: why a candidate did not become a trade, counted per book, so
+    # the funnel survives a dropped telemetry row.
+    birth_band_count: int = 0
+    delta_min_count: int = 0
+    delta_max_count: int = 0
+    name_copies_count: int = 0
+    no_price_count: int = 0
     # --- run #3 addendum: bank accounting (never touches decisions) ---
     top_ups: int = 0
     capital_injected_rub: float = 0.0
@@ -1080,6 +1182,15 @@ class ABPaperSimulator:
         # a failure.
         self.last_entry_latency_wait_sec = 0.0
         self.entry_lag_ms_by_profile: dict[str, list[float]] = {}
+        # --- run #9 §2.2: name-copy registry -------------------------------
+        # symbol (lower-case) -> epochs of the launches we saw, pruned to the
+        # widest window any book asks about. In memory only: no RPC, no file.
+        self._symbol_launches: dict[str, list[float]] = {}
+        self.symbols_seen = 0
+        self.symbols_with_copies = 0
+        # --- run #9 §2.3: post-exit ghosts --------------------------------
+        self.post_exit_rows: list[dict[str, Any]] = []
+        self._ghosts: list[dict[str, Any]] = []
         self._book_last_entry_epoch: dict[str, float] = {
             name: self.started_at_epoch for name in self.books
         }
@@ -1263,6 +1374,54 @@ class ABPaperSimulator:
         await asyncio.sleep(wait)
         return wait
 
+    def _name_copies_window_sec(self) -> float:
+        windows = [
+            float(book.profile.name_copies_window_sec)
+            for book in self.books.values()
+            if book.profile.max_name_copies_120s is not None
+        ]
+        return max(windows) if windows else 0.0
+
+    def count_name_copies(self, coin: NewCoin, at_epoch: Optional[float] = None) -> int:
+        """How many times this ticker was launched before, inside the window.
+
+        Pure arithmetic on a dict we already hold: no RPC. The current launch
+        does not count itself, and an empty symbol is never a copy of
+        anything (there is nothing to compare).
+        """
+        symbol = str((coin.packet or {}).get('symbol') or '').strip().lower()
+        if not symbol:
+            return 0
+        window = self._name_copies_window_sec()
+        if window <= 0:
+            return 0
+        at = float(coin.found_at if at_epoch is None else at_epoch)
+        launches = [
+            epoch for epoch in self._symbol_launches.get(symbol, [])
+            if at - window <= epoch < at
+        ]
+        return len(launches)
+
+    def remember_symbol_launch(self, coin: NewCoin) -> None:
+        """Register the launch, whatever the books decide about it afterwards.
+
+        A coin rejected by the security filters is still a launch of that
+        ticker, so a later coin with the same symbol must see it.
+        """
+        symbol = str((coin.packet or {}).get('symbol') or '').strip().lower()
+        if not symbol:
+            return
+        at = float(coin.found_at)
+        launches = [epoch for epoch in self._symbol_launches.get(symbol, []) if epoch <= at]
+        launches.append(at)
+        window = max(self._name_copies_window_sec(), 0.0)
+        if window > 0:
+            launches = [epoch for epoch in launches if epoch >= at - window]
+        self._symbol_launches[symbol] = launches
+        self.symbols_seen += 1
+        if len(launches) > 1:
+            self.symbols_with_copies += 1
+
     async def handle_candidate(self, coin: NewCoin) -> None:
         if coin.source != 'Pump.fun':
             collector = self._collector()
@@ -1275,8 +1434,12 @@ class ABPaperSimulator:
         # is DexScreener, not Helius, so it costs neither RPC budget nor a
         # filter-semaphore slot.
         sol_usd_task = asyncio.create_task(get_sol_usd(self.session))
+        # Run #9 §2.2: count the copies BEFORE registering this launch, then
+        # register it — every book sees the same number, computed once.
+        name_copies = self.count_name_copies(coin)
+        self.remember_symbol_launch(coin)
         try:
-            await self._handle_candidate_checks(coin, sol_usd_task)
+            await self._handle_candidate_checks(coin, sol_usd_task, name_copies)
         finally:
             # Rejections return early all over the place; never leave the
             # prefetched rate running behind them.
@@ -1289,6 +1452,7 @@ class ABPaperSimulator:
 
     async def _handle_candidate_checks(
         self, coin: NewCoin, sol_usd_task: 'asyncio.Future',
+        name_copies: int = 0,
     ) -> None:
         """Everything after the source check, with the rate prefetch in flight."""
         handler_started = time.monotonic()
@@ -1432,6 +1596,7 @@ class ABPaperSimulator:
             self._consider_entry(
                 book, coin, snapshot, birth_v_sol, current_v_sol,
                 sol_usd, filter_metrics, decision_epoch,
+                name_copies=name_copies,
             )
             for book in self.books.values()
         ))
@@ -1521,6 +1686,8 @@ class ABPaperSimulator:
             book.slots_full_count += 1
         elif reason == 'cash_below_slot_size':
             book.cash_below_slot_count += 1
+        elif reason in {'sol_usd_unavailable', 'invalid_sol_rub_conversion'}:
+            book.no_price_count += 1
         collector = self._collector()
         if collector is not None:
             collector.record_decision(
@@ -1559,20 +1726,49 @@ class ABPaperSimulator:
         sol_usd: float,
         filter_metrics: dict[str, Any],
         decision_epoch: Optional[float] = None,
+        name_copies: int = 0,
     ) -> None:
         decision_epoch = float(decision_epoch or time.time())
         profile = book.profile
-        qualifies, entry_rule = profile.entry_check(birth_v_sol, current_v_sol)
         collector = self._collector()
+        symbol = str((coin.packet or {}).get('symbol') or '').strip()
+        # Run #9 §2.2: the name-copy rule runs BEFORE the band, because it is
+        # about the coin, not about the price. An empty ticker is never
+        # filtered: there is nothing to compare it with.
+        if (
+            symbol and profile.max_name_copies_120s is not None
+            and name_copies > int(profile.max_name_copies_120s)
+        ):
+            book.name_copies_count += 1
+            if collector is not None:
+                collector.record_decision(
+                    coin.mint, coin.source, f'{profile.name}_entry', 'skipped',
+                    ['name_copies_120s'],
+                    {'symbol': symbol, 'name_copies_120s': name_copies,
+                     'max_name_copies_120s': int(profile.max_name_copies_120s),
+                     'window_sec': profile.name_copies_window_sec,
+                     'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
+                     'paper_only': True},
+                )
+            return
+        qualifies, entry_rule = profile.entry_check(birth_v_sol, current_v_sol)
         if collector is not None:
             collector.record_decision(
                 coin.mint, coin.source, f'{profile.name}_signal',
                 'pass' if qualifies else 'skip', [entry_rule],
                 {'v_sol_birth': birth_v_sol, 'v_sol_now': current_v_sol,
                  'entry_profile': profile.name,
+                 'symbol': symbol, 'name_copies_120s': name_copies,
+                 'max_name_copies_120s': profile.max_name_copies_120s,
                  'as_of_epoch': decision_epoch, 'paper_only': True},
             )
         if not qualifies:
+            if entry_rule == 'birth_out_of_band':
+                book.birth_band_count += 1
+            elif entry_rule in {'no_live_momentum', 'entry_below_delta_min'}:
+                book.delta_min_count += 1
+            elif entry_rule == 'momentum_too_late':
+                book.delta_max_count += 1
             return
         async with book.lock:
             if coin.mint in book.positions or coin.mint in book.closed_mints:
@@ -1728,6 +1924,7 @@ class ABPaperSimulator:
                 conservative_remaining_entry_fee_rub=entry_fee_rub,
                 best_pnl_updated_at=decision_epoch,
                 entry_lag_sec=round(max(0.0, decision_epoch - coin.found_at), 3),
+                name_copies_120s=int(name_copies),
                 entry_premium_pct=(
                     round(entry_premium_pct, 4) if entry_premium_pct is not None else None
                 ),
@@ -1801,6 +1998,10 @@ class ABPaperSimulator:
                 'entry_price_source': 'first_onchain_curve_read_after_detection',
                 'entry_at_detection': profile.entry_at_detection,
                 'delta_min_sol': profile.delta_min_sol,
+                'delta_at_entry_sol': round(current_v_sol - birth_v_sol, 6),
+                'name_copies_120s': int(name_copies),
+                'max_name_copies_120s': profile.max_name_copies_120s,
+                'v_sol_birth_min': profile.v_sol_birth_min,
                 'delta_cap_sol': round(profile.delta_cap(birth_v_sol), 6),
                 'wss_packet_price_used': False,
                 **filter_metrics,

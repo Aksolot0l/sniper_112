@@ -171,7 +171,9 @@ class ABProfileTests(unittest.TestCase):
             self.assertEqual(profiles[name].delta_min_sol, 0.10, name)
         for name in ARM_IDS:
             arm = profiles[name]
-            self.assertEqual(arm.v_sol_birth_min, 30.5, name)
+            # Run #9: S2 is the one book with a different birth floor.
+            expected_floor = 31.96 if name == 'portfolio_s2' else 30.5
+            self.assertEqual(arm.v_sol_birth_min, expected_floor, name)
             self.assertEqual(arm.stop_loss_pct, 10.0, name)
             self.assertEqual(arm.tp1_pct, 30.0, name)
             self.assertEqual(arm.tp1_sell_pct, 50.0, name)
@@ -183,6 +185,54 @@ class ABProfileTests(unittest.TestCase):
                       profiles['portfolio_b2_birth'].entry_band_label)
         self.assertIn('0.00 <= delta <= 2.50', profiles['portfolio_b3_t0'].entry_band_label)
         self.assertEqual(ARM_LABELS['portfolio_b3_t0'], 'B3')
+
+    def test_run9_books_declare_the_selection_they_use(self) -> None:
+        profiles = arm_profiles()
+        s0, s2 = profiles['portfolio_s0'], profiles['portfolio_s2']
+        # S0 is run #8's S0: same band, no name-copy filter.
+        self.assertEqual((s0.v_sol_birth_min, s0.v_sol_birth_max), (30.50, 34.50))
+        self.assertEqual((s0.delta_min_sol, s0.delta_max_sol), (0.00, 1.00))
+        self.assertIsNone(s0.max_name_copies_120s)
+        # S2 moves exactly two entry numbers and nothing else.
+        self.assertEqual((s2.v_sol_birth_min, s2.v_sol_birth_max), (31.96, 34.50))
+        self.assertEqual((s2.delta_min_sol, s2.delta_max_sol), (0.00, 1.00))
+        self.assertEqual(s2.max_name_copies_120s, 0)
+        self.assertEqual(s2.name_copies_window_sec, 120.0)
+        # The exit and the money are identical in both books.
+        reference = asdict(s0)
+        diff = {
+            key for key, value in asdict(s2).items()
+            if key not in ('name', 'arm_id', 'entry_band_label') and reference[key] != value
+        }
+        self.assertEqual(diff, {'v_sol_birth_min', 'max_name_copies_120s'})
+        for name in ('portfolio_s0', 'portfolio_s2'):
+            profile = profiles[name]
+            self.assertEqual(profile.exit_mode, 'ladder')
+            for field in ('stop_loss_pct', 'tp1_pct', 'tp1_sell_pct',
+                          'max_slots', 'position_size_rub', 'initial_balance_rub'):
+                self.assertEqual(getattr(profile, field), getattr(PROFILE_A, field),
+                                 (name, field))
+        self.assertEqual(ARM_REFERENCE['portfolio_s2'], 'portfolio_s0')
+        self.assertIn('31.96 <= v_sol_birth <= 34.50', s2.entry_band_label)
+        self.assertIn('name copies 120s <= 0', s2.entry_band_label)
+        self.assertIn('name copies: off', s0.entry_band_label)
+
+    def test_run9_env_names_every_number_the_run_uses(self) -> None:
+        env = {
+            'ARMS': 'portfolio_s0,portfolio_s2', 'ALLOW_SINGLE_ARM': '1',
+            'ENTRY_BIRTH_MIN_S0': '30.50', 'MAX_NAME_COPIES_S0': 'off',
+            'ENTRY_BIRTH_MIN_S2': '31.96', 'MAX_NAME_COPIES_S2': '0',
+        }
+        with patch.dict(os.environ, env, clear=True):
+            profiles = profiles_from_settings(object())
+        self.assertEqual(list(profiles), ['portfolio_s0', 'portfolio_s2'])
+        self.assertEqual(profiles['portfolio_s0'].v_sol_birth_min, 30.50)
+        self.assertIsNone(profiles['portfolio_s0'].max_name_copies_120s)
+        self.assertEqual(profiles['portfolio_s2'].v_sol_birth_min, 31.96)
+        self.assertEqual(profiles['portfolio_s2'].max_name_copies_120s, 0)
+        with patch.dict(os.environ, {**env, 'MAX_NAME_COPIES_S2': 'garbage'}, clear=True):
+            with self.assertRaises(ValueError):
+                profiles_from_settings(object())
 
     def test_run8_pair_is_b1_and_b1_without_the_momentum_gate(self) -> None:
         profiles = arm_profiles()
@@ -2133,10 +2183,16 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
                     for name in simulator.books
                 ))
             positions = {
-                name: book.positions['mint-parity'] for name, book in simulator.books.items()
+                name: book.positions['mint-parity']
+                for name, book in simulator.books.items()
+                if name != 'portfolio_s2'
             }
-            # 30.8 birth and a 0.4 delta sit inside every declared band.
-            self.assertEqual(sorted(positions), sorted(ARM_IDS))
+            # 30.8 birth and a 0.4 delta sit inside every run #7/#8 band; run
+            # #9's S2 lifts the birth floor to 31.96 and is checked below.
+            self.assertEqual(
+                sorted(positions),
+                sorted(name for name in ARM_IDS if name != 'portfolio_s2'),
+            )
             for name, pos in positions.items():
                 self.assertEqual(pos.initial_tokens_raw,
                                  positions['portfolio_a'].initial_tokens_raw, name)
@@ -2144,7 +2200,12 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(pos.opened_at_epoch, epoch)
             # And every book's cash is down by exactly one slot.
             for name, book in simulator.books.items():
+                if name == 'portfolio_s2':
+                    continue
                 self.assertAlmostEqual(book.cash_balance_rub, 1_000.0, places=3, msg=name)
+            # Run #9's S2 refuses a 30.8 SOL launch as outside its band.
+            self.assertNotIn('mint-parity', simulator.books['portfolio_s2'].positions)
+            self.assertEqual(simulator.books['portfolio_s2'].birth_band_count, 1)
 
     async def test_t0_arm_enters_the_zero_impulse_coin_the_others_skip(self) -> None:
         # delta == 0: no impulse since detection. A/B1/B2 wait for momentum,
@@ -2167,4 +2228,93 @@ class RunSevenArmParityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('mint-t0', simulator.books[name].positions, name)
                 self.assertAlmostEqual(
                     simulator.books[name].cash_balance_rub, 1_500.0, places=3, msg=name,
+                )
+
+
+class RunNineNameCopiesTests(unittest.IsolatedAsyncioTestCase):
+    """§2.2: the name-copy filter is a per-book entry parameter, no RPC."""
+
+    def _profiles(self):
+        return {
+            'portfolio_s0': replace(
+                arm_profiles()['portfolio_s0'],
+                max_name_copies_120s=None, name_copies_window_sec=120.0,
+            ),
+            'portfolio_s2': replace(
+                arm_profiles()['portfolio_s2'],
+                max_name_copies_120s=0, name_copies_window_sec=120.0,
+            ),
+        }
+
+    def _coin(self, mint: str, symbol: str, found_at: float) -> NewCoin:
+        return NewCoin(
+            mint=mint, source='Pump.fun', signature=f'sig-{mint}',
+            curve='curve-test',
+            packet={'v_sol': 32.5, 'symbol': symbol}, found_at=found_at,
+        )
+
+    def test_copies_are_counted_inside_the_window_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp), profiles=self._profiles())
+            base = 1_000.0
+            simulator.remember_symbol_launch(self._coin('m1', 'DOGE', base))
+            # 121 s later the first launch is out of the 120 s window.
+            late = self._coin('m2', 'DOGE', base + 121.0)
+            self.assertEqual(simulator.count_name_copies(late), 0)
+            # Inside the window it counts, case-insensitively.
+            soon = self._coin('m3', 'doge', base + 30.0)
+            self.assertEqual(simulator.count_name_copies(soon), 1)
+            self.assertEqual(simulator.count_name_copies(
+                self._coin('m4', 'Doge', base + 60.0)), 1)
+
+    def test_an_empty_symbol_is_never_a_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp), profiles=self._profiles())
+            simulator.remember_symbol_launch(self._coin('m1', '', 100.0))
+            simulator.remember_symbol_launch(self._coin('m2', '', 101.0))
+            self.assertEqual(
+                simulator.count_name_copies(self._coin('m3', '', 102.0)), 0,
+            )
+
+    async def test_s2_refuses_a_repeat_launch_while_s0_enters_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp), profiles=self._profiles())
+            snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+            epoch = time.time()
+            first = self._coin('mint-first', 'WIF', epoch - 20.0)
+            second = self._coin('mint-second', 'WIF', epoch - 1.0)
+            with patch('portfolio_ab.get_collector', return_value=None):
+                # Register the first launch the way handle_candidate does.
+                copies_first = simulator.count_name_copies(first)
+                simulator.remember_symbol_launch(first)
+                copies_second = simulator.count_name_copies(second)
+                simulator.remember_symbol_launch(second)
+                self.assertEqual((copies_first, copies_second), (0, 1))
+                for book in simulator.books.values():
+                    await simulator._consider_entry(
+                        book, second, snapshot, 32.5, 32.6, 200.0, {}, epoch,
+                        name_copies=copies_second,
+                    )
+            self.assertIn('mint-second', simulator.books['portfolio_s0'].positions)
+            self.assertNotIn('mint-second', simulator.books['portfolio_s2'].positions)
+            self.assertEqual(simulator.books['portfolio_s2'].name_copies_count, 1)
+            pos = simulator.books['portfolio_s0'].positions['mint-second']
+            self.assertEqual(pos.name_copies_120s, 1)
+
+    async def test_a_first_launch_passes_the_strict_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            simulator = make_simulator(Path(tmp), profiles=self._profiles())
+            snapshot = EntrySnapshot(make_curve(), make_fee_context_for_test(), 12, time.time())
+            epoch = time.time()
+            coin = self._coin('mint-solo', 'BONK', epoch - 1.0)
+            with patch('portfolio_ab.get_collector', return_value=None):
+                for book in simulator.books.values():
+                    await simulator._consider_entry(
+                        book, coin, snapshot, 32.5, 32.6, 200.0, {}, epoch,
+                        name_copies=0,
+                    )
+            for name in ('portfolio_s0', 'portfolio_s2'):
+                self.assertIn('mint-solo', simulator.books[name].positions, name)
+                self.assertEqual(
+                    simulator.books[name].positions['mint-solo'].name_copies_120s, 0,
                 )

@@ -64,10 +64,14 @@ class ChildEnvironmentTests(unittest.TestCase):
             profiles = profiles_from_settings(object())
         self.assertEqual(list(profiles), ['portfolio_s1', 'portfolio_s0'])
         s1, s0 = profiles['portfolio_s1'], profiles['portfolio_s0']
+        # Run #9 added the name-copy clause to the band label: an entry
+        # parameter belongs next to the band it is part of.
         self.assertEqual(s1.entry_band_label,
-                         '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00')
+                         '30.50 <= v_sol_birth <= 34.50; 0.10 <= delta <= 1.00; '
+                         'name copies: off')
         self.assertEqual(s0.entry_band_label,
-                         '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00')
+                         '30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; '
+                         'name copies: off')
         self.assertEqual((s1.exit_mode, s1.fee_cover_pct, s1.time_exit_sec,
                           s1.hard_stop_pct), ('fee_cover', 3.5, 5.0, 10.0))
         self.assertEqual((s0.exit_mode, s0.fee_cover_pct, s0.time_exit_sec,

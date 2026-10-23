@@ -966,6 +966,83 @@ def _strategy_metadata() -> dict[str, Any]:
             'would make exit timing depend on which stream arrived first'
         ),
         'run8_single_difference': 'delta_min_sol (S0 vs S1)',
+        # --- run #9: 12 h, S0 (unchanged) vs S2 (dev-buy floor + copies) ----
+        'run9_design': (
+            'S0 is run #8\'s S0 verbatim: birth 30.50-34.50, delta 0.00-1.00, '
+            'no name-copy filter. S2 moves two entry numbers only: birth floor '
+            '31.96 (dev buy >= 2 SOL) and at most 0 launches of the same ticker '
+            'in the previous 120 s. Exit (hard stop -10%, sell 100% at +3.5%, '
+            'else 5 s), stake 500 RUB, 3 slots and cadence are identical in both '
+            'books, so the difference between the books is the selection only.'
+        ),
+        'run9_why': (
+            'run #8 replay: the misses are already -3.03% at 0.5 s and every '
+            'take fires inside 0.17-3.02 s, so clock and latency are not the '
+            'problem; the -3% round trip (2.5 pp of it pump.fun fees) is paid '
+            'on every trade. The only lever left is the share of coins that '
+            'actually jump, so only the selection of the second book changes.'
+        ),
+        'run9_out_of_scope': (
+            'no exit change in any book, no band/copies/stake/cadence change '
+            'mid-run, no arms A/B1/B2/B3, no direct comparison with run #8 '
+            '(that run had no name-copy filter and a softer window: 5 stops of '
+            '64 vs the 28% the grid expects), no PnL claim without n, mean, '
+            'median, CI95 and the exit breakdown.'
+        ),
+        'run9_acceptance_a': (
+            'A = 30-min technical smoke, not money: paper_only and 0 signed; '
+            'duration >= 1790 s; early_stop_reason = null; unrecovered RPC '
+            'errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.5; '
+            'dropped_events = 0 and write_errors = 0; 0 open positions at the '
+            'end; >= 5 trades per book (otherwise report the actual count); '
+            'post_exit.csv exists with >= 5 marks per exit; manifest shows the '
+            'bands 30.50-34.50 (S0) and 31.96-34.50 (S2), copies off (S0) and '
+            '0 (S2); median round_trip_cost_pct recorded, and if it is above '
+            '4.0% run B is not started'
+        ),
+        'run9_acceptance_b': (
+            'B = 12-h money run: duration >= 43000 s of actual polling; '
+            'early_stop_reason = null; mean rps <= 1.8 and worst window <= 2.5; '
+            'unrecovered RPC errors <= 1%; 0 open positions at the end; '
+            'post_exit.csv filled for every exit'
+        ),
+        'run9_effect_rule': (
+            'fixed before the start: (1) S2 CI95 of the mean excludes 0 and the '
+            'estimate is >= +2% -> selection accepted, go discuss a real run; '
+            '(2) CI95 includes 0 -> not proven, the same config may not be '
+            'repeated and the next step is a pointed change; (3) estimate '
+            'negative with CI95 entirely below 0 -> selection rejected; '
+            '(4) S0 vs S2 also compared pairwise by minute (same candidates at '
+            'the same moment): share of minutes where S2 earned more and the '
+            'mean difference in RUB; (5) inside S0, split dev 2-4.5 & copies=0 '
+            'vs dev 2-4.5 & copies>0 vs dev < 2'
+        ),
+        'run9_early_stop': (
+            'ONE pre-agreed exception to "PnL never stops a run": at hour 8, if '
+            'the CI95 of the S2 mean is entirely below zero, the run stops with '
+            'early_stop_reason = negative_edge_S2 and a report. Nothing else '
+            'stops a run on money'
+        ),
+        'run9_post_exit': (
+            'after a position closes the coin stays in the mark poll for 10 s '
+            'and every mark goes to exports/post_exit.csv (portfolio, mint, '
+            'exit_at_epoch, sec_since_exit, price_usd, pnl_vs_entry_pct, '
+            'pnl_vs_exit_pct). It shares the getMultipleAccounts batch the open '
+            'positions already trigger, so it costs no extra RPC; it measures '
+            'what a paper fill that books the trigger price in the same '
+            'snapshot would lose against a real one'
+        ),
+        'run9_price_at_5s': (
+            'every trade carries price_at_5s: the real price 5 s after the '
+            'entry, from the tick stream while open or from the post-exit ghost '
+            'after it closed (nearest mark within 0.75 s, else null). It is the '
+            'only way to answer what the 5 s clock would have returned instead '
+            'of the take'
+        ),
+        'run9_single_difference': (
+            'entry selection: birth floor 31.96 and name copies <= 0 (S2 vs S0); '
+            'the exit, the stake, the slots and the cadence are identical'
+        ),
         'arms': {
             'portfolio_a': {'arm_id': 'A', 'band': '30.5-34.5 / 0.10-2.50',
                             'role': 'reference, unchanged in every symbol'},
@@ -990,7 +1067,14 @@ def _strategy_metadata() -> dict[str, Any]:
             'portfolio_s0': {'arm_id': 'S0', 'band': '30.5-34.5 / 0.00-1.00',
                              'changed': 'delta_min 0.10 -> 0.00, against S1 not A',
                              'role': 'run #8 control: same band as S1 minus the '
-                                     'momentum gate'},
+                                     'momentum gate; run #9 keeps it unchanged'},
+            # --- run #9: the reference book and the selection change --------
+            'portfolio_s2': {'arm_id': 'S2', 'band': '31.96-34.5 / 0.00-1.00',
+                             'changed': 'v_sol_birth_min 30.50 -> 31.96 (dev '
+                                        'buy >= 2 SOL) and the name-copy filter '
+                                        '0 copies in 120 s',
+                             'role': 'run #9 treatment book, measured against '
+                                     'S0 with the same exit'},
             'portfolio_b3_t0': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.00-2.50',
                                 'changed': 'delta_min 0.10 -> 0.00',
                                 'why': 'the only arm whose expected gain is '
@@ -1079,6 +1163,9 @@ def _strategy_metadata() -> dict[str, Any]:
                                  'changed': 'none vs B1; no A in this run'},
                 'portfolio_s0': {'arm_id': 'S0', 'band': '30.5-34.5 / 0.00-1.00',
                                  'changed': 'delta_min_sol 0.10 -> 0.00, vs S1'},
+                'portfolio_s2': {'arm_id': 'S2', 'band': '31.96-34.5 / 0.00-1.00',
+                                 'changed': 'v_sol_birth_min 30.50 -> 31.96 + '
+                                            'name copies 0 / 120 s, vs S0'},
             }.items()
         },
     }
