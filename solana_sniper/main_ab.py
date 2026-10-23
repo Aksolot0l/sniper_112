@@ -138,6 +138,16 @@ BASELINE_RUN_1 = {
 }
 
 
+def _enrich_host_status(stats: Any) -> str:
+    """'ok' | 'enrich_unavailable' | 'no_rows' from the collector counters."""
+    data = stats if isinstance(stats, dict) else {}
+    rows = int(data.get('rows') or 0)
+    ok = int(data.get('ok') or 0)
+    if rows <= 0:
+        return 'no_rows'
+    return 'ok' if ok > 0 else 'enrich_unavailable'
+
+
 def _money(value: Any) -> str:
     """Rouble cell: two decimals, or an em dash when the number is missing."""
     try:
@@ -226,6 +236,8 @@ def _summary_markdown(
         changed = ', '.join(
             ((ab.get('arms') or {}).get(name) or {}).get('single_boundary_vs_a') or []
         ) or 'эталон'
+        if name == (ab.get('reference_arm') or 'portfolio_a'):
+            changed = 'эталон'
         add(f'| {_arm_name(name)} (`{name}`) | {band} | {changed} |')
     add('')
     add('Выход у всех арм одинаковый — лестница Round 6 (SL −10 % до TP1/ракеты, '
@@ -1056,6 +1068,10 @@ async def main() -> None:
                     **(summary.get('enrich') or {}),
                     'status': 'written' if (summary.get('enrich') or {}).get('rows')
                               else 'empty',
+                    # Reachability of datapi.jup.ag, stated as a status: an
+                    # unreachable host produces rows with
+                    # status=enrich_unavailable, never a crashed run.
+                    'host_status': _enrich_host_status(summary.get('enrich')),
                 },
                 'portfolio_summary_file': str(run_dir / 'ab_summary.json'),
                 'signed_transactions': 0,
@@ -1072,7 +1088,6 @@ async def main() -> None:
             except Exception as exc:
                 funnel = {'available': False, 'reason': type(exc).__name__}
             manifest['funnel'] = funnel
-            manifest['creator_gate'] = summary.get('creator_gate', {})
             manifest['stop_policy'] = summary.get('stop_policy', {})
             _write_json(run_dir / 'manifest.json', manifest)
             try:
