@@ -35,6 +35,7 @@ from console import Color, log
 from main_ab import _observation_offsets
 from models import NewCoin, SwapQuote
 from portfolio_ab import (
+    POST_EXIT_WINDOW_SEC,
     ABPaperSimulator,
     EntrySnapshot,
     ExecutableQuote,
@@ -237,6 +238,32 @@ async def run(seconds: float) -> int:
     next_candidate = started
     tick = 0
 
+    def feed_ghosts() -> None:
+        """Run #9 §2.3: the post-exit ghost, fed from the same batch."""
+        for ghost in list(simulator._ghosts):
+            if time.time() >= ghost['until_epoch']:
+                continue
+            scenario = exited_scenarios.get(ghost['mint'])
+            if scenario is None:
+                continue
+            held = time.time() - ghost['entry_at_epoch']
+            path = PRICE_PATHS.get(scenario.name) or [(0, 0.0), (10, -0.03), (30, -0.08)]
+            move = path[-1][1]
+            for at, value in path:
+                if held >= at:
+                    move = value
+            ghost_curve = _curve(
+                max(1.0, (scenario.birth + scenario.delta) * (1.0 + move)),
+                v_tokens=1_073_000_000_000_000,
+            )
+            ghost_price = ABPaperSimulator._mid_price_usd(ghost_curve, SOL_USD)
+            if ghost_price:
+                simulator._record_post_exit_mark(ghost, time.time(), ghost_price)
+        simulator._ghosts = [
+            ghost for ghost in simulator._ghosts
+            if time.time() < ghost['until_epoch']
+        ]
+
     log(f'SMOKE: offline A/B engine run for {seconds:.0f}s in a single foreground process',
         Color.CYAN)
     while True:
@@ -340,31 +367,15 @@ async def run(seconds: float) -> int:
                         counters['closed'] += 1
                         kept = [row for row in kept if row[1] is not pos]
                         exited_scenarios[pos.mint] = scenario
-            # Run #9 §2.3: the post-exit ghost, fed the same way the live
-            # poller feeds it — from the batch it already reads.
-            for ghost in list(simulator._ghosts):
-                if time.time() >= ghost['until_epoch']:
-                    continue
-                scenario = exited_scenarios.get(ghost['mint'])
-                if scenario is None:
-                    continue
-                held = time.time() - ghost['entry_at_epoch']
-                path = PRICE_PATHS.get(scenario.name) or [(0, 0.0), (10, -0.03), (30, -0.08)]
-                move = path[-1][1]
-                for at, value in path:
-                    if held >= at:
-                        move = value
-                ghost_curve = _curve(
-                    max(1.0, (scenario.birth + scenario.delta) * (1.0 + move)),
-                    v_tokens=1_073_000_000_000_000,
-                )
-                ghost_price = ABPaperSimulator._mid_price_usd(ghost_curve, SOL_USD)
-                if ghost_price:
-                    simulator._record_post_exit_mark(ghost, time.time(), ghost_price)
-            simulator._ghosts = [
-                ghost for ghost in simulator._ghosts
-                if time.time() < ghost['until_epoch']
-            ]
+            feed_ghosts()
+        await asyncio.sleep(0.1)
+
+    # Run #9 §2.3, the production drain: an exit in the last seconds of the
+    # run still gets its +10 s ghost, otherwise the smoke would report a
+    # truncated ghost and hide the defect it exists to catch.
+    ghost_deadline = time.time() + POST_EXIT_WINDOW_SEC + 2.0
+    while time.time() < ghost_deadline and simulator._ghosts:
+        feed_ghosts()
         await asyncio.sleep(0.1)
 
     # --- close everything (paper accounting, not synthetic exits) ---------
@@ -382,6 +393,15 @@ async def run(seconds: float) -> int:
         )
         book.save(run_id)
         counters['closed'] += 1
+        # The ghost needs the scenario to know which price path to walk.
+        exited_scenarios[pos.mint] = scenario
+
+    # The end-of-run close starts ghosts of its own; they need the same drain,
+    # otherwise the last exits are reported with zero marks.
+    ghost_deadline = time.time() + POST_EXIT_WINDOW_SEC + 2.0
+    while time.time() < ghost_deadline and simulator._ghosts:
+        feed_ghosts()
+        await asyncio.sleep(0.1)
 
     # Run #7 artefacts: own mark stream + the periodic snapshot. The snapshot
     # helper is the same one the live run calls every 60 s (P0-5), so the smoke

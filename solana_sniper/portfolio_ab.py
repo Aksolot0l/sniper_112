@@ -1347,6 +1347,8 @@ class ABPaperSimulator:
         self._last_rps_check_epoch = 0.0
         self.drain_left_open: Optional[int] = None
         self.drain_waited_sec = 0.0
+        self.ghost_drain_left_open: Optional[int] = None
+        self.ghost_drain_waited_sec = 0.0
 
     async def start(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -3689,6 +3691,38 @@ class ABPaperSimulator:
             )
         return self.drain_left_open
 
+    async def drain_post_exit_ghosts(
+        self, max_wait_sec: Optional[float] = None,
+    ) -> int:
+        """Let ghosts that are still running collect their required points.
+
+        Run #9 §2.3: a ghost lasts POST_EXIT_WINDOW_SEC after the exit, so an
+        exit in the last ten seconds of the run would otherwise be written with
+        one or two marks and would silently fail the "5 marks per exit"
+        acceptance. Waiting here is not a trade: no fill is fabricated, the poll
+        loop simply keeps reading the coins it is already reading.
+        """
+        limit = (
+            POST_EXIT_WINDOW_SEC + 2.0 * max(0.05, self.mark_poll_sec)
+            if max_wait_sec is None else float(max_wait_sec)
+        )
+        started = time.time()
+        deadline = started + max(0.0, limit)
+        while time.time() < deadline:
+            if not any(time.time() < ghost['until_epoch'] for ghost in self._ghosts):
+                break
+            await asyncio.sleep(max(0.01, self.mark_poll_sec))
+        self.ghost_drain_waited_sec = round(time.time() - started, 3)
+        self.ghost_drain_left_open = sum(
+            1 for ghost in self._ghosts if time.time() < ghost['until_epoch']
+        )
+        if self.ghost_drain_left_open:
+            log(
+                f'⚠️ {self.ghost_drain_left_open} post-exit ghosts still open '
+                f'after the {limit:.1f} s drain', Color.YELLOW,
+            )
+        return self.ghost_drain_left_open
+
     async def close(self) -> dict[str, Any]:
         # Run #8: give the live rules a bounded moment to finish their trade
         # before the poll loop is stopped.
@@ -3696,6 +3730,10 @@ class ABPaperSimulator:
             await self.drain_open_positions()
         except Exception as exc:  # never block finalization on the drain
             log(f'⚠️ drain open positions failed ({type(exc).__name__})', Color.YELLOW)
+        try:
+            await self.drain_post_exit_ghosts()
+        except Exception as exc:  # never block finalization on the ghosts
+            log(f'⚠️ post-exit ghost drain failed ({type(exc).__name__})', Color.YELLOW)
         self._stopping.set()
         try:
             await self.enrich.close()
@@ -4059,6 +4097,14 @@ class ABPaperSimulator:
             float(t['entry_fill_premium_pct']) for t in book.closed_trades
             if isinstance(t.get('entry_fill_premium_pct'), (int, float))
         ]
+        # Run #9 §3: a stricter, per-trade definition written into the trade
+        # itself — the exit mid equals the entry mid within 0.01 %. It is the
+        # gate of stage B ("do not start B if the median is above 4.0 %"), so
+        # it must come from the trade rows, not from a replay of mfe/mae.
+        exact = [
+            float(t['round_trip_cost_pct']) for t in book.closed_trades
+            if isinstance(t.get('round_trip_cost_pct'), (int, float))
+        ]
         return {
             'flat_definition': 'mfe_pct - mae_pct <= 1.0 pp (price did not move)',
             'n_flat': len(flat),
@@ -4067,6 +4113,14 @@ class ABPaperSimulator:
             ),
             'round_trip_cost_pct_mean': (
                 round(-sum(flat) / len(flat), 4) if flat else None
+            ),
+            'exact_definition': 'exit mid / entry mid - 1 within 0.01 %',
+            'n_flat_exact': len(exact),
+            'round_trip_exact_pct_median': (
+                round(float(median(exact)), 4) if exact else None
+            ),
+            'round_trip_exact_pct_mean': (
+                round(sum(exact) / len(exact), 4) if exact else None
             ),
             'reference_round_trip_pct': 3.25,
             'entry_fill_premium_pct_median': (
@@ -4505,5 +4559,9 @@ class ABPaperSimulator:
                 'max_wait_sec': DRAIN_OPEN_POSITIONS_MAX_SEC,
                 'waited_sec': round(self.drain_waited_sec, 3),
                 'left_open': self.drain_left_open,
+                # Run #9 §2.3: the ghosts get their own bounded drain, so an
+                # exit in the last seconds of the run still reaches +10 s.
+                'ghost_waited_sec': round(self.ghost_drain_waited_sec, 3),
+                'ghosts_left_open': self.ghost_drain_left_open,
             },
         }

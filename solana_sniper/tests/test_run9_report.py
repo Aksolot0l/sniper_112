@@ -287,6 +287,68 @@ class NegativeEdgeStopTests(unittest.TestCase):
             self.assertIsNone(simulator.negative_edge_reason())
 
 
+class RoundTripCostExactTests(unittest.TestCase):
+    """§3/§4: the cost of the round trip on trades whose price stood still."""
+
+    def _book(self, root: str):
+        with patch.dict(os.environ, RUN9_ENV, clear=True):
+            simulator = make_simulator(root, profiles=_run9_profiles())
+        return simulator, simulator.books['portfolio_s0']
+
+    def test_only_flat_trades_produce_a_cost_and_a_median(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            simulator, book = self._book(root)
+            book.closed_trades = [
+                {'mfe_pct': 0.4, 'mae_pct': -0.3, 'pnl_pct': -3.2,
+                 'round_trip_cost_pct': 3.2},
+                {'mfe_pct': 0.2, 'mae_pct': -0.1, 'pnl_pct': -3.6,
+                 'round_trip_cost_pct': 3.6},
+                # The price moved: this trade cannot measure the cost.
+                {'mfe_pct': 5.0, 'mae_pct': -1.0, 'pnl_pct': 1.4,
+                 'round_trip_cost_pct': None},
+            ]
+            block = simulator._round_trip_cost(book)
+        self.assertEqual(block['n_flat_exact'], 2)
+        self.assertAlmostEqual(block['round_trip_exact_pct_median'], 3.4, places=6)
+        self.assertEqual(block['exact_definition'],
+                         'exit mid / entry mid - 1 within 0.01 %')
+
+    def test_no_flat_trade_records_no_median_rather_than_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            simulator, book = self._book(root)
+            book.closed_trades = [
+                {'mfe_pct': 5.0, 'mae_pct': -1.0, 'pnl_pct': 1.4,
+                 'round_trip_cost_pct': None},
+            ]
+            block = simulator._round_trip_cost(book)
+        self.assertEqual(block['n_flat_exact'], 0)
+        self.assertIsNone(block['round_trip_exact_pct_median'])
+
+
+class GhostDrainTests(unittest.IsolatedAsyncioTestCase):
+    """An exit in the last seconds of the run must still reach +10 s."""
+
+    async def test_an_expired_ghost_costs_no_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, RUN9_ENV, clear=True):
+                simulator = make_simulator(root, profiles=_run9_profiles())
+            simulator.mark_poll_sec = 0.01
+            simulator._ghosts = [{'until_epoch': time.time() - 1.0}]
+            left = await simulator.drain_post_exit_ghosts()
+            self.assertEqual(left, 0)
+            self.assertLess(simulator.ghost_drain_waited_sec, 1.0)
+
+    async def test_a_running_ghost_is_waited_for_and_then_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, RUN9_ENV, clear=True):
+                simulator = make_simulator(root, profiles=_run9_profiles())
+            simulator.mark_poll_sec = 0.01
+            simulator._ghosts = [{'until_epoch': time.time() + 0.05}]
+            left = await simulator.drain_post_exit_ghosts(max_wait_sec=0.3)
+            self.assertEqual(left, 0)
+            self.assertGreaterEqual(simulator.ghost_drain_waited_sec, 0.0)
+
+
 class FunnelChainArmTests(unittest.TestCase):
     """The funnel chain used to name book A, which run #9 does not have."""
 

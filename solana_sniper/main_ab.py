@@ -721,6 +721,8 @@ def _run9_summary_markdown(
             float(((summary.get(name) or {}).get('round_trip_cost') or {})
                   .get('round_trip_exact_pct_median') or 0.0)
             for name in arms
+            if int(((summary.get(name) or {}).get('round_trip_cost') or {})
+                   .get('n_flat_exact') or 0) >= 5
         )
         add(f"**Ворота прогона B:** медиана round trip {worst:.2f} % "
             f"{'≤ 4.0 % — прогон B разрешён' if worst <= 4.0 else '> 4.0 % — прогон B не запускается'}.")
@@ -888,12 +890,23 @@ def _run9_summary_markdown(
              f"/{((manifest.get('entry_parameters') or {}).get(name) or {}).get('max_name_copies_120s')}"
              for name in arms
          )),
-        ('медиана round_trip_cost_pct записана',
-         all(((summary.get(name) or {}).get('round_trip_cost') or {})
-             .get('round_trip_exact_pct_median') is not None for name in arms),
+        # The cost of the round trip is a property of the venue, not of a book:
+        # one book with enough flat trades answers it. S2, which only buys
+        # coins the dev pumped, may not produce five flat trades in 30 min —
+        # requiring a median from BOTH books would block stage B for no reason.
+        ('медиана round_trip_cost_pct записана (хотя бы в одной книге, n >= 5)',
+         any(
+             int(((summary.get(name) or {}).get('round_trip_cost') or {})
+                 .get('n_flat_exact') or 0) >= 5
+             and ((summary.get(name) or {}).get('round_trip_cost') or {})
+             .get('round_trip_exact_pct_median') is not None
+             for name in arms
+         ),
          ', '.join(
-             m(((summary.get(name) or {}).get('round_trip_cost') or {})
-               .get('round_trip_exact_pct_median')) for name in arms
+             f"{label(name)}="
+             f"{m(((summary.get(name) or {}).get('round_trip_cost') or {}).get('round_trip_exact_pct_median'))}"
+             f" (n={int(((summary.get(name) or {}).get('round_trip_cost') or {}).get('n_flat_exact') or 0)})"
+             for name in arms
          )),
     )
     add('| проверка | факт | статус |')
