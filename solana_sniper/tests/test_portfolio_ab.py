@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from portfolio_ab import (
+    POST_EXIT_SCHEDULE_GRACE_SEC,
     ARM_DEFAULTS,
     DEFAULT_ARMS,
     ARM_ENV_KEYS,
@@ -2392,9 +2393,13 @@ class RunNinePostExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ghost['portfolio'], 'portfolio_s0')
         self.assertEqual(ghost['mint'], 'mint-ghost')
         self.assertEqual(ghost['curve'], 'curve-ghost')
-        self.assertAlmostEqual(
-            ghost['until_epoch'] - ghost['exit_at_epoch'], 10.0, places=6,
-        )
+        # Run #10 §2a: the window is still 10 s, but the ghost outlives its
+        # last scheduled point (10.0 s) by one grace period so that point can
+        # actually be read.
+        window = ghost['until_epoch'] - ghost['exit_at_epoch']
+        self.assertGreaterEqual(window, 10.0)
+        self.assertLessEqual(window, 10.0 + POST_EXIT_SCHEDULE_GRACE_SEC + 1e-9)
+        self.assertEqual(ghost['schedule_index'], 0)
         # The closed trade is the object the ghost patches.
         self.assertIs(ghost['trade'], trade)
 

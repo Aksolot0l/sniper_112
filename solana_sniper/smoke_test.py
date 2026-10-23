@@ -35,6 +35,7 @@ from console import Color, log
 from main_ab import _observation_offsets
 from models import NewCoin, SwapQuote
 from portfolio_ab import (
+    POST_EXIT_SCHEDULE_SEC,
     POST_EXIT_WINDOW_SEC,
     ABPaperSimulator,
     EntrySnapshot,
@@ -239,10 +240,15 @@ async def run(seconds: float) -> int:
     tick = 0
 
     def feed_ghosts() -> None:
-        """Run #9 §2.3: the post-exit ghost, fed from the same batch."""
-        for ghost in list(simulator._ghosts):
-            if time.time() >= ghost['until_epoch']:
-                continue
+        """Run #9 §2.3 + run #10 §2a: the ghost, one scheduled point at a time.
+
+        The live poll loop reads a ghost only when its next scheduled second is
+        due, so the smoke does the same — otherwise it would prove a cadence
+        the run does not use and report 20 marks per exit instead of 8.
+        """
+        now_epoch = time.time()
+        due = simulator._due_post_exit_ghosts(now_epoch)
+        for ghost in due:
             scenario = exited_scenarios.get(ghost['mint'])
             if scenario is None:
                 continue
@@ -258,10 +264,12 @@ async def run(seconds: float) -> int:
             )
             ghost_price = ABPaperSimulator._mid_price_usd(ghost_curve, SOL_USD)
             if ghost_price:
-                simulator._record_post_exit_mark(ghost, time.time(), ghost_price)
+                simulator._record_post_exit_mark(ghost, now_epoch, ghost_price)
+                ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
         simulator._ghosts = [
             ghost for ghost in simulator._ghosts
-            if time.time() < ghost['until_epoch']
+            if now_epoch < ghost['until_epoch']
+            and int(ghost.get('schedule_index', 0)) < len(POST_EXIT_SCHEDULE_SEC)
         ]
 
     log(f'SMOKE: offline A/B engine run for {seconds:.0f}s in a single foreground process',

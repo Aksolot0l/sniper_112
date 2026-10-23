@@ -835,6 +835,20 @@ POST_EXIT_WINDOW_SEC = 10.0
 POST_EXIT_NEAREST_TOLERANCE_SEC = 0.75
 # The points the run has to be able to answer for every exit.
 POST_EXIT_REQUIRED_SEC: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0)
+# Run #10 §2a: the ghost is read on a schedule, not on every mark cadence.
+#
+# Run #9 fed the ghost from every poll cycle (0.25 s, ~40 marks per exit) and
+# 1 839 of 2 735 mark batches in the 30-minute smoke existed only for ghosts.
+# That is what pushed the run to 2.23 rps mean and 2.83 rps in the worst
+# 10-minute window. The ghost needs eight points, not forty: this schedule
+# covers every required point with an exact hit (0.5/1/2/5/10) plus three
+# extra points at 1.5/3/7 s. A ghost is added to a batch only when its next
+# scheduled second has arrived, so a coin that no book holds costs nothing
+# between those moments.
+POST_EXIT_SCHEDULE_SEC: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0)
+# The last scheduled point sits exactly on the window edge; the ghost has to
+# outlive it by at least one poll cycle, or the 10th mark is never read.
+POST_EXIT_SCHEDULE_GRACE_SEC = 0.5
 MARK_POLL_RPS_LIMIT = 2.2
 MARK_POLL_ADAPTED_SEC = 0.25
 MARK_POLL_RPS_CHECK_SEC = 10.0
@@ -2486,15 +2500,21 @@ class ABPaperSimulator:
                     )
             # Run #9 §2.3: ghosts ride along in the same batch. They add
             # addresses, never a request — the RPC bill is unchanged.
+            #
+            # Run #10 §2a: they ride along only when a scheduled second is
+            # due. Between the eight points a ghost costs nothing at all, and a
+            # cycle with no open position and no due ghost issues no request.
             now_epoch = time.time()
             self._ghosts = [
                 ghost for ghost in self._ghosts
                 if now_epoch < ghost['until_epoch']
+                and int(ghost.get('schedule_index', 0)) < len(POST_EXIT_SCHEDULE_SEC)
             ]
-            if all_positions or self._ghosts:
+            due_ghosts = self._due_post_exit_ghosts(now_epoch)
+            if all_positions or due_ghosts:
                 curve_addresses = list(dict.fromkeys(
                     [pos.curve for _book, pos in all_positions if pos.curve]
-                    + [ghost['curve'] for ghost in self._ghosts if ghost['curve']]
+                    + [ghost['curve'] for ghost in due_ghosts if ghost['curve']]
                 ))
                 addresses = curve_addresses + [
                     address for address in (PUMP_GLOBAL_PDA, PUMP_FEE_CONFIG_PDA)
@@ -2614,7 +2634,9 @@ class ABPaperSimulator:
                     pos.exit_trigger_at_epoch = None
                     changed_books.add(book.profile.name)
                 # Run #9 §2.3: the post-exit marks, from the batch above.
-                for ghost in self._ghosts:
+                # Run #10 §2a: only the ghosts whose point is due, one mark
+                # each, then the schedule advances.
+                for ghost in due_ghosts:
                     account = accounts.get(ghost['curve'])
                     if not isinstance(account, dict) or account.get('owner') != PUMP_PROGRAM_ID:
                         continue
@@ -2629,6 +2651,11 @@ class ABPaperSimulator:
                     if price is None:
                         continue
                     self._record_post_exit_mark(ghost, time.time(), price)
+                    # The point is taken; the next one is minutes away. A
+                    # failed read above leaves the index untouched, so a lost
+                    # mark is retried on the next cycle instead of being
+                    # silently dropped from the schedule.
+                    ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
                 for book in self.books.values():
                     if book.profile.name in changed_books:
                         book.save(self.run_id)
@@ -2812,7 +2839,12 @@ class ABPaperSimulator:
                 pos.entry_mid_price_usd or pos.entry_price_usd or 0.0
             ),
             'exit_mid_price_usd': float(exit_mid_price_usd),
-            'until_epoch': float(exit_epoch) + POST_EXIT_WINDOW_SEC,
+            # Run #10 §2a: which point of the schedule is due next.
+            'schedule_index': 0,
+            'until_epoch': (
+                float(exit_epoch) + POST_EXIT_WINDOW_SEC
+                + max(POST_EXIT_SCHEDULE_GRACE_SEC, 2.0 * self.mark_poll_sec)
+            ),
             # Run #9 §2.4: the closed trade is still being written, so the
             # ghost patches its price_at_5s instead of a second lookup.
             'trade': trade,
@@ -2850,6 +2882,23 @@ class ABPaperSimulator:
         if best is None or best[0] > POST_EXIT_NEAREST_TOLERANCE_SEC:
             return None
         return best[1], best[2]
+
+    def _due_post_exit_ghosts(self, now_epoch: float) -> list[dict[str, Any]]:
+        """Ghosts whose next scheduled second has arrived (run #10 §2a).
+
+        The schedule is a list of seconds since the exit, so a ghost is due
+        when the clock passed `exit_at + schedule[schedule_index]`. Once the
+        schedule is exhausted the ghost is not due again — it is pruned by the
+        window check in the poll loop.
+        """
+        due: list[dict[str, Any]] = []
+        for ghost in self._ghosts:
+            index = int(ghost.get('schedule_index', 0))
+            if index >= len(POST_EXIT_SCHEDULE_SEC):
+                continue
+            if now_epoch >= float(ghost['exit_at_epoch']) + POST_EXIT_SCHEDULE_SEC[index]:
+                due.append(ghost)
+        return due
 
     def _record_post_exit_mark(
         self, ghost: dict[str, Any], at_epoch: float, price_usd: float,
@@ -3703,19 +3752,29 @@ class ABPaperSimulator:
         loop simply keeps reading the coins it is already reading.
         """
         limit = (
-            POST_EXIT_WINDOW_SEC + 2.0 * max(0.05, self.mark_poll_sec)
+            POST_EXIT_WINDOW_SEC + POST_EXIT_SCHEDULE_GRACE_SEC
+            + 2.0 * max(0.05, self.mark_poll_sec)
             if max_wait_sec is None else float(max_wait_sec)
         )
         started = time.time()
         deadline = started + max(0.0, limit)
+
+        def unfinished() -> int:
+            # A ghost is unfinished only while it still owes a scheduled point:
+            # the window itself may outlive the schedule by the grace second.
+            now = time.time()
+            return sum(
+                1 for ghost in self._ghosts
+                if now < ghost['until_epoch']
+                and int(ghost.get('schedule_index', 0)) < len(POST_EXIT_SCHEDULE_SEC)
+            )
+
         while time.time() < deadline:
-            if not any(time.time() < ghost['until_epoch'] for ghost in self._ghosts):
+            if not unfinished():
                 break
             await asyncio.sleep(max(0.01, self.mark_poll_sec))
         self.ghost_drain_waited_sec = round(time.time() - started, 3)
-        self.ghost_drain_left_open = sum(
-            1 for ghost in self._ghosts if time.time() < ghost['until_epoch']
-        )
+        self.ghost_drain_left_open = unfinished()
         if self.ghost_drain_left_open:
             log(
                 f'⚠️ {self.ghost_drain_left_open} post-exit ghosts still open '
