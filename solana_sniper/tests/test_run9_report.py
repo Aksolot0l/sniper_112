@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import json
+import sqlite3
+
 from main_ab import (
     _is_run8,
     _is_run9,
@@ -20,6 +23,7 @@ from portfolio_ab import (
     profiles_from_settings,
     selection_decomposition,
 )
+from telemetry import _SCHEMA, funnel_from_db
 from tests.test_run_report import _settings
 from tests.test_portfolio_ab import make_simulator
 
@@ -281,3 +285,55 @@ class NegativeEdgeStopTests(unittest.TestCase):
             'EARLY_STOP_NEGATIVE_EDGE_AT_SEC': '28800',
         }, clear=False):
             self.assertIsNone(simulator.negative_edge_reason())
+
+
+class FunnelChainArmTests(unittest.TestCase):
+    """The funnel chain used to name book A, which run #9 does not have."""
+
+    def _db(self, root: Path, arms: list[str]) -> Path:
+        path = root / 'telemetry.sqlite'
+        with sqlite3.connect(path) as db:
+            for statement in _SCHEMA:
+                db.execute(statement)
+            epoch = time.time()
+            for index, arm in enumerate(arms):
+                for stage, decision, reasons in (
+                    (f'{arm}_signal', 'pass', ['live_momentum_entry']),
+                    (f'{arm}_entry', 'opened', ['live_momentum_entry']),
+                ):
+                    db.execute(
+                        'INSERT INTO decisions (event_id, mint, source, stage, '
+                        'decision, reasons_json, values_json, occurred_at_utc) '
+                        'VALUES (?,?,?,?,?,?,?,?)',
+                        (f'{stage}-{index}', f'MINT{index}', 'Pump.fun', stage,
+                         decision, json.dumps(reasons), '{}',
+                         '2026-10-23T00:00:00Z'),
+                    )
+        return path
+
+    def test_chain_follows_the_books_the_run_actually_had(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            path = self._db(Path(root), ['portfolio_s0', 'portfolio_s2'])
+            report = funnel_from_db(path)
+        self.assertTrue(report['available'])
+        self.assertEqual(report['arms'], ['portfolio_s0', 'portfolio_s2'])
+        self.assertEqual(report['chain_arm'], 'portfolio_s0')
+        self.assertIn('opened=1', report['chain'])
+        # The per-book counts are keyed by the real books, not by A.
+        self.assertEqual(report['opened'], {'portfolio_s0': 1, 'portfolio_s2': 1})
+
+
+class SummaryPostExitTests(unittest.TestCase):
+    """`summary()[book]['post_exit']` must exist for every book."""
+
+    def test_every_book_carries_its_own_post_exit_block(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, RUN9_ENV, clear=True):
+                simulator = make_simulator(root, profiles=_run9_profiles())
+            summary = simulator.summary()
+            self.assertEqual(summary['portfolio_scope'], ['portfolio_s0', 'portfolio_s2'])
+            for name in summary['portfolio_scope']:
+                block = summary[name]
+                self.assertIn('post_exit', block)
+                self.assertIsInstance(block['post_exit'], dict)
+                self.assertIn('price_at_5s_trades', block['post_exit'])

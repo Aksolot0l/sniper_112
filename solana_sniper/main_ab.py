@@ -628,8 +628,9 @@ def _run9_summary_markdown(
         f"+3.5 %**, иначе **часы 5 с**")
     stats = manifest.get('telemetry') or {}
     if stats:
-        add(f"- телеметрия: dropped={stats.get('dropped_events')}, "
-            f"write_errors={stats.get('write_errors')}, "
+        # A smoke does not carry telemetry counters; show "н/д", never None.
+        add(f"- телеметрия: dropped={stats.get('dropped_events', 'н/д')}, "
+            f"write_errors={stats.get('write_errors', 'н/д')}, "
             f"writer={stats.get('writer_error') or 'ok'}")
     if manifest.get('early_stop_reason'):
         add(f"- досрочная остановка: `{manifest.get('early_stop_reason')}`")

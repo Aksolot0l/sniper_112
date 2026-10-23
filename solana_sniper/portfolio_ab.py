@@ -4246,6 +4246,7 @@ class ABPaperSimulator:
 
     def summary(self) -> dict[str, Any]:
         peaks = self._rocket_peaks()
+        post_exit_stats = self._post_exit_stats()
         portfolios: dict[str, Any] = {}
         # Which arm each book is measured against: A when it runs, otherwise
         # the arm's declared pair partner if that partner is running too.
@@ -4367,6 +4368,8 @@ class ABPaperSimulator:
                 'rocket_accounting': rocket_accounting(
                     book.closed_trades, peaks=peaks,
                 ),
+                # --- run #9 §2.3: the ghost, per book (the report reads here) --
+                'post_exit': (post_exit_stats.get('per_book') or {}).get(name),
                 # --- run #9 §5(4)-(5) ---
                 'minute_pairs_vs_reference': (
                     minute_pairs(
@@ -4427,7 +4430,7 @@ class ABPaperSimulator:
                 'max_name_copies_120s': book.profile.max_name_copies_120s,
                 'name_copies_window_sec': book.profile.name_copies_window_sec,
                 'reject_counts': portfolios[name].get('reject_counts'),
-                'post_exit': (self._post_exit_stats().get('per_book') or {}).get(name),
+                'post_exit': (post_exit_stats.get('per_book') or {}).get(name),
                 'entry_latency_ms': book.profile.entry_latency_ms,
                 'exit_rule': self._exit_rule_label(book.profile),
                 'stop_loss_pct': book.profile.stop_loss_pct,
@@ -4497,7 +4500,7 @@ class ABPaperSimulator:
             },
             # --- run #8 §3(7): the one line a reviewer reads first ---
             'run_line': self._run_line(rpc_metrics_snapshot()),
-            'post_exit': self._post_exit_stats(),
+            'post_exit': post_exit_stats,
             'drain': {
                 'max_wait_sec': DRAIN_OPEN_POSITIONS_MAX_SEC,
                 'waited_sec': round(self.drain_waited_sec, 3),

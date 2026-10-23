@@ -1305,20 +1305,28 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
         report['delta_buckets'] = dict(sorted(buckets.items()))
         report['pass_if_cap'] = dict(sorted(shadow.items()))
         report['dev_buy_presence'] = dict(sorted(dev_buy.items()))
-        # One-line chain: A is the reference band, so the funnel is read on it.
-        a_signals = report.get('portfolio_a_signal') or {}
+        # One-line chain. It used to be hardcoded to A, which is not a book
+        # every run has (run #8 has S1/S0, run #9 has S0/S2): the reference of
+        # the chain is now the first arm the telemetry actually saw.
+        chain_arm = (
+            'portfolio_a' if 'portfolio_a_signal' in report
+            else (report.get('arms') or [None])[0]
+        )
+        arm_signals = (report.get(f'{chain_arm}_signal') or {}) if chain_arm else {}
+        report['chain_arm'] = chain_arm
         report['chain'] = (
             f"candidates={report['candidates']} -> "
             f"security_pass={report['security_pass']} -> "
-            f"birth_reject={a_signals.get('birth_out_of_band', 0)} -> "
-            f"no_live_momentum={a_signals.get('no_live_momentum', 0)} -> "
-            f"momentum_too_late={a_signals.get('momentum_too_late', 0)} -> "
-            f"admits={a_signals.get('live_momentum_entry', 0)} -> "
-            f"opened={opened['portfolio_a']} -> "
-            f"cash_below_slot={(skipped['portfolio_a'].get('cash_below_slot_size', 0))}"
+            f"birth_reject={arm_signals.get('birth_out_of_band', 0)} -> "
+            f"no_live_momentum={arm_signals.get('no_live_momentum', 0)} -> "
+            f"momentum_too_late={arm_signals.get('momentum_too_late', 0)} -> "
+            f"admits={arm_signals.get('live_momentum_entry', 0)} -> "
+            f"opened={opened.get(chain_arm, 0) if chain_arm else 0} -> "
+            f"cash_below_slot={((skipped.get(chain_arm) or {}).get('cash_below_slot_size', 0))}"
         )
         report['admitted_by_current_cap'] = scalar(
-            "SELECT COUNT(*) FROM decisions WHERE stage='portfolio_a_signal' AND decision='pass'"
+            "SELECT COUNT(*) FROM decisions "
+            f"WHERE stage='{chain_arm or 'portfolio_a'}_signal' AND decision='pass'"
         )
 
         # Run #7: the creator gate is gone from the live path (it lost against

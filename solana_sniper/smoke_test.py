@@ -50,7 +50,7 @@ from pump_curve_quote import (
     quote_sell_exact_tokens,
 )
 from pumpportal_validation import WSOL_MINT
-from telemetry import CandidateCollector, set_collector
+from telemetry import CandidateCollector, funnel_from_db, set_collector
 
 PROJECT = Path(__file__).resolve().parent
 RUNS = PROJECT / 'runs'
@@ -91,11 +91,21 @@ def _curve(v_quote_sol: float, v_tokens: int = 1_073_000_000_000_000) -> CurveSt
 
 # ------------------------------------------------------------------ scenarios
 class Scenario:
-    def __init__(self, name: str, birth: float, delta: float, *, probe: str = 'green'):
+    def __init__(
+        self, name: str, birth: float, delta: float, *,
+        probe: str = 'green', symbol: str | None = None,
+    ):
         self.name = name
         self.birth = birth
         self.delta = delta
         self.probe = probe  # green | rugfarm | censored | thin
+        # Run #9: the ticker is an entry parameter now, so the smoke has to be
+        # able to launch the same symbol twice.
+        self.symbol = symbol or name.upper()
+        # Only an explicit ticker repeats across cycles; the rest get a unique
+        # one per launch so the copy counter measures the scenario, not the
+        # smoke loop's own period.
+        self.symbol_explicit = symbol is not None
 
 
 SCENARIOS = [
@@ -108,6 +118,15 @@ SCENARIOS = [
     # Big-delta launches are now late chases (cap 2.5 SOL) and must be skipped.
     Scenario('rocket_turtle', 33.95, 6.60),
     Scenario('rocket_performa', 39.88, 0.53),
+    # Run #9: a launch inside S2's band (birth >= 31.96, delta <= 1.00). The
+    # untouched S0 buys it too — the floor is the whole difference between the
+    # books, and the smoke must be able to exercise both.
+    Scenario('live_s2_band', 32.4, 0.40),
+    # Run #9 §2.2: the same ticker launched twice inside 120 s. S0 buys both
+    # (they are different mints); S2 buys the first and refuses the second
+    # with name_copies_120s. No RPC is involved.
+    Scenario('copy_first', 32.4, 0.40, symbol='SAMECOIN'),
+    Scenario('copy_second', 32.4, 0.40, symbol='SAMECOIN'),
     # Live momentum just under the cap, and the cap boundary itself.
     Scenario('live_edge', 32.0, 2.49),
     Scenario('late_chase_boundary', 32.0, 2.51),
@@ -124,6 +143,9 @@ PRICE_PATHS = {
     'rocket_performa': [(0, 0.0), (2, 0.02), (4, 0.01), (8, 0.03), (15, 0.02)],
     'live_edge': [(0, 0.0), (2, 0.08), (4, 0.15), (6, 0.34), (8, 0.62), (10, 0.55)],
     'late_chase_boundary': [(0, 0.0), (4, -0.04), (10, -0.06)],
+    'live_s2_band': [(0, 0.0), (1, 0.02), (3, 0.05), (6, 0.03), (12, -0.01)],
+    'copy_first': [(0, 0.0), (2, 0.03), (5, 0.01)],
+    'copy_second': [(0, 0.0), (2, -0.02), (5, -0.03)],
 }
 
 
@@ -155,10 +177,11 @@ def _probe_for(kind: str) -> dict[str, Any]:
     }
 
 
-def _coin(mint: str, scenario: Scenario, fees) -> NewCoin:
+def _coin(mint: str, scenario: Scenario, fees, symbol: str | None = None) -> NewCoin:
     coin = NewCoin(
         mint=mint, source='Pump.fun', signature=f'smoke-sig-{mint[-6:]}',
-        curve=f'curve-{mint[-6:]}', packet={'v_sol': scenario.birth},
+        curve=f'curve-{mint[-6:]}',
+        packet={'v_sol': scenario.birth, 'symbol': symbol or scenario.symbol},
     )
     coin.decimals = 6
     coin.creator_probe_result = _probe_for(scenario.probe)
@@ -208,6 +231,7 @@ async def run(seconds: float) -> int:
         profiles=profiles,
     )
     kept: list[tuple[Any, Any, Scenario, Any]] = []  # (book, position, scenario, fee ctx)
+    exited_scenarios: dict[str, Scenario] = {}  # mint -> its price path, for ghosts
     counters = {'candidates': 0, 'entries': {}, 'closed': 0}
     started = time.monotonic()
     next_candidate = started
@@ -235,19 +259,27 @@ async def run(seconds: float) -> int:
             scenario.probe = probe_kind
             counters['candidates'] += 1
             mint = f'SMOKE{counters["candidates"]:04d}mint'.ljust(32, 'x')
-            coin = _coin(mint, scenario, fees)
+            symbol = (
+                scenario.symbol if scenario.symbol_explicit
+                else f'{scenario.symbol}{counters["candidates"]}'
+            )
+            coin = _coin(mint, scenario, fees, symbol)
             v_now = scenario.birth + scenario.delta
             snapshot = EntrySnapshot(_curve(v_now), fees, 12, time.time())
             simulator.record_entry_state(
                 coin, snapshot, scenario.birth, v_now, time.time(),
             )
             before = {name: len(book.positions) for name, book in simulator.books.items()}
+            # Run #9 §2.2: the ticker counter is advanced once per candidate,
+            # before any book decides, exactly as handle_candidate does it.
+            name_copies = simulator.count_name_copies(coin)
+            simulator.remember_symbol_launch(coin)
             # Every arm sees the same candidate and the same shared snapshot,
             # exactly as _on_candidate dispatches it in production.
             await asyncio.gather(*(
                 simulator._consider_entry(
                     book, coin, snapshot, scenario.birth, v_now, SOL_USD, {},
-                    time.time(),
+                    time.time(), name_copies=name_copies,
                 )
                 for book in simulator.books.values()
             ))
@@ -283,9 +315,14 @@ async def run(seconds: float) -> int:
                     if pos.remaining_cost_rub else 0.0
                 )
                 ABPaperSimulator._update_best_pnl(pos, book.profile, pnl_pct, time.time())
-                # Same instrumentation the live poller applies.
+                # Same instrumentation the live poller applies, including the
+                # tick stream: run #9's price_at_5s is read from it.
                 pos.mfe_pct = max(pos.mfe_pct, pnl_pct)
                 pos.mae_pct = min(pos.mae_pct, pnl_pct)
+                mark_price = ABPaperSimulator._mid_price_usd(curve, SOL_USD)
+                simulator._record_tick(
+                    book, pos, pnl_pct, time.time(), mark_price,
+                )
                 trigger = ABPaperSimulator._exit_trigger(
                     simulator, book.profile, pos, pnl_pct, time.time(),
                 )
@@ -302,6 +339,32 @@ async def run(seconds: float) -> int:
                     if pos.mint not in book.positions:
                         counters['closed'] += 1
                         kept = [row for row in kept if row[1] is not pos]
+                        exited_scenarios[pos.mint] = scenario
+            # Run #9 §2.3: the post-exit ghost, fed the same way the live
+            # poller feeds it — from the batch it already reads.
+            for ghost in list(simulator._ghosts):
+                if time.time() >= ghost['until_epoch']:
+                    continue
+                scenario = exited_scenarios.get(ghost['mint'])
+                if scenario is None:
+                    continue
+                held = time.time() - ghost['entry_at_epoch']
+                path = PRICE_PATHS.get(scenario.name) or [(0, 0.0), (10, -0.03), (30, -0.08)]
+                move = path[-1][1]
+                for at, value in path:
+                    if held >= at:
+                        move = value
+                ghost_curve = _curve(
+                    max(1.0, (scenario.birth + scenario.delta) * (1.0 + move)),
+                    v_tokens=1_073_000_000_000_000,
+                )
+                ghost_price = ABPaperSimulator._mid_price_usd(ghost_curve, SOL_USD)
+                if ghost_price:
+                    simulator._record_post_exit_mark(ghost, time.time(), ghost_price)
+            simulator._ghosts = [
+                ghost for ghost in simulator._ghosts
+                if time.time() < ghost['until_epoch']
+            ]
         await asyncio.sleep(0.1)
 
     # --- close everything (paper accounting, not synthetic exits) ---------
@@ -327,11 +390,12 @@ async def run(seconds: float) -> int:
     summary = simulator.summary()
     (run_dir / 'ab_summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
-    (run_dir / 'manifest.json').write_text(json.dumps({
+    from main_ab import _build_commit, _run_number, _summary_markdown
+    smoke_manifest = {
         'run_id': run_id, 'status': 'completed', 'smoke': True, 'paper_only': True,
         'portfolio_scope': list(profiles),
         'duration_sec': round(seconds, 1), 'started_at_utc': datetime.now(timezone.utc).isoformat(),
-        'entry': 'four arms, each one entry boundary away from A',
+        'entry': 'each experimental arm moves one entry boundary of its reference',
         'telemetry': {'observation_offsets_sec': list(_observation_offsets())},
         'entry_latency_ms': 150.0,
         'run7_single_difference': 'entry_band',
@@ -353,7 +417,47 @@ async def run(seconds: float) -> int:
             ),
         },
         'strategies': {name: asdict(profile) for name, profile in profiles.items()},
-    }, ensure_ascii=False, indent=2), encoding='utf-8')
+        # Run #9: the report page must render offline, before a 12-hour run,
+        # so the smoke writes the same fields the live manifest does.
+        'run_number': _run_number(),
+        'build': _build_commit(),
+        'planned_duration_sec': int(seconds),
+        'actual_duration_sec': summary.get('duration_sec', round(seconds, 1)),
+        'signed_transactions': 0,
+        'exit_mode': next(iter(profiles.values())).exit_mode,
+        'exit_rule': ABPaperSimulator._exit_rule_label(next(iter(profiles.values()))),
+        'early_stop_reason': summary.get('early_stop_reason'),
+        'rpc_metrics': summary.get('rpc_metrics') or {},
+        'entry_parameters': {
+            name: {
+                'arm_id': profile.arm_id,
+                'v_sol_birth_min': profile.v_sol_birth_min,
+                'v_sol_birth_max': profile.v_sol_birth_max,
+                'delta_min_sol': profile.delta_min_sol,
+                'delta_max_sol': profile.delta_max_sol,
+                'max_name_copies_120s': profile.max_name_copies_120s,
+                'name_copies_window_sec': profile.name_copies_window_sec,
+                'entry_band_label': profile.entry_band_label,
+                'exit_mode': profile.exit_mode,
+                'entry_latency_ms': profile.entry_latency_ms,
+            }
+            for name, profile in profiles.items()
+        },
+    }
+    (run_dir / 'manifest.json').write_text(
+        json.dumps(smoke_manifest, ensure_ascii=False, indent=2), encoding='utf-8',
+    )
+    # The one-page report, rendered from the same data the live run writes.
+    # A smoke that cannot render its own report is a broken entry point.
+    try:
+        (run_dir / 'SUMMARY.md').write_text(
+            _summary_markdown(
+                smoke_manifest, funnel_from_db(run_dir / 'telemetry.sqlite'), summary,
+            ),
+            encoding='utf-8',
+        )
+    except Exception as exc:  # the smoke must still say SMOKE OK/WARNING
+        log(f'⚠️ SUMMARY.md not rendered in the smoke ({type(exc).__name__})', Color.YELLOW)
 
     await collector.close()
     set_collector(None)
