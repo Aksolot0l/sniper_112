@@ -1,19 +1,28 @@
-"""Run #10 addendum §3: the nearest observation to entry+5 s wins.
+"""Run #10 addendum §1-§3: reachable ghost thresholds, visible point losses,
+and "the nearest observation wins" for price_at_5s.
 
-`_price_at_offset` returned no distance, so the closed trade had no
-`price_at_5s_distance_sec` and the ghost's comparison fell into its
-`current is None` branch: any mark inside the 0.75 s tolerance overwrote a tick
-that could be three times closer. In the 30-minute smoke 32 of 32 `post_exit`
-picks had a closer tick in the stream (0.64 s vs 0.13 s), which is why run #10
-measures ~5.6 s after entry where run #9 measured ~5.1 s.
+§1 was arithmetic: 12 hours plans ~14 200 ghost points, so requiring 8 marks on
+every single exit would fail the stage whenever 0.007 % of points were lost.
+The threshold is now the share of required points covered, with the median at
+8 and the minimum at 7.
+
+§2 makes a lost point visible: planned / written / missed / recovered per book.
+
+§3 was a silent bias: `_price_at_offset` returned no distance, so the trade had
+no `price_at_5s_distance_sec` and any ghost mark inside the tolerance overwrote
+a tick that could be three times closer to entry+5 s.
 """
 from __future__ import annotations
 
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from main_ab import _run9_summary_markdown, _safe_manifest
+from portfolio_ab import POST_EXIT_SCHEDULE_SEC
+from tests.test_run_report import _settings
 from tests.test_portfolio_ab import make_simulator
 from tests.test_run9_report import RUN9_ENV, _run9_profiles
 
@@ -79,6 +88,77 @@ def _row(text: str, prefix: str) -> str:
         if line.startswith(prefix):
             return line
     raise AssertionError(f'row {prefix!r} not found')
+
+
+class GhostThresholdTests(unittest.TestCase):
+    """One lost point in a 12-hour run must not paint the stage red."""
+
+    def test_a_12h_run_with_one_lost_point_still_passes(self) -> None:
+        # 14 200 planned points, one missed: coverage 0.995, min marks 7.
+        text = _report(
+            43_200,
+            portfolio_s0=_book(1_560, missed=1, marks_min=7),
+            portfolio_s2=_book(216, marks_min=8),
+        )
+        row = _row(text, '| post_exit.csv: покрытие точек ≥ 0.95')
+        self.assertIn('мин 7', row)
+        self.assertIn('✅', row)
+
+    def test_the_hour_stage_is_stricter_than_12_hours(self) -> None:
+        hour = _row(_report(3_600,
+                            portfolio_s0=_book(130), portfolio_s2=_book(18)),
+                    '| post_exit.csv: покрытие точек')
+        long = _row(_report(43_200,
+                            portfolio_s0=_book(1_560), portfolio_s2=_book(216)),
+                    '| post_exit.csv: покрытие точек')
+        self.assertIn('≥ 0.97', hour)
+        self.assertIn('≥ 0.95', long)
+
+    def test_coverage_below_the_stage_threshold_fails(self) -> None:
+        # 0.96 passes the 12-hour bar and fails the one-hour bar.
+        long = _row(_report(43_200,
+                            portfolio_s0=_book(1_560, coverage=0.96),
+                            portfolio_s2=_book(216, coverage=0.96)),
+                    '| post_exit.csv: покрытие точек')
+        hour = _row(_report(3_600,
+                            portfolio_s0=_book(130, coverage=0.96),
+                            portfolio_s2=_book(18, coverage=0.96)),
+                    '| post_exit.csv: покрытие точек')
+        self.assertIn('✅', long)
+        self.assertIn('❌', hour)
+
+    def test_a_smoke_keeps_the_light_threshold(self) -> None:
+        row = _row(_report(1_800,
+                           portfolio_s0=_book(10, coverage=0.92, marks_min=6),
+                           portfolio_s2=_book(3, coverage=0.92, marks_min=6)),
+                   '| post_exit.csv: покрытие точек')
+        self.assertIn('≥ 0.90', row)
+        self.assertIn('мин ≥ 5', row)
+        self.assertIn('✅', row)
+
+
+class GhostPointAccountingTests(unittest.TestCase):
+    """A lost point has to be readable from the report, not guessed."""
+
+    def test_the_line_shows_written_planned_missed_and_recovered(self) -> None:
+        text = _report(
+            43_200,
+            portfolio_s0=_book(1_560, planned=12_480, written=12_470, missed=10,
+                               recovered=4, marks_min=7),
+            portfolio_s2=_book(216, planned=1_728, written=1_727, missed=1),
+        )
+        row = _row(text, '| точки призрака записано/план')
+        self.assertIn('S0: 12470/12480', row)
+        self.assertIn('99.92', row)
+        self.assertIn('потеряно 10', row)
+        self.assertIn('спасено повторами 4', row)
+
+    def test_a_book_without_ghosts_fails_the_row_instead_of_passing_silently(self) -> None:
+        text = _report(3_600,
+                       portfolio_s0=_book(130, planned=0, written=0),
+                       portfolio_s2=_book(18))
+        row = _row(text, '| точки призрака записано/план')
+        self.assertIn('❌', row)
 
 
 class NearestObservationTests(unittest.TestCase):
@@ -156,6 +236,19 @@ class NearestObservationTests(unittest.TestCase):
         self.assertEqual(trade['price_at_5s_source'], 'post_exit')
         self.assertAlmostEqual(trade['price_at_5s_distance_sec'], 0.05, places=6)
 
+
+class GraceTests(unittest.TestCase):
+    def test_the_ghost_outlives_its_last_point_by_two_seconds(self) -> None:
+        from portfolio_ab import POST_EXIT_SCHEDULE_GRACE_SEC, POST_EXIT_WINDOW_SEC
+        self.assertGreaterEqual(POST_EXIT_SCHEDULE_GRACE_SEC, 2.0)
+        # The 10 s point is the last one; two seconds of slack cover a late
+        # cycle caused by latency or a 429 backoff.
+        self.assertGreaterEqual(POST_EXIT_SCHEDULE_GRACE_SEC, 2.0 * 0.25)
+
+    def test_the_window_reaches_the_last_scheduled_point(self) -> None:
+        from portfolio_ab import (POST_EXIT_SCHEDULE_SEC, POST_EXIT_WINDOW_SEC)
+        self.assertGreaterEqual(
+            POST_EXIT_WINDOW_SEC + 2.0, max(POST_EXIT_SCHEDULE_SEC))
 
 
 if __name__ == '__main__':

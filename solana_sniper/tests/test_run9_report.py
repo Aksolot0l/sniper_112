@@ -113,9 +113,15 @@ class RunNineReportTests(unittest.TestCase):
                                     'round_trip_exact_pct_median': 3.3, 'n_flat_exact': 1},
                 'post_exit': {'price_at_5s_trades': 2, 'price_at_5s_coverage': 1.0,
                               'pnl_pct_at_5s_median': 1.8, 'pnl_pct_at_5s_mean': 1.7,
-                              'exits_followed': 2, 'marks_per_exit_min': 30,
-                              'marks_per_exit_median': 40,
-                              'required_point_coverage': {'+1s': 1.0},
+                              'price_at_5s_median_distance_sec': 0.12,
+                              'exits_followed': 2, 'exits_with_marks': 2,
+                              'marks_per_exit_min': 8, 'marks_per_exit_median': 8,
+                              'required_point_coverage': {
+                                  '+0.5s': 1.0, '+1s': 1.0, '+2s': 1.0,
+                                  '+5s': 1.0, '+10s': 1.0},
+                              'points_planned': 16, 'points_written': 16,
+                              'points_write_ratio': 1.0, 'missed_points_total': 0,
+                              'points_recovered_by_retry': 1, 'attempts_total': 1,
                               'mean_pnl_vs_exit_pct_at': {'+1s': 0.4}},
                 'reject_counts': {'name_copies': 0, 'birth_band': 5, 'delta_min': 1,
                                   'delta_max': 2, 'slots_full': 3, 'no_price': 0},
@@ -136,9 +142,15 @@ class RunNineReportTests(unittest.TestCase):
                                     'round_trip_exact_pct_median': 3.1, 'n_flat_exact': 1},
                 'post_exit': {'price_at_5s_trades': 1, 'price_at_5s_coverage': 1.0,
                               'pnl_pct_at_5s_median': -2.0, 'pnl_pct_at_5s_mean': -2.0,
-                              'exits_followed': 1, 'marks_per_exit_min': 30,
-                              'marks_per_exit_median': 35,
-                              'required_point_coverage': {'+1s': 1.0},
+                              'price_at_5s_median_distance_sec': 0.6,
+                              'exits_followed': 1, 'exits_with_marks': 1,
+                              'marks_per_exit_min': 8, 'marks_per_exit_median': 8,
+                              'required_point_coverage': {
+                                  '+0.5s': 1.0, '+1s': 1.0, '+2s': 1.0,
+                                  '+5s': 1.0, '+10s': 1.0},
+                              'points_planned': 8, 'points_written': 8,
+                              'points_write_ratio': 1.0, 'missed_points_total': 0,
+                              'points_recovered_by_retry': 0, 'attempts_total': 0,
                               'mean_pnl_vs_exit_pct_at': {'+1s': -0.2}},
                 'reject_counts': {'name_copies': 4, 'birth_band': 9, 'delta_min': 1,
                                   'delta_max': 2, 'slots_full': 1, 'no_price': 0},
@@ -197,8 +209,10 @@ class RunNineReportTests(unittest.TestCase):
         self.assertIn('длительность ≥ 3 500 c', text)
         self.assertIn('худшее 10-мин окно ≤ 2.2 rps', text)
         self.assertIn('429 ≤ 0.5 % запросов', text)
-        self.assertIn('post_exit.csv: ≥ 8 меток у каждого выхода', text)
+        self.assertIn('post_exit.csv: покрытие точек ≥ 0.97', text)
+        self.assertIn('меток на выход мин ≥ 7, медиана = 8', text)
         self.assertIn('S0 ≥ 80, S2 ≥ 8', text)
+        self.assertIn('точки призрака записано/план', text)
         self.assertIn('неисправленные ошибки RPC ≤ 1 %', text)
         self.assertNotIn('технический смоук на 30 минут', text)
 

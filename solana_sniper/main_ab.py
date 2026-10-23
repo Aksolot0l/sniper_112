@@ -868,16 +868,36 @@ def _run9_summary_markdown(
     duration_min_text = '43 000' if long_run else ('3 500' if hour_run else '1 790')
     duration_min_value = 43_000.0 if long_run else (3_500.0 if hour_run else 1_790.0)
     default_min = 0 if long_run else (0 if hour_run else 5)
-    # Run #10 §2a: eight scheduled marks per exit. The smoke reports the same
-    # number, so a broken schedule shows up offline too; only its threshold is
-    # lower (>= 5) because a smoke may cut a ghost short at the very end.
-    marks_needed = 8 if (long_run or hour_run) else 5
+    # Run #10 §1: "8 marks on every exit" was unreachable on 12 hours. That
+    # stage plans ~14 200 points, so one lost point out of 14 200 (0.007 %)
+    # would turn the whole stage red while the ghost works. The threshold is
+    # now the share of required points actually covered — 0.97 for the hour,
+    # 0.95 for 12 hours, 0.90 for a smoke — plus the median at exactly 8 and
+    # the minimum at 7. The smoke keeps its own, lighter floor.
+    if long_run:
+        coverage_needed = 0.95
+    elif hour_run:
+        coverage_needed = 0.97
+    else:
+        coverage_needed = 0.90
+    marks_needed = 7 if (long_run or hour_run) else 5
+    marks_median_needed = 8 if (long_run or hour_run) else 0
+
+    def _coverage_ok(block: dict[str, Any]) -> bool:
+        coverage = block.get('required_point_coverage') or {}
+        if not coverage:
+            return False
+        return min(float(v or 0.0) for v in coverage.values()) >= coverage_needed
+
     post_exit_ok = all(
         int((((summary.get(name) or {}).get('post_exit') or {})
              .get('exits_with_marks') or 0)) >= int((((summary.get(name) or {}).get('post_exit') or {})
                                                        .get('exits_followed') or 0))
+        and _coverage_ok(((summary.get(name) or {}).get('post_exit') or {}))
         and int((((summary.get(name) or {}).get('post_exit') or {})
                  .get('marks_per_exit_min') or 0)) >= marks_needed
+        and int((((summary.get(name) or {}).get('post_exit') or {})
+                 .get('marks_per_exit_median') or 0)) >= marks_median_needed
         for name in arms
     )
     money_rule = (
@@ -887,6 +907,26 @@ def _run9_summary_markdown(
         'с копиями: ≥ 20 ₽ с CI95 вне 0 -> оставить, < 10 ₽ -> снять. '
         'Пролёт стопа сверяется с медианой −14.5 %: хуже −17 % -> пересчитать конфиг'
     )
+    def _ghost_cell(name: str) -> str:
+        pe = (summary.get(name) or {}).get('post_exit') or {}
+        coverage = pe.get('required_point_coverage') or {}
+        worst = min(coverage.values()) if coverage else 0.0
+        return (
+            f"{label(name)}: {pe.get('exits_followed', 0)} выходов, "
+            f"мин {pe.get('marks_per_exit_min', 0)}/мед {pe.get('marks_per_exit_median', 0)} меток, "
+            f"покрытие {_share(worst)}"
+        )
+
+    def _points_cell(name: str) -> str:
+        pe = (summary.get(name) or {}).get('post_exit') or {}
+        return (
+            f"{label(name)}: {pe.get('points_written', 0)}/{pe.get('points_planned', 0)} "
+            f"({_share(pe.get('points_write_ratio'))}), "
+            f"потеряно {pe.get('missed_points_total', 0)}, "
+            f"спасено повторами {pe.get('points_recovered_by_retry', 0)}"
+        )
+
+
     rows = (
         ('paper_only = true, подписано 0',
          bool(manifest.get('paper_only')) and int(manifest.get('signed_transactions') or 0) == 0,
@@ -921,12 +961,17 @@ def _run9_summary_markdown(
              >= trade_mins.get(name, default_min) for name in arms),
          ', '.join(f"{label(name)}={((summary.get(name) or {}).get('stats') or {}).get('n', 0)}"
                    for name in arms)),
-        (f'post_exit.csv: ≥ {marks_needed} меток у каждого выхода', post_exit_ok,
-         ', '.join(
-             f"{label(name)}: {((summary.get(name) or {}).get('post_exit') or {}).get('exits_followed', 0)}"
-             f" выходов, мин "
-             f"{((summary.get(name) or {}).get('post_exit') or {}).get('marks_per_exit_min', 0)} меток"
-             for name in arms)),
+        (f'post_exit.csv: покрытие точек ≥ {coverage_needed:.2f}, '
+         f'меток на выход мин ≥ {marks_needed}'
+         + (f', медиана = {marks_median_needed}' if marks_median_needed else ''),
+         post_exit_ok,
+         '; '.join(_ghost_cell(name) for name in arms)),
+        # Run #10 §2: the point budget behind the coverage above. Without it a
+        # red coverage row cannot be explained without opening post_exit.csv.
+        ('точки призрака записано/план',
+         all(int((((summary.get(name) or {}).get('post_exit') or {})
+                  .get('points_planned') or 0)) > 0 for name in arms),
+         '; '.join(_points_cell(name) for name in arms)),
         ('полосы и копии в манифесте',
          all(
              (manifest.get('entry_parameters') or {}).get(name, {}).get('v_sol_birth_min')

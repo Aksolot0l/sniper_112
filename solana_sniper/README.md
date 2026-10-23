@@ -56,7 +56,17 @@ decision exists. The ghost does **not** ride along on every poll — it is read 
 point. In the 30-minute smoke 1 839 of 2 735 mark batches existed only for
 ghosts (2.23 rps mean, 2.83 rps in the worst window); the schedule turns those
 into eight reads per exit and leaves a cycle with no open position and no due
-ghost issuing no request at all. The run does not stop on rps, and raising the rate to "survive
+ghost issuing no request at all. A point that cannot be read is retried at most
+three times and then written off, so an undecodable curve can never turn a dead
+ghost into a request per cycle; the report carries `planned / written / missed /
+recovered` per book so a lost point is visible rather than inferred.
+
+`price_at_5s` stores its distance from entry+5.0 s (`price_at_5s_distance_sec`),
+so the ghost only replaces a tick when its own mark is genuinely closer. Before
+run #10 the distance was not stored and any ghost mark within 0.75 s overwrote
+the tick: in the 30-minute smoke 32 of 32 `post_exit` picks had a closer tick in
+the stream (0.64 s vs 0.13 s median), which quietly moved `pnl_pct_at_5s` from
+≈5.1 s in run #9 to ≈5.6 s. The run does not stop on rps, and raising the rate to "survive
 to the end" is forbidden. `accountSubscribe` is deliberately **not** used: a
 second mark source would make exit timing depend on which stream arrived first.
 
@@ -75,8 +85,9 @@ Acceptance 10a (§3): paper_only and 0 signatures; ≥ 3 500 s of real polling;
 `early_stop_reason = null`; unrecovered RPC errors ≤ 1 %; **mean rps ≤ 1.8**
 and **worst 10-min window ≤ 2.2** (the smoke measured 2.23 / 2.83); 429 ≤ 0.5 %
 of requests; `dropped_events = 0`; `write_errors = 0`; 0 open positions at the
-finish; **8 ghost marks per exit** (min ≥ 5) with coverage of +0.5/+1/+2/+5/+10
-= 1.0; manifest bands S0 30.50–34.50 / S2 31.96–34.50, copies off / 0;
+finish; **ghost coverage ≥ 0.97** of the required points (+0.5/+1/+2/+5/+10),
+**median 8 marks per exit, minimum ≥ 7**; manifest bands S0 30.50–34.50 /
+S2 31.96–34.50, copies off / 0;
 **S0 ≥ 80 trades, S2 ≥ 8**; median `round_trip_cost_pct` recorded —
 **> 4.0 % and 10b does not start**. Money is not read at 10a: an hour gives
 S2 a CI95 of roughly ±51 ₽, which cannot separate the expected +15…+25 ₽ from
@@ -84,8 +95,11 @@ noise, and gating on it would change the config on a coin flip.
 
 Acceptance 10b (§4): ≥ 43 000 s of real polling; `early_stop_reason = null`;
 mean rps ≤ 1.8, worst 10-min window ≤ 2.2; unrecovered RPC errors ≤ 1 %;
-429 ≤ 0.5 %; 0 open positions; `post_exit.csv` complete; S0 ≥ 400 and
-S2 ≥ 80 trades.
+429 ≤ 0.5 %; 0 open positions; **ghost coverage ≥ 0.95** with the median at 8
+and the minimum at 7 — a 12-hour stage plans ≈14 200 points, so demanding 8 on
+every single exit would fail the stage if 0.007 % of them were lost; S0 ≥ 400
+and S2 ≥ 80 trades. A 30-minute smoke keeps the lighter bar (coverage ≥ 0.90,
+minimum ≥ 5 marks).
 
 Verdict, fixed before the start: S2's CI95 excludes 0 and is ≥ +2 % → the dev
 selection is accepted; includes 0 → not proven, the config is not repeated;

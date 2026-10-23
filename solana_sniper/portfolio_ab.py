@@ -850,8 +850,12 @@ POST_EXIT_REQUIRED_SEC: tuple[float, ...] = (0.5, 1.0, 2.0, 5.0, 10.0)
 # between those moments.
 POST_EXIT_SCHEDULE_SEC: tuple[float, ...] = (0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0)
 # The last scheduled point sits exactly on the window edge; the ghost has to
-# outlive it by at least one poll cycle, or the 10th mark is never read.
-POST_EXIT_SCHEDULE_GRACE_SEC = 0.5
+# outlive it long enough for the cycle to reach it. One poll cycle is not
+# enough: a batch that starts with a 429 backoff and a retry can arrive ~0.5 s
+# late, and a 0.5 s grace lost the 10-second point whenever that happened. Two
+# seconds cost no extra request — the ghost's life is bounded by its schedule
+# index and the attempt limit, not by the timer.
+POST_EXIT_SCHEDULE_GRACE_SEC = 2.0
 # How many cycles a single scheduled point may be retried before it is written
 # off. The point is then counted as missed (coverage < 1) instead of being
 # retried every cycle until the window closes.
@@ -1344,6 +1348,16 @@ class ABPaperSimulator:
         self.post_exit_rows: list[dict[str, Any]] = []
         self._ghosts: list[dict[str, Any]] = []
         self.post_exit_started: dict[str, int] = {}
+        # Run #10 §2: the ghost's own bookkeeping, per book, so a red coverage
+        # row can be explained without opening post_exit.csv. `planned` counts
+        # the scheduled points of every ghost that started, `written` the marks
+        # that landed, `missed` the points written off after the attempt limit
+        # and `recovered` the points that needed at least one retry.
+        self.post_exit_planned: dict[str, int] = {}
+        self.post_exit_written: dict[str, int] = {}
+        self.post_exit_missed: dict[str, int] = {}
+        self.post_exit_recovered: dict[str, int] = {}
+        self.post_exit_retry_attempts: dict[str, int] = {}
         self.post_exit_skipped: dict[str, int] = {}
         self._book_last_entry_epoch: dict[str, float] = {
             name: self.started_at_epoch for name in self.books
@@ -2656,10 +2670,17 @@ class ABPaperSimulator:
                     # dead ghost into a request every 0.25 s for ten seconds,
                     # which is exactly the rps problem this change removes.
                     ghost['attempts'] = int(ghost.get('attempts', 0)) + 1
+                    name = ghost['portfolio']
+                    self.post_exit_retry_attempts[name] = (
+                        self.post_exit_retry_attempts.get(name, 0) + 1
+                    )
                     if ghost['attempts'] >= POST_EXIT_MAX_ATTEMPTS_PER_POINT:
                         ghost['schedule_index'] = int(ghost.get('schedule_index', 0)) + 1
                         ghost['attempts'] = 0
                         ghost['missed'] = int(ghost.get('missed', 0)) + 1
+                        self.post_exit_missed[name] = (
+                            self.post_exit_missed.get(name, 0) + 1
+                        )
                 for book in self.books.values():
                     if book.profile.name in changed_books:
                         book.save(self.run_id)
@@ -2833,6 +2854,10 @@ class ABPaperSimulator:
         self.post_exit_started[book.profile.name] = (
             self.post_exit_started.get(book.profile.name, 0) + 1
         )
+        name_for_counts = book.profile.name
+        self.post_exit_planned[name_for_counts] = (
+            self.post_exit_planned.get(name_for_counts, 0) + len(POST_EXIT_SCHEDULE_SEC)
+        )
         self._ghosts.append({
             'portfolio': book.profile.name,
             'mint': pos.mint,
@@ -2947,6 +2972,10 @@ class ABPaperSimulator:
             ),
         }
         ghost['marks'] += 1
+        name = ghost['portfolio']
+        self.post_exit_written[name] = self.post_exit_written.get(name, 0) + 1
+        if int(ghost.get('attempts', 0)) > 0:
+            self.post_exit_recovered[name] = self.post_exit_recovered.get(name, 0) + 1
         ghost.setdefault('_rows', []).append({**row, '_at_epoch': at_epoch})
         self.post_exit_rows.append(row)
         # §2.4: fill price_at_5s as soon as a mark close to entry+5 s lands.
@@ -4367,6 +4396,18 @@ class ABPaperSimulator:
                 'price_at_5s_median_distance_sec': (
                     round(statistics.median(d_5s), 3) if d_5s else None
                 ),
+                # Run #10 §2: the ghost's point budget, so a failed coverage
+                # threshold can be read instead of guessed.
+                'points_planned': self.post_exit_planned.get(name, 0),
+                'points_written': self.post_exit_written.get(name, 0),
+                'points_write_ratio': (
+                    round(self.post_exit_written.get(name, 0)
+                          / self.post_exit_planned[name], 4)
+                    if self.post_exit_planned.get(name) else None
+                ),
+                'missed_points_total': self.post_exit_missed.get(name, 0),
+                'points_recovered_by_retry': self.post_exit_recovered.get(name, 0),
+                'attempts_total': self.post_exit_retry_attempts.get(name, 0),
             }
         return {
             'window_sec': POST_EXIT_WINDOW_SEC,
