@@ -27,7 +27,7 @@ from detector import (
     pumpportal_listener,
     select_programs,
 )
-from portfolio_ab import ABPaperSimulator
+from portfolio_ab import ARM_IDS, ABPaperSimulator, entry_band_label, profiles_from_settings
 from price import (
     ReadOnlyRpcBatcher,
     get_sol_usd,
@@ -53,14 +53,36 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+# Run #7 budget: 6 offsets on 3 695 coins cost 27 724 requests / 3 h = 2.57 rps
+# in run #6, over the 1.8 rps target. Rejected coins are now read only at 0/15
+# and everyone else at 0/5/15/60, which brings the schedule to ~20 700 / 3 h.
+DEFAULT_OBSERVATION_OFFSETS: tuple[int, ...] = (0, 5, 15, 60)
+
+
 def _observation_offsets() -> tuple[int, ...]:
-    raw = os.getenv('TELEMETRY_OBSERVATION_OFFSETS_SEC', '0,5,10,15,60,120')
+    raw = os.getenv(
+        'TELEMETRY_OBSERVATION_OFFSETS_SEC',
+        ','.join(str(value) for value in DEFAULT_OBSERVATION_OFFSETS),
+    )
     try:
         values = sorted({int(part.strip()) for part in raw.split(',') if part.strip()})
         values = [value for value in values if value >= 0]
-        return tuple(values) if values else (0, 5, 10, 15, 60, 120)
+        return tuple(values) if values else DEFAULT_OBSERVATION_OFFSETS
     except (TypeError, ValueError):
-        return (0, 5, 10, 15, 60, 120)
+        return DEFAULT_OBSERVATION_OFFSETS
+
+
+def _enrich_enabled() -> bool:
+    return os.getenv('ENTRY_ENRICH', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _arm_bands() -> dict[str, str]:
+    """{arm name: band label} of the arms this process will run."""
+    try:
+        profiles = profiles_from_settings(load_settings())
+    except Exception:
+        profiles = profiles_from_settings(object())
+    return {name: entry_band_label(profile) for name, profile in profiles.items()}
 
 
 def _build_commit() -> str:
@@ -116,6 +138,16 @@ BASELINE_RUN_1 = {
 }
 
 
+def _money(value: Any) -> str:
+    """Rouble cell: two decimals, or an em dash when the number is missing."""
+    try:
+        if value is None:
+            return '—'
+        return f'{float(value):.2f}'
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _share(value: Any) -> str:
     """Percent string with two decimals, or an em dash when not measured."""
     try:
@@ -150,14 +182,26 @@ def _summary_markdown(
     """Render the one-page post-run report next to the raw artifacts."""
     lines: list[str] = []
     add = lines.append
+    ab = summary.get('ab_test') or {}
+    arms = [name for name, book in summary.items()
+            if isinstance(book, dict) and book.get('stats') is not None]
+    profiles = (summary.get('profiles') or {})
+    manifest_strategies = (manifest.get('strategies') or {})
+
+    def _profile(name: str) -> dict:
+        return (profiles.get(name) or manifest_strategies.get(name) or {})
+
+    def _arm_name(name: str) -> str:
+        return str(_profile(name).get('arm_id') or name)
+
     add(f"# Прогон {manifest.get('run_id')}")
     add('')
-    add(f"- build: `{manifest.get('build')}` (baseline прогон №1: `{BASELINE_RUN_1['build']}`)")
-    add(f"- вход: `{manifest.get('entry')}`")
+    add(f"- build: `{manifest.get('build')}`")
     add(f"- длительность: {manifest.get('actual_duration_sec')} c "
         f"(план {manifest.get('planned_duration_sec')} c)")
     add(f"- paper-only: {manifest.get('paper_only')}; подписано транзакций: "
         f"{manifest.get('signed_transactions')}")
+    add(f"- наблюдения, с: {manifest.get('observations_sec')}")
     stats = manifest.get('telemetry') or {}
     if stats:
         add(f"- телеметрия: dropped={stats.get('dropped_events')}, "
@@ -165,120 +209,60 @@ def _summary_markdown(
             f"writer={stats.get('writer_error') or 'ok'}")
         if stats.get('write_errors'):
             add('')
-            add('> ⚠️ Часть строк телеметрии не записалась: воронка и гейт ниже '
-                'построены по усечённым данным.')
+            add('> ⚠️ Часть строк телеметрии не записалась: воронка ниже '
+                'построена по усечённым данным.')
     if manifest.get('early_stop_reason'):
         add(f"- досрочная остановка: `{manifest.get('early_stop_reason')}` "
             '(stop-list, не PnL; артефакты дописаны)')
     add('')
-    add('## A / B')
-    add('')
-    add('| | portfolio_a | portfolio_b | прогон №1 A | прогон №1 B |')
-    add('|---|---:|---:|---:|---:|')
-    rows = (
-        ('входов', 'entry_count', 'entries'),
-        ('закрыто', 'closed_trade_count', 'closed_trade_count'),
-        ('realized PnL, ₽', 'realized_pnl_rub', 'realized_pnl_rub'),
-        ('conservative 100 bps, ₽', 'conservative_100bps_pnl_rub',
-         'conservative_100bps_pnl_rub'),
-    )
-    def _money(value: Any) -> str:
-        """Two decimals, or an em dash when the run has no such number."""
-        if value is None:
-            return '—'
-        try:
-            return f'{float(value):.2f}'
-        except (TypeError, ValueError):
-            return str(value)
 
-    for label, key, base_key in rows:
-        a = (summary.get('portfolio_a') or {}).get(key)
-        b = (summary.get('portfolio_b') or {}).get(key)
-        base_a = BASELINE_RUN_1['portfolio_a'].get(base_key, '—')
-        base_b = BASELINE_RUN_1['portfolio_b'].get(base_key, '—')
-        if key == 'entry_count' or key == 'closed_trade_count':
-            add(f'| {label} | {a} | {b} | {base_a} | {base_b} |')
-        else:
-            add(f'| {label} | {_money(a)} | {_money(b)} | {_money(base_a)} | {_money(base_b)} |')
-    # Per-trade PnL: one row, both arms, each value in its own column.
-    per_trade: dict[str, Any] = {}
-    for arm in ('portfolio_a', 'portfolio_b'):
-        entries = (summary.get(arm) or {}).get('entry_count') or 0
-        pnl = (summary.get(arm) or {}).get('realized_pnl_rub')
-        per_trade[arm] = round(float(pnl) / entries, 2) if entries and pnl is not None else None
-    add('| PnL на сделку, ₽ | '
-        f'{_money(per_trade["portfolio_a"])} | {_money(per_trade["portfolio_b"])} | '
-        f'{_money(BASELINE_RUN_1["portfolio_a"]["pnl_per_trade_rub"])} | '
-        f'{_money(BASELINE_RUN_1["portfolio_b"]["pnl_per_trade_rub"])} |')
+    # --- the arms and their single difference -----------------------------
+    add('## Армы: каждая отличается от A одной границей')
     add('')
-    # --- Run #3: distribution over trades, not just a sum ---------------------
-    add('## A / B / тени: распределение по сделкам')
+    add('| арм | полоса входа (v_sol_birth; delta) | что изменено против A |')
+    add('|---|---|---|')
+    for name in arms:
+        band = _profile(name).get('entry_band_label') or '—'
+        changed = ', '.join(
+            ((ab.get('arms') or {}).get(name) or {}).get('single_boundary_vs_a') or []
+        ) or 'эталон'
+        add(f'| {_arm_name(name)} (`{name}`) | {band} | {changed} |')
     add('')
-    add('| портфель | n | ₽/сделку | медиана | sd | CI95 среднего | сумма | '
-        'без топ-2 | без худших-2 | слотов занято | кэш < слота |')
-    add('|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|')
-    stat_names = [
-        k for k, book in summary.items()
-        if isinstance(book, dict) and book.get('stats') is not None
-    ]
-    for name in stat_names:
-        book = summary[name]
+    add('Выход у всех арм одинаковый — лестница Round 6 (SL −10 % до TP1/ракеты, '
+        'TP1 +30 % = 50 %, rocket bypass +50 %, трейл 0.85× после +10 %, shelf 4.5 с, '
+        'no-progress 5 с, таймауты 35/90 с). Ставка 500 ₽, банк 1 500 ₽, 3 слота, '
+        'момент входа и частота опроса — тоже одинаковые. Последний прогон показал, '
+        'что выход по времени неотличим от лестницы (парная разница −4.24 ₽, '
+        'CI [−19.2; +10.7]), поэтому выход закрыт и здесь не варьируется.')
+    add('')
+
+    # --- main table --------------------------------------------------------
+    add('## Результат по армам')
+    add('')
+    add('| арм | n | сумма ₽ | ₽/сделку | медиана | sd | CI95 среднего | '
+        'без топ-2 | парная разница с A | CI98.75 парной | W/L/T |')
+    add('|---|---:|---:|---:|---:|---:|---|---:|---:|---|---|')
+    for name in arms:
+        book = summary.get(name) or {}
         st = book.get('stats') or {}
         ci = st.get('ci95_mean')
         ci_text = f'[{ci[0]:.2f}, {ci[1]:.2f}]' if ci else '—'
-        tag = ' (тень)' if book.get('is_shadow') else ''
-        add(f"| {name}{tag} | {st.get('n')} | {_money(st.get('mean'))} | "
-            f"{_money(st.get('median'))} | {_money(st.get('sd'))} | {ci_text} | "
-            f"{_money(st.get('sum'))} | {_money(st.get('sum_without_top2'))} | "
-            f"{_money(st.get('sum_without_worst2'))} | "
-            f"{book.get('slots_full', 0)} | {book.get('cash_below_slot', 0)} |")
+        paired = book.get('paired_vs_a') or {}
+        p_ci = paired.get('ci95_diff')
+        p_ci_text = f'[{p_ci[0]:.2f}, {p_ci[1]:.2f}]' if p_ci else '—'
+        add(f"| {_arm_name(name)} (`{name}`) | {st.get('n')} | {_money(st.get('sum'))} | "
+            f"{_money(st.get('mean'))} | {_money(st.get('median'))} | "
+            f"{_money(st.get('sd'))} | {ci_text} | {_money(st.get('sum_without_top2'))} | "
+            f"{('эталон' if paired.get('reference') else _money(paired.get('mean_diff')))} | "
+            f"{('—' if paired.get('reference') else p_ci_text)} | "
+            f"{('—' if paired.get('reference') else str(paired.get('wins', 0)) + '/' + str(paired.get('losses', 0)) + '/' + str(paired.get('ties', 0)))} |")
     add('')
-    # --- addendum: bank / top-ups / bust --------------------------------
-    add('## Банк 1 500 ₽: пополнения и момент смерти без них')
+    add('`парная разница с A` — среднее по монетам, которые торговали ОБЕ арма: '
+        'правильный тест для схемы «одна разница». Два независимых средних на '
+        'пересекающихся монетах сравнивать нельзя.')
     add('')
-    add('| портфель | пополнений | влито, ₽ | PnL сделок, ₽ | equity без пополнений | '
-        'банк умер бы на сделке | время |')
-    add('|---|---:|---:|---:|---:|---:|---|')
-    for name in stat_names:
-        book = summary.get(name) or {}
-        bust_trade = book.get('bust_at_trade')
-        if bust_trade is None:
-            bust_text = 'не умирал'
-            bust_utc = '—'
-        else:
-            bust_text = f'№{bust_trade}'
-            bust_utc = str(book.get('bust_at_utc') or '—')
-        add(f"| {name} | {book.get('top_ups', 0)} | "
-            f"{_money(book.get('capital_injected_rub'))} | "
-            f"{_money(book.get('pnl_with_topups'))} | "
-            f"{_money(book.get('equity_no_topups'))} | {bust_text} | {bust_utc} |")
-    add('')
-    add('Пополнение — только бухгалтерия: ставка 500 ₽, 3 слота и все входы/выходы '
-        'не меняются, пополнение срабатывает лишь когда cash < 500 ₽ перед входом. '
-        '`equity_no_topups = 1500 + PnL`; «умер бы» = впервые стало < 500 ₽.')
-    add('')
-    ab = summary.get('ab_test') or {}
-    diff = (ab.get('difference') or {})
-    add('## Предрегистрированный критерий: прогон №4 — выход по времени')
-    add('')
-    add('Одно живое изменение, и только одно: **правило выхода у B**. Вход у A и B '
-        'одинаковый (`30.5 ≤ v_sol_birth ≤ 34.5`, `0.10 ≤ Δv_sol ≤ 2.5`, цена — '
-        'первое чтение кривой), поэтому разница A/B **и есть** вклад выхода. '
-        'Основание: контрфакт на тех же 84 сделках — держать до 15 с без SL/TP/трейла '
-        'даёт −265 ₽ вместо −1 344 ₽, то есть **+12.8 ₽/сделку**; недобор дают тейки '
-        '(SL/trail +674 ₽ на 13 сделках, SL +175 ₽ на 21, no-progress −81 ₽ на 44). '
-        'Горизонт острый: 5 с −4.9 ₽, **15 с −3.2 ₽**, 60 с −32.6 ₽, 120 с −46.7 ₽.')
-    add('')
-    add('- решение: `mean(B) − mean(A) ≥ +8 ₽` и CI95 разницы без нуля '
-        '(20 000 бутстрэп-ресемплов); критерий ниже зафиксирован до запуска')
-    add(f"- единственное различие плеч: `{ab.get('single_difference')}`")
-    add(f"  - A: {((ab.get('portfolio_a') or {}).get('exit_rule'))}")
-    add(f"  - B: {((ab.get('portfolio_b') or {}).get('exit_rule'))}")
-    add(f"- модель задержки входа: `entry_latency_ms = {ab.get('entry_latency_ms')}` "
-        '(цена входа — первое чтение кривой после детекта, не WSS-пакет)')
-    add('')
-    # --- P0 acceptance (§6.1) ---------------------------------------------
-    stop_policy = (manifest.get('stop_policy') or {})
+
+    # --- P0 acceptance -----------------------------------------------------
     rpc = (manifest.get('rpc_metrics') or {})
     telemetry = (manifest.get('telemetry') or {})
     p0_checks = (
@@ -294,6 +278,16 @@ def _summary_markdown(
          int(telemetry.get('write_errors') or 0)),
         ('requests_per_sec ≤ 1.8', float(rpc.get('requests_per_sec') or 0.0) <= 1.8,
          _money(rpc.get('requests_per_sec'))),
+        ('security_fail_skipped_deep > 0 (P0-2 работает)',
+         int(funnel.get('security_fail_skipped_deep') or 0) > 0,
+         int(funnel.get('security_fail_skipped_deep') or 0)),
+        ('теней в отчёте нет',
+         not any(str(name).startswith('shadow') for name in summary),
+         ', '.join(name for name in summary if str(name).startswith('shadow')) or 'нет'),
+        ('enrich.csv пишется',
+         bool((manifest.get('enrich') or {}).get('enabled'))
+         and (manifest.get('enrich') or {}).get('status') == 'written',
+         (manifest.get('enrich') or {}).get('status') or 'выключен'),
     )
     add('### P0: принят ли прогон')
     add('')
@@ -306,37 +300,155 @@ def _summary_markdown(
         f"{rpc.get('retry_count', 0)}, восстановлено: {rpc.get('recovered_failures', 0)} "
         '(восстановленный 429 — это back-pressure, а не сбой)')
     per_profile = rpc.get('requests_per_profile')
-    add(f"- запросы по профилям: "
-        f"{per_profile if per_profile else 'не разложены'}; "
-        f"теневые опросы пропущены по бюджету: {rpc.get('shadow_poll_dropped', 0)} "
-        f"(лимит {_money(rpc.get('shadow_poll_hz'))} Гц)")
+    add(f"- запросы по армам: {per_profile if per_profile else 'не разложены'}")
+    enrich = manifest.get('enrich') or {}
+    if enrich:
+        add(f"- `enrich.csv`: {enrich.get('rows', 0)} строк, "
+            f"ok={enrich.get('ok', 0)}, unavailable={enrich.get('unavailable', 0)}, "
+            f"host={enrich.get('host_status') or 'н/д'}")
     add('')
-    # --- per-arm table with CI -------------------------------------------
-    add('### A / B / тени: ₽ на сделку и CI')
+
+    # --- criteria, written before the start --------------------------------
+    add('## Критерии решения (записаны ДО запуска)')
     add('')
-    add('| портфель | n | ₽/сделку | медиана | CI95 среднего | n для значимости |')
-    add('|---|---:|---:|---:|---|---:|')
-    for name in stat_names:
-        st = (summary.get(name) or {}).get('stats') or {}
-        ci = st.get('ci95_mean')
-        ci_text = f'[{ci[0]:.2f}, {ci[1]:.2f}]' if ci else '—'
-        add(f"| {name} | {st.get('n')} | {_money(st.get('mean'))} | "
-            f"{_money(st.get('median'))} | {ci_text} | {st.get('n_for_significance')} |")
+    add('1. **P0 принят**, если все строки таблицы выше — ✅.')
+    add('2. **Гипотеза арма подтверждена**, если одновременно: '
+        '`paired mean(arm − A) ≥ +8 ₽`, CI98.75 не содержит нуля и знак совпал '
+        'в первой и второй половине прогона.')
+    add('3. **Множественность:** гипотез три → Bonferroni, α = 0.0125 '
+        '(интервал 98.75 %).')
+    add('4. CI накрывает ноль, но знак стабилен в обеих половинах → писать '
+        '«разведочно, нужен повтор», живой конфиг не менять, победу не объявлять.')
+    add('5. Все три арма в пределах ±5 ₽ → подбор полос исчерпан; дальше решает '
+        'только новый признак (`enrich.csv`) или смена рынка, а не пороги.')
+    add('6. **Стоп-лист не поднимается** (2 %), RPS не увеличивается, чтобы '
+        '«дожить до конца».')
     add('')
-    # --- exit reason breakdown (P0-4) ------------------------------------
-    add('### Что закрывало сделки (`exit_reason × портфель`)')
+    add('Ожидания по армам, зафиксированные до старта:')
     add('')
-    add('| портфель | причина | n | сумма ₽ | ₽/сделку | медиана удержания, с |')
+    expectations = ab.get('expectation') or {}
+    for name in arms:
+        if name == 'portfolio_a':
+            continue
+        add(f"- **{_arm_name(name)}** (`{name}`): {expectations.get(name, '—')}")
+    add('')
+    add(f"> ⚠️ {ab.get('power_note') or ''}")
+    add('')
+    add('> ⚠️ Любое решение по разнице меньше ~15 ₽/сделку на 3 часах невозможно; '
+        'на 8 часах шумовой пол ≈ ±10 ₽. Ни одно число здесь не означает '
+        '«стало прибыльно»: у A в прошлом прогоне медиана сделки −15.20 ₽, а весь '
+        'плюс держался на двух памп-хвостах.')
+    add('')
+
+    # --- hourly blocks and stability ---------------------------------------
+    add('### Почасовые блоки (шумовой пол при неизменных правилах)')
+    add('')
+    header_arms = ' | '.join(_arm_name(name) for name in arms)
+    add(f'| час | {header_arms} |')
+    add('|---|' + '---:|' * len(arms))
+    hours: list[str] = []
+    for name in arms:
+        hours.extend(((summary.get(name) or {}).get('blocks') or {}).keys())
+    for hour in sorted(set(hours), key=lambda h: int(h.lstrip('h') or 0)):
+        cells = []
+        for name in arms:
+            slot = ((summary.get(name) or {}).get('blocks') or {}).get(hour) or {}
+            cells.append(
+                f"{slot.get('n', 0)} / {_money(slot.get('mean'))}" if slot else '—'
+            )
+        add(f'| {hour} | ' + ' | '.join(cells) + ' |')
+    add('')
+    add('### Стабильность знака: первая и вторая половина')
+    add('')
+    add('| арм | 1-я половина, ₽ | 2-я половина, ₽ | знак совпал |')
+    add('|---|---:|---:|---|')
+    for name in arms:
+        if name == 'portfolio_a':
+            continue
+        stability = (summary.get(name) or {}).get('stability') or {}
+        first = (stability.get('first_half') or {}).get('mean_diff')
+        second = (stability.get('second_half') or {}).get('mean_diff')
+        add(f'| {_arm_name(name)} | {_money(first)} | {_money(second)} | '
+            f"{'да' if stability.get('sign_stable') else 'нет'} |")
+    add('')
+
+    # --- rocket accounting --------------------------------------------------
+    add('### Учёт ракет: сколько результата держится на пиках ≥ +50 %')
+    add('')
+    add('| арм | n | ракет | доля ракет | ₽/ракету | ₽/остальные | '
+        'точка безубыточности |')
+    add('|---|---:|---:|---:|---:|---:|---:|')
+    for name in arms:
+        rocket = (summary.get(name) or {}).get('rocket_accounting') or {}
+        share = rocket.get('rocket_share')
+        be = rocket.get('break_even_rocket_share')
+        add(f"| {_arm_name(name)} | {rocket.get('n', 0)} | {rocket.get('rockets', 0)} | "
+            f"{_share(share)} | {_money(rocket.get('rockets_mean_rub'))} | "
+            f"{_money(rocket.get('others_mean_rub'))} | "
+            f"{_share(be) if be is not None else '—'} |")
+    add('')
+    add('`точка безубыточности p* = −mean(остальных) / (mean(ракет) − mean(остальных))`: '
+        'какая доля сделок должна быть ракетами, чтобы арм вышел в ноль. Сравнивать '
+        'с фактической долей в колонке слева.')
+    add('')
+
+    # --- exit reasons -------------------------------------------------------
+    add('### Что закрывало сделки (`exit_reason × арм`)')
+    add('')
+    add('| арм | причина | n | сумма ₽ | ₽/сделку | медиана удержания, с |')
     add('|---|---|---:|---:|---:|---:|')
-    for name in stat_names:
+    for name in arms:
         breakdown = (summary.get(name) or {}).get('exit_breakdown') or {}
         if not breakdown:
-            add(f'| {name} | — | 0 | — | — | — |')
+            add(f'| {_arm_name(name)} | — | 0 | — | — | — |')
         for kind, slot in breakdown.items():
-            add(f"| {name} | {kind} | {slot.get('n')} | {_money(slot.get('sum_rub'))} | "
-                f"{_money(slot.get('mean_rub'))} | {_money(slot.get('median_hold_sec'))} |")
+            add(f"| {_arm_name(name)} | {kind} | {slot.get('n')} | "
+                f"{_money(slot.get('sum_rub'))} | {_money(slot.get('mean_rub'))} | "
+                f"{_money(slot.get('median_hold_sec'))} |")
     add('')
-    # --- the blind spot that was never measured (P0-2) --------------------
+
+    # --- fly-through of the SL rule (run #7 §1.4) ---------------------------
+    tick_quality = summary.get('tick_quality') or {}
+    sl = tick_quality.get('stop_loss_fills') or {}
+    if sl.get('n'):
+        worse = int(tick_quality.get('stop_loss_worse_than_minus15') or 0)
+        add('### Пролёт стоп-лосса: по какой цене сделка реально выходила')
+        add('')
+        add(f"- SL стоит на −10 %, фактический филл: медиана **{_money(sl.get('median'))} %**, "
+            f"среднее {_money(sl.get('mean'))} %, худший {_money(sl.get('worst'))} %")
+        add(f"- хуже −15 %: {worse} из {sl.get('n')} "
+            f"({_share(worse / sl['n'] if sl.get('n') else None)})")
+        gaps = tick_quality.get('mark_gap_ms') or {}
+        if gaps.get('median') is not None:
+            add(f"- шаг между метками: медиана {_money(gaps.get('median'))} мс, "
+                f"худший {_money(gaps.get('worst'))} мс — это и есть причина пролёта, "
+                'а не задержка решения')
+        add('')
+        add('`trigger_pct == fill_pct` в прошлом прогоне был структурным нулём: '
+            'сработавшая метка и была филлом. Здесь филл сравнивается с '
+            'предыдущей меткой, поэтому пролёт виден числом.')
+        add('')
+
+    # --- bank ---------------------------------------------------------------
+    add('### Банк 1 500 ₽: пополнения и момент смерти без них')
+    add('')
+    add('| арм | пополнений | влито, ₽ | PnL сделок, ₽ | equity без пополнений | '
+        'банк умер бы на сделке |')
+    add('|---|---:|---:|---:|---:|---|')
+    for name in arms:
+        book = summary.get(name) or {}
+        bust = book.get('bust_at_trade')
+        add(f"| {_arm_name(name)} | {book.get('top_ups', 0)} | "
+            f"{_money(book.get('capital_injected_rub'))} | "
+            f"{_money(book.get('pnl_with_topups'))} | "
+            f"{_money(book.get('equity_no_topups'))} | "
+            f"{('не умирал' if bust is None else '№' + str(bust))} |")
+    add('')
+    add('Пополнение — только бухгалтерия: ставка, слоты и все входы/выходы не '
+        'меняются; пополнение срабатывает лишь когда cash < 500 ₽ перед входом.')
+    add('')
+
+    # --- blind spot ---------------------------------------------------------
     add('### Слепая зона security-фильтра (P0-2)')
     add('')
     add(f"- отброшено security: {funnel.get('security_fail_total')}, "
@@ -345,108 +457,40 @@ def _summary_markdown(
     add(f"- из наблюдаемых выросли ≥ +50 % за 15 с: "
         f"{funnel.get('security_fail_rockets')} "
         f"({_share(funnel.get('security_fail_rocket_share'))})")
-    add(f"- причины отказа (по наблюдаемым монетам): {funnel.get('security_fail_reasons')}")
+    add(f"- причины отказа: {funnel.get('security_fail_reasons')}")
     add(f"- чтения по этим монетам: только offset 0 и 15, "
         f"`skipped_security_deep` = {funnel.get('security_fail_skipped_deep', 0)}")
     add('')
-    # --- verdicts ---------------------------------------------------------
-    mean_diff = diff.get('mean_diff')
-    ci_diff = diff.get('ci95')
-    if mean_diff is None:
-        add('- вердикт B против A: **нет данных** (в одном из плеч нет закрытых сделок)')
-    else:
-        ci_lo = ci_diff[0] if ci_diff else None
-        beat = mean_diff >= 8.0 and ci_lo is not None and ci_lo > 0
-        add(f"- фактически: mean(B) − mean(A) = {mean_diff:+.2f} ₽/сделку, CI95 {ci_diff}")
-        if beat:
-            add('- вердикт: **B лучше A по критерию** → `time_exit_15s` становится '
-                'конфигом A в следующем прогоне (одно изменение, снова).')
-        else:
-            add('- вердикт: **критерий не выполнен**. Выход по времени не даёт '
-                'измеримого выигрыша на этой выборке; следующий одиночный '
-                'эксперимент — §5.1 (`delta_min = 0`), отдельным прогоном.')
-    no_trail = (summary.get('shadow_no_trail') or {}).get('stats') or {}
-    a_stats = (summary.get('portfolio_a') or {}).get('stats') or {}
-    nt_ci = no_trail.get('ci95_mean')
-    if no_trail.get('mean') is not None and a_stats.get('mean') is not None:
-        nt_gain = float(no_trail['mean']) - float(a_stats['mean'])
-        nt_beat = nt_gain >= 6.0 and nt_ci is not None and nt_ci[0] > 0
-        add(f"- `shadow_no_trail` против A: {nt_gain:+.2f} ₽/сделку "
-            f"(тень {_money(no_trail.get('mean'))}, CI95 {nt_ci}) — критерий "
-            f"+6 ₽ {'выполнен' if nt_beat else 'не выполнен'}")
-    elif no_trail.get('mean') is not None:
-        add(f"- `shadow_no_trail`: ₽/сделку {_money(no_trail.get('mean'))} "
-            f"(CI95 {nt_ci}); у A нет закрытых сделок для сравнения")
-    add('')
-    add('> ⚠️ Честное ожидание, записанное ДО запуска: **B остаётся убыточным**. '
-        'Диапазон −8…−4 ₽/сделку против −15…−17 ₽ у A. Прогон измеряет, сколько '
-        'стоит текущий выход, а не ищет прибыль. Ни +12.8 ₽ контрфакта, ни любая '
-        'цифра ниже не означают выхода в плюс: контрфакт — это разница между '
-        'плохим и менее плохим выходом.')
-    add('')
-    add('Критерии решения (§6), зафиксированы до запуска: P0 принят; B лучше A при '
-        '`mean(B) − mean(A) ≥ +8 ₽` и CI без нуля; `shadow_no_trail` лучше A при '
-        '`≥ +6 ₽` и CI без нуля; при нескольких сравнениях результат разведочный '
-        '(Bonferroni, α = 0.0125); если B ≈ A — писать это прямо и переходить к §5.1.')
-    add('')
-    add('Исправлено в этом прогоне: (1) одно живое изменение — выход B; '
-        '(2) прибор P0-1: `trigger_pct`/`fill_pct`/`exit_latency_ms`/`peak_pct`/'
-        '`peak_t_sec` в тиках; (3) P0-2: security-fail наблюдается только на '
-        'offset 0 и 15, считается `security_fail_rockets`; (4) P0-3: ретраи 429 с '
-        '`Retry-After`, семафор, стоп-лист по неисправленным ошибкам (2 %); '
-        '(5) P0-5: снапшоты артефактов каждые 60 с.')
-    add('')
+
+    # --- funnel -------------------------------------------------------------
     add('## Воронка')
     add('')
     add('```')
     add(str(funnel.get('chain') or 'n/a'))
     add('')
     add(f"entry_state             {funnel.get('entry_state')}")
-    for reason, count in (funnel.get('portfolio_a_signal') or {}).items():
-        add(f"  A signal: {reason:<52}{count}")
-    for reason, count in (funnel.get('portfolio_b_signal') or {}).items():
-        add(f"  B signal: {reason:<52}{count}")
-    add(f"admitted_by_current_cap {funnel.get('admitted_by_current_cap')}")
-    add(f"opened                  A={((funnel.get('opened') or {}).get('portfolio_a'))} "
-        f"B={((funnel.get('opened') or {}).get('portfolio_b'))}")
-    for arm in ('portfolio_a', 'portfolio_b'):
+    for arm in arms:
+        for reason, count in ((funnel.get(f'{arm}_signal')) or {}).items():
+            add(f"  {_arm_name(arm)} signal: {reason:<48} {count}")
+    add(f"opened                  " + ', '.join(
+        f"{_arm_name(arm)}={((funnel.get('opened') or {}).get(arm))}" for arm in arms
+    ))
+    for arm in arms:
         for reason, count in ((funnel.get('entry_skips') or {}).get(arm) or {}).items():
-            add(f"  {arm} skip: {reason:<52}{count}")
+            add(f"  {_arm_name(arm)} skip: {reason:<48} {count}")
     add('```')
-    add('')
-    add('Дельта-полоса (сколько прошло бы при другом потолке):')
-    add('')
-    for key, count in (funnel.get('pass_if_cap') or {}).items():
-        add(f'- `{key}`: {count}')
     add('')
     add(f"Бакеты delta: {funnel.get('delta_buckets')}")
     add('')
-    add('## Гейт креатора (тень `shadow_gate`): риск против слепой зоны')
-    add('')
-    add(f"- `gate_status`: {funnel.get('gate_status')}")
-    add(f"- причины отказов: {funnel.get('gate_reasons')}")
-    add(f"- идентичность дева: {funnel.get('probe_identity')}")
-    a_only = funnel.get('a_only') or {}
-    if a_only:
-        add('- монеты, которые взял только A:')
-        for klass, slot in a_only.items():
-            add(f"  - `{klass}`: {slot.get('mints')} шт, pnl_leg сумма "
-                f"{slot.get('pnl_leg_sum_rub')} ₽ (без входной комиссии), "
-                f"причины: {slot.get('reasons')}")
-    add('')
+
     add('## Как читать')
     add('')
-    add('1. `unavailable` — это сбой телеметрии, а не сигнал риска; '
-        '`fail_history` — прочитанная, но короткая история (вердикт, не слепая '
-        'зона). Доля считается от всех гейтов, а не от отказов.')
-    add('2. `admitted_by_current_cap` против `pass_if_cap_*` отвечает, режет ли '
-        'поток потолок delta, или событий просто было меньше.')
-    add('3. PnL A против B не доказывает эджа: решение принимается только по '
-        'предрегистрированному критерию выше (mean(B) − mean(A) ≥ +8 ₽ и CI95 '
-        'разницы не включает 0). Отрицательный знак у обоих плеч ожидаем.')
-    add('4. Тени не торгуют: `capital_rub = 0`, деньги виртуальные, по одной '
-        'позиции, опрос 0.5 Гц. `shadow_gate` (гейт креатора) и '
-        '`shadow_no_trail` (A без трейла, держит до 15 с) зеркалят A.')
+    add('1. Армы сравниваются только парно и только по монетам, которые торговали '
+        'оба; сырые средние двух выборок на пересекающихся монетах — не тест.')
+    add('2. Почасовая таблица показывает шум: если разница между армами меньше '
+        'разброса между часами, это шум, а не эффект.')
+    add('3. PnL не доказывает эджа. Решение принимается только по критерию выше; '
+        'отрицательный знак у всех арм ожидаем и не является сюрпризом.')
     add('')
     return '\n'.join(lines)
 
@@ -456,12 +500,12 @@ def _strategy_metadata() -> dict[str, Any]:
     return {
         'build': _build_commit(),
         'build_baseline': (
-            'run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, '
-            'B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics'
+            'run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 '
+            'per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]'
         ),
-        'strategy_version': 'run4: entry_v3+birth_max_34.5+exit_A_ladder_B_time15s',
-        # --- run #4: one live change (B's exit rule) ------------------------
-        'run4_single_difference': 'exit_rule',
+        'strategy_version': 'run7: entry_v3+birth_max_34.5, four entry-band arms',
+        # --- run #7: one boundary per arm, one exit ladder for all ----------
+        'run7_single_difference': 'entry_band',
         'entry_latency_ms': 150.0,
         'entry_fill_price': (
             'the first on-chain curve read after detection (the same '
@@ -470,135 +514,78 @@ def _strategy_metadata() -> dict[str, Any]:
             'records how old the read was and entry_premium_pct compares the '
             'entry mid with the coin t0 mid of that read'
         ),
-        'run4_arm_a': (
-            'Round 6 reference, not a single number changed: SL -10% before '
-            'TP1/rocket, TP1 +30% sells 50%, rocket bypass +50%, trail 0.85x '
-            'after +10%, shelf 4.5 s, no-progress 5 s, timeouts 35/90 s'
+        'exit_rule': (
+            'identical in every arm — the Round 6 4-mode ladder: SL -10% '
+            'before TP1/rocket, TP1 +30% sells 50%, rocket bypass +50%, trail '
+            '0.85x after +10%, shelf 4.5 s, no-progress 5 s, timeouts 35/90 s'
         ),
-        'run4_arm_b': (
-            'exit rule only: 100% at market at t >= 15.0 s (time_exit_15s), '
-            'SL -20% for the whole life of the position, +100% sells 50%, '
-            'TP1 +30% / trail / shelf / no-progress disabled'
+        'arms': {
+            'portfolio_a': {'arm_id': 'A', 'band': '30.5-34.5 / 0.10-2.50',
+                            'role': 'reference, unchanged in every symbol'},
+            'portfolio_b1_narrow': {'arm_id': 'B1', 'band': '30.5-34.5 / 0.10-1.00',
+                                    'changed': 'delta_max 2.50 -> 1.00',
+                                    'why': 'the only band with non-negative EV at '
+                                           '5-10 s in all three runs (+0.47/+1.42/'
+                                           '+1.82 %), and better on the real ladder '
+                                           'in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); '
+                                           'risk: three rockets carried the 1-2.5 '
+                                           'band in run6'},
+            'portfolio_b2_birth': {'arm_id': 'B2', 'band': '30.5-31.0 / 0.10-2.50',
+                                   'changed': 'v_sol_birth_max 34.50 -> 31.00',
+                                   'why': 'the only filter with a stable sign 4/4 on '
+                                          'a fixed exit, and identical to dev_buy <= '
+                                          '1 SOL; risk: on the run6 ladder it lost '
+                                          '(-507 RUB vs +755 RUB for birth > 31)'},
+            'portfolio_b3_wide': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.10-8.00',
+                                  'changed': 'delta_max 2.50 -> 8.00',
+                                  'why': 'the only way to ADD rockets: 39 of 126 '
+                                         '(9.6 %) live in the 2.5-8 band; risk: that '
+                                         'mass was the worst at a fixed exit in 3/3 '
+                                         'runs. Tested on the ladder; if it fails, '
+                                         'the band closes for good'},
+        },
+        'run7_expectation': {
+            'portfolio_b1_narrow': '-3..+5 RUB/trade vs A (data disagree: two runs '
+                                   'for, run6 against)',
+            'portfolio_b2_birth': '+-0, risk -8 RUB (the filter lost on the run6 '
+                                  'ladder)',
+            'portfolio_b3_wide': '-10..+5 RUB/trade, wide spread (bad mass, but 39 '
+                                 'of 126 rockets)',
+        },
+        'run7_decision_rule': (
+            'an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB '
+            'on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni '
+            'over three hypotheses, alpha 0.0125) excludes 0, and the sign is the '
+            'same in both halves of the run'
         ),
-        'run4_why': (
-            'counterfactual on the same 84 trades: holding to 15 s without '
-            'SL/TP/trail gives -265 RUB instead of -1344 RUB, i.e. +12.8 '
-            'RUB/trade. The contribution comes from the take-profits, not the '
-            'stops: SL/trail group +674 RUB of underperformance (13 trades), '
-            'SL +175 RUB (21), no-progress -81 RUB (44). Horizon is sharp: '
-            '5 s -4.9 RUB, 15 s -3.2 RUB, 60 s -32.6 RUB, 120 s -46.7 RUB'
+        'run7_power': (
+            'paired sd ~98 RUB, ~56 trades/hour per arm: 8 RUB needs ~1 500 pairs '
+            '(after Bonferroni), i.e. ~21 h at this flow. A 3-hour run cannot '
+            'resolve anything below ~15 RUB/trade'
         ),
-        'run4_expectation': (
-            'B -8..-4 RUB/trade against -15..-17 RUB for A. B is still '
-            'EXPECTED TO LOSE MONEY; the run measures how much of the loss the '
-            'exit rules cost. No result here means "became profitable"'
+        'run7_p0_accepted': (
+            'early_stop_reason = null, unrecovered RPC failures <= 2 %, '
+            'dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, '
+            'security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written'
         ),
-        'run4_decision_rule': (
-            'B beats A iff mean(B) - mean(A) >= +8 RUB and the 95% bootstrap '
-            'CI of the difference excludes 0 (20 000 resamples); '
-            'shadow_no_trail beats A iff >= +6 RUB with a CI excluding 0; '
-            'several comparisons -> exploratory, Bonferroni alpha 0.0125'
+        'run7_p0_fixes': (
+            'P0-2 verdict resolved inside the offset loop (run6 read every offset '
+            'because the verdict was set after observe_candidate); ticks carry '
+            'price_usd instead of a rouble price divided by sol_usd; '
+            'security_fail_reasons use the LAST reason (the verdict, not the '
+            'passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms; '
+            'observation offsets 0/5/15/60 to fit the RPC budget'
         ),
-        'run4_p0_accepted': (
-            'early_stop_reason = null, unrecovered RPC failures <= 2 % of '
-            'requests, dropped_events = 0, write_errors = 0, '
-            'requests_per_sec <= 1.8'
-        ),
-        'run4_p0_instrument': (
-            'P0-1 ticks carry trigger_pct / fill_pct / exit_latency_ms / '
-            'peak_pct / peak_t_sec; P0-2 security-rejected coins are read only '
-            'at offsets 0 and 15 (skipped_security_deep elsewhere) and '
-            'security_fail_rockets answers the unmeasured blind spot; P0-3 '
-            '429 retries with Retry-After and 0.2/0.5/1.2 s + jitter, '
-            'semaphore of 6, shadows polled at 0.5 Hz with one position each; '
-            'P0-5 artefacts every 60 s and again in the stop handler'
-        ),
-        'fix_7': (
-            'v_sol_birth_max 50.0 -> 34.5. Measured on run #1: '
-            'v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the '
-            'old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such '
-            'candidates fell <= -25% (median minimum -33.2%), and in the live '
-            'run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. '
-            'Expected 22-26 entries instead of 26 and A near -500 RUB: this '
-            'cuts the catastrophic tail, it does NOT create profit.'
-        ),
-        'comparison_policy': 'не смешивать с сессиями до 2026-10-22',
-        'timeouts_35_90': 'slot safety net, not part of 4-mode ladder',
-        'known_hole': (
-            'no_progress is one-shot at 5s; corridor -9.9%..+1.4% '
-            'exits only by timeout'
-        ),
-        'known_gap': (
-            'repeat_deploy indexed by program_creator only; event_actor path '
-            'is log-only this run (creator_prior_tokens_10m_actor)'
-        ),
-        'edge_status': (
-            'no proven edge; cap 2.5 chosen for drawdown/slot hygiene '
-            '(archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 '
-            'observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, '
-            'E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the '
-            'delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap'
-        ),
-        'judgement': (
-            'archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: '
-            '9 dead / 2 rockets (+38.3%, +106.8%)'
-        ),
-        'delta_min_note': (
-            'delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the '
-            'single exception is 6m3gx2eaH +26.8%'
-        ),
-        'experiment_next': (
-            'discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, '
-            'unique buyers. Run #1 added the missing half: the entry price is '
-            'always worse than observations t0, and the 0.1-2.5 band has a '
-            'median move of 0.0% with an asymmetric ladder, so zero movement '
-            'becomes -6..-8% per trade. No threshold fixes that'
-        ),
-        'expected_flow': (
-            'run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 '
-            '(12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 '
-            'expect 22-26 A entries and 3-6 B entries per 30 min. '
-            'admitted_by_current_cap in the manifest answers this from data'
-        ),
-        'open_question_cap': (
-            'delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band '
-            'there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 '
-            'held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, '
-            'not quality. Changing the cap is fix #8, deliberately not mixed '
-            'with #7'
-        ),
-        'entry': (
-            '30.5 <= v_sol_birth <= 34.5 and '
-            '0.10 <= (v_sol_now - v_sol_birth) <= 2.5  (identical for A and B)'
-        ),
-        'entry_note': (
-            'run #4 moves the EXIT, not the entry. Both live arms enter on the '
-            'same rule and the same curve read; only the exit rule differs, so '
-            'any difference in PnL per trade is the exit rule. The t0 entry '
-            '(delta_min = 0) is deliberately deferred to the next run: it would '
-            'change both the entry premium and the flow, and mixing it with the '
-            'exit change would make the result unattributable.'
-        ),
-        'run3_single_difference': 'delta_max_sol (closed by run #3: -4.76 RUB, '
-                                  'CI [-35.04, 24.44] — criterion not met)',
-        'run3_decision_rule': (
-            'B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap '
-            'CI of the difference excludes 0 (20 000 resamples)'
-        ),
-        'run3_why': (
-            'at 8 h the resolvable difference is +/-12 RUB per trade at n=200 '
-            'and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth '
-            'about +1.5 RUB/trade, so it is unobservable and stays a shadow; '
-            'the delta band is worth about 29 RUB/trade, so it is the A/B arm. '
-            'Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, '
-            '0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28'
+        'run7_not_doing': (
+            'no exit change in any arm, no delta_min = 0 (a 5.6x flow for a '
+            '2.9 % rocket share), no creator gate (worse than average in 4/4 '
+            'samples), no fourth experimental arm, no band tuning mid-run'
         ),
         'bank_rule': (
             'каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, '
             'книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, '
             '3 слота и все входы/выходы не меняются — пополнение влияет только '
-            'на «торговать / не торговать». Счётчик top_ups остаётся метрикой: '
-            'пополнение срабатывает лишь при cash < 500, а не после каждого убытка'
+            'на «торговать / не торговать». Счётчик top_ups остаётся метрикой'
         ),
         'stop_list': (
             'прогон останавливается только по четырём причинам: telemetry '
@@ -606,23 +593,25 @@ def _strategy_metadata() -> dict[str, Any]:
             '(после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) '
             '> 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без '
             'входов 30 мин при растущем entry_state; остаток квоты Helius < 10% '
-            'или < 2 ГБ на диске. Порог 2% поднимать запрещено (в run5 подняли '
-            'до 5% — это 99 несостоявшихся чтений цены). PnL не является '
+            'или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является '
             'причиной остановки'
         ),
         'profiles': {
-            'portfolio_a': {'delta_min': 0.10, 'delta_cap': 2.5,
-                            'exit_rule': '4-mode ladder (Round 6, unchanged)',
-                            'creator_gate': False},
-            'portfolio_b': {'delta_min': 0.10, 'delta_cap': 2.5,
-                            'exit_rule': 'time_exit_15s + SL -20% + TP +100% (50%)',
-                            'creator_gate': False},
-            'shadow_gate': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                            'max_slots': 1, 'delta_min': 0.10, 'creator_gate': True},
-            'shadow_no_trail': {'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                                'max_slots': 1, 'exit_rule':
-                                'TP1 +30% (50%), no trail/shelf/no-progress, '
-                                'time_exit_15s'},
+            name: {
+                'arm_id': meta['arm_id'],
+                'entry_band': meta['band'],
+                'changed_vs_a': meta.get('changed', 'none'),
+                'exit_rule': '4-mode ladder (identical in every arm)',
+            }
+            for name, meta in {
+                'portfolio_a': {'arm_id': 'A', 'band': '30.5-34.5 / 0.10-2.50'},
+                'portfolio_b1_narrow': {'arm_id': 'B1', 'band': '30.5-34.5 / 0.10-1.00',
+                                        'changed': 'delta_max_sol 2.50 -> 1.00'},
+                'portfolio_b2_birth': {'arm_id': 'B2', 'band': '30.5-31.0 / 0.10-2.50',
+                                       'changed': 'v_sol_birth_max 34.50 -> 31.00'},
+                'portfolio_b3_wide': {'arm_id': 'B3', 'band': '30.5-34.5 / 0.10-8.00',
+                                      'changed': 'delta_max_sol 2.50 -> 8.00'},
+            }.items()
         },
     }
 
@@ -660,15 +649,15 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         # readable from the manifest alone, without opening a trade row.
         'entry_latency_ms': 150.0,
         'ab_test': {
-            # The declared single difference: the exit rule only.
-            'single_difference': 'exit_rule',
-            'portfolio_a': {'delta_min': 0.10, 'delta_max_sol': 2.5,
-                            'exit_rule': '4-mode ladder (Round 6, unchanged)'},
-            'portfolio_b': {'delta_min': 0.10, 'delta_max_sol': 2.5,
-                            'exit_rule': 'time_exit_15s + SL -20% + TP +100% (50%)'},
+            # Run #7: every experimental arm moves exactly one entry boundary.
+            'single_difference': 'entry_band',
+            'reference_arm': 'portfolio_a',
             'entry_latency_ms': 150.0,
-            'decision_rule': strategy_meta['run4_decision_rule'],
-            'expected_sign': 'negative for both arms; B less negative',
+            'exit_rule': strategy_meta['exit_rule'],
+            'arms': strategy_meta['arms'],
+            'decision_rule': strategy_meta['run7_decision_rule'],
+            'expectation': strategy_meta['run7_expectation'],
+            'power_note': strategy_meta['run7_power'],
         },
         'status': 'starting',
         'early_stop_reason': None,
@@ -677,51 +666,17 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
         'paper_only': True,
         'signed_transactions': 0,
         'submitted_transactions': 0,
-        'portfolio_scope': ['portfolio_a', 'portfolio_b'],
+        'portfolio_scope': list(_arm_bands()),
+        'enrich': {'enabled': _enrich_enabled(), 'path': str(run_dir / 'exports' / 'enrich.csv')},
         'strategies': {
-            'portfolio_a': {
+            name: {
                 **common, **strategy_meta,
-                'creator_probe': 'telemetry_only; no entry gate',
-            },
-            'portfolio_b': {
-                **common, **strategy_meta,
+                **strategy_meta['profiles'][name],
+                'entry_band_label': band,
+                'creator_probe': 'telemetry only; no entry gate in any arm',
                 'creator_gate': False,
-                'delta_min_sol': 0.0,
-                'delta_max_from_birth_ceiling': True,
-                'entry_at_detection': True,
-            },
-            # Virtual books: 0 RUB of capital, entries mirrored from A.
-            'shadow_gate': {
-                **common, **strategy_meta,
-                'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                'creator_gate': (
-                    'signature_count_0_25 >= 25 AND NOT burst (25+ sigs inside '
-                    '1h) AND NOT repeat_deploy (>=2 tokens in 10m) AND '
-                    'ata_exists AND token_balance_raw > 0'
-                ),
-            },
-            'shadow_exit25': {
-                **common, **strategy_meta,
-                'capital_rub': 0.0, 'mirror_of': 'portfolio_a',
-                'single_exit_pct': 25.0, 'creator_gate': False,
-            },
-            # Run #4: what the 5-second hold is worth on its own. Enters like B
-            # and leaves after exactly 5 s at market — no SL, no TP, no
-            # trailing, no shelf and no timeout, so the ladder cannot hide the
-            # drift it is supposed to measure.
-            'shadow_t0_5s': {
-                **{k: v for k, v in common.items() if k not in (
-                    'stop_loss', 'tp1', 'rocket_bypass', 'trailing',
-                    'shelf_stagnation', 'no_progress', 'peak_timestamp_update',
-                    'timeout_before_trailing_sec', 'timeout_after_trailing_sec',
-                )},
-                **strategy_meta,
-                'capital_rub': 0.0, 'mirror_of': 'portfolio_b',
-                'delta_min_sol': 0.0, 'single_exit_sec': 5.0,
-                'exits': 'sell 100% at market on the first tick at held >= 5.0 s',
-                'no_stop_loss': True, 'no_take_profit': True,
-                'no_trailing': True, 'no_shelf': True, 'no_timeout': True,
-            },
+            }
+            for name, band in _arm_bands().items()
         },
         'rpc': {
             'provider': 'Helius',
@@ -749,13 +704,12 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             'quote_mint': 'SOL/WSOL only', 'mint_authority_revoked': True,
             'freeze_authority_revoked': True, 'duplicate_symbol_gate': False,
             'creator_history_policy': 'advisory telemetry/warnings only',
-            'portfolio_a_creator_gate': False,
-            'portfolio_b_creator_gate': False,
-            'shadow_gate_creator_gate': (
-                'signature_count_0_25 == 25 AND derived ATA exists AND '
-                'ATA token balance > 0'
+            'creator_gate_in_live_arms': False,
+            'creator_gate_note': (
+                'the creator gate lost against the average in 4/4 independent '
+                'samples (run3 -6.29 %, run5 -4.77 %, run6 both halves -4.01 / '
+                '-6.44 % vs -2.99/-2.86/-4.11/-4.51) and is not used anywhere'
             ),
-            'creator_probe_failures': 'fail closed for shadow_gate; never gate A or B',
         },
         'observations_sec': list(_observation_offsets()),
         'observation_policy': 'scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun',
@@ -768,11 +722,7 @@ def _safe_manifest(settings: Any, run_id: str, run_dir: Path) -> dict[str, Any]:
             'usd_rub_rate': settings.usd_rub_rate,
         },
         'wallet_state_files': [
-            str(run_dir / 'wallet_portfolio_a.json'),
-            str(run_dir / 'wallet_portfolio_b.json'),
-            str(run_dir / 'wallet_shadow_gate.json'),
-            str(run_dir / 'wallet_shadow_exit25.json'),
-            str(run_dir / 'wallet_shadow_t0_5s.json'),
+            str(run_dir / f'wallet_{name}.json') for name in _arm_bands()
         ],
         'data_files': {
             'sniper_db': str(run_dir / 'sniper.db'),
@@ -1101,6 +1051,12 @@ async def main() -> None:
                 'external_stop_reason': external_stop_reason,
                 'run_error_type': run_error,
                 'rpc_metrics': summary.get('rpc_metrics', {}),
+                # Run #7: passive feature collection (plain HTTPS, no RPC).
+                'enrich': {
+                    **(summary.get('enrich') or {}),
+                    'status': 'written' if (summary.get('enrich') or {}).get('rows')
+                              else 'empty',
+                },
                 'portfolio_summary_file': str(run_dir / 'ab_summary.json'),
                 'signed_transactions': 0,
                 'submitted_transactions': 0,

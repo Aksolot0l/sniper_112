@@ -771,8 +771,13 @@ class CandidateCollector:
         started_monotonic: float, target_epoch: float, completed: set[int],
     ) -> None:
         try:
-            deep = self._deep_offsets_for(coin.mint)
             for offset in self.observation_offsets_sec:
+                # P0-2 (run #7): the verdict is resolved INSIDE the loop.
+                # `observe_candidate` starts before `handle_candidate` sets the
+                # verdict, so a single read before the loop always saw `None`
+                # and read all six offsets (run6: skipped_deep = 0 over 3 695
+                # coins, 1 634 of them security failures).
+                deep = self._deep_offsets_for(coin.mint)
                 if deep is not None and offset not in deep:
                     # P0-2: no RPC for a coin we would never trade. The row
                     # still exists, so "not measured" cannot be read as "did
@@ -995,55 +1000,57 @@ def get_collector() -> Optional[CandidateCollector]:
 # --------------------------------------------------------------------------
 # Post-run funnel report
 # --------------------------------------------------------------------------
-_GATE_PASS_REASONS = frozenset({'creator_guard_met', 'creator_gate_met'})
-_GATE_UNAVAILABLE_REASONS = frozenset({
-    'creator_history_unavailable',
-    'creator_token_ata_missing',
-    'creator_guard_unavailable',
-    'creator_guard_censored',
-})
+_SECURITY_REASON_CODES: tuple[tuple[str, str], ...] = (
+    ('mint authority отозван', 'mint_authority_revoked_ok'),
+    ('Pump.fun кривая использует не SOL quote', 'curve_not_sol_quoted'),
+    ('pump_mayhem_mode_excluded', 'pump_mayhem_mode'),
+    ('мигрировала с кривой', 'curve_migrated'),
+    ('не прочитали mint и Pump.fun curve', 'mint_curve_read_failed'),
+    ('отсутствует подтверждённый аккаунт', 'curve_account_missing'),
+    ('проверка упала', 'check_raised'),
+    ('supply выглядит разумно', 'supply_ok'),
+    ('pump_standard_supply_verified', 'pump_supply_ok'),
+)
 
 
-def gate_status_from_values(values: dict[str, Any]) -> str:
-    """Gate class of one creator-gate row, recomputed from its raw evidence.
-
-    The class is derived, never taken from a stored ``gate_status``: run #2
-    wrote every ``creator_history_too_short`` row as ``unavailable`` (46.15 %
-    of all gates) even though the probe had succeeded — a 1-2 signature page is
-    a verdict (``fail_history``), not a blind spot.
-
-    The rule mirrors ``portfolio_ab.gate_status``; the two are covered by a
-    cross-check test so replay and live telemetry cannot drift apart.
-    """
-    reason = str(values.get('guard_reason') or '').strip()
-    if values.get('creator_guard_passed') or reason in _GATE_PASS_REASONS:
-        return 'pass'
-    status = str(values.get('status') or values.get('probe_status') or 'unknown').strip()
-    censored = bool(values.get('censored'))
-    identity = str(values.get('creator_identity_type') or '')
-    resolved_actor = identity == 'pumpportal_event_actor' and bool(
-        values.get('pumpportal_event_actor')
-    )
-    if reason == 'creator_history_too_short':
-        if status == 'ok' and not censored:
-            return 'fail_history'
-        if status == 'unknown' and resolved_actor:
-            return 'fail_risk'
-        return 'unavailable'
-    if censored or status != 'ok' or reason in _GATE_UNAVAILABLE_REASONS:
-        if status == 'unknown' and reason not in _GATE_UNAVAILABLE_REASONS and not censored:
-            return 'fail_risk'
-        return 'unavailable'
-    return 'fail_risk'
+def security_reason_code(text: Any) -> str:
+    """Collapse one free-text filter reason into a short, stable code."""
+    value = str(text or '').strip()
+    if not value:
+        return 'unknown'
+    for marker, code in _SECURITY_REASON_CODES:
+        if marker in value:
+            return code
+    head = value.split(' ', 1)[0].split('(', 1)[0].strip()
+    if head and all(ch.isascii() and (ch.isalnum() or ch in '_.-') for ch in head):
+        return head
+    return 'other'
 
 
 def _first_reason(reasons_json: Any) -> str:
+    """Raw first reason of a single-reason row (arm signals, skip counters)."""
     try:
         parsed = json.loads(reasons_json or '[]')
     except (TypeError, ValueError):
         return 'unparsed'
     if isinstance(parsed, list) and parsed:
         return str(parsed[0])
+    return 'none'
+
+
+def _last_reason(reasons_json: Any) -> str:
+    """The LAST reason is the verdict; the first is a passed check.
+
+    Run #6 reported ``mint authority отозван — допечатать нельзя`` (the message
+    of a check that *passed*) as the refusal reason for all 1 634 rejected
+    coins, because the report read ``parsed[0]``.
+    """
+    try:
+        parsed = json.loads(reasons_json or '[]')
+    except (TypeError, ValueError):
+        return 'unparsed'
+    if isinstance(parsed, list) and parsed:
+        return security_reason_code(parsed[-1])
     return 'none'
 
 
@@ -1062,12 +1069,7 @@ def _security_fail_report(db: Any, rows_of: Any, scalar: Any) -> dict[str, Any]:
     for mint, reasons in rejected:
         if mint in mints:
             continue
-        try:
-            parsed = json.loads(reasons or '[]')
-            reason = str(parsed[0]) if isinstance(parsed, list) and parsed else 'unknown'
-        except (TypeError, ValueError):
-            reason = 'unknown'
-        mints[str(mint)] = reason
+        mints[str(mint)] = _last_reason(reasons)
     if not mints:
         return {
             'security_fail_total': 0, 'security_fail_observed': 0,
@@ -1154,8 +1156,18 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
             "SELECT COUNT(DISTINCT mint) FROM decisions WHERE stage='entry_state'"
         )
 
+        # Run #7: the arms are discovered from the telemetry, not hardcoded —
+        # an added or renamed arm must appear in the funnel by itself.
+        arms = sorted({
+            str(stage)[: -len('_signal')]
+            for (stage,) in rows_of(
+                "SELECT DISTINCT stage FROM decisions WHERE stage LIKE '%_signal'"
+            )
+            if str(stage).endswith('_signal')
+        })
+        report['arms'] = arms
         signals: dict[str, int] = {}
-        for arm in ('portfolio_a', 'portfolio_b'):
+        for arm in arms:
             rows = rows_of(
                 'SELECT reasons_json FROM decisions WHERE stage=?', (f'{arm}_signal',)
             )
@@ -1167,7 +1179,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
 
         opened: dict[str, int] = {}
         skipped: dict[str, int] = {}
-        for arm in ('portfolio_a', 'portfolio_b'):
+        for arm in arms:
             opened[arm] = scalar(
                 "SELECT COUNT(*) FROM decisions WHERE stage=? AND decision='opened'",
                 (f'{arm}_entry',),
@@ -1208,7 +1220,7 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
         report['delta_buckets'] = dict(sorted(buckets.items()))
         report['pass_if_cap'] = dict(sorted(shadow.items()))
         report['dev_buy_presence'] = dict(sorted(dev_buy.items()))
-        # One-line chain requested by the fix-#7 spec.
+        # One-line chain: A is the reference band, so the funnel is read on it.
         a_signals = report.get('portfolio_a_signal') or {}
         report['chain'] = (
             f"candidates={report['candidates']} -> "
@@ -1224,72 +1236,8 @@ def funnel_from_db(db_path: str | os.PathLike) -> dict[str, Any]:
             "SELECT COUNT(*) FROM decisions WHERE stage='portfolio_a_signal' AND decision='pass'"
         )
 
-        gate: dict[str, int] = {}
-        gate_reason: dict[str, int] = {}
-        identity: dict[str, int] = {}
-        for (values_json,) in rows_of(
-            "SELECT values_json FROM decisions WHERE stage LIKE '%_creator_gate'"
-        ):
-            try:
-                values = json.loads(values_json or '{}')
-            except (TypeError, ValueError):
-                continue
-            status = gate_status_from_values(values)
-            gate[status] = gate.get(status, 0) + 1
-            if status != 'pass':
-                reason = str(values.get('guard_reason') or 'unknown')
-                gate_reason[reason] = gate_reason.get(reason, 0) + 1
-            ident = str(values.get('creator_identity_type') or 'unknown')
-            identity[ident] = identity.get(ident, 0) + 1
-        report['gate_status'] = dict(sorted(gate.items()))
-        report['gate_reasons'] = dict(sorted(gate_reason.items(), key=lambda kv: -kv[1]))
-        report['probe_identity'] = dict(sorted(identity.items()))
-
-        # A-only mints: admitted by A, filtered by B. Split by gate class so a
-        # telemetry blind spot can never be reported as a risk signal.
-        a_only_rows = rows_of(
-            """
-            SELECT a.mint,
-                   (SELECT COUNT(*) FROM decisions b
-                     WHERE b.mint = a.mint AND b.stage = 'portfolio_b_entry'
-                       AND b.decision = 'opened') AS b_opened,
-                   (SELECT values_json FROM decisions g
-                     WHERE g.mint = a.mint AND g.stage LIKE '%_creator_gate'
-                     LIMIT 1) AS gate_values
-            FROM decisions a
-            WHERE a.stage = 'portfolio_a_entry' AND a.decision = 'opened'
-            """
-        )
-        pnl_by_mint: dict[str, float] = {}
-        for mint, pnl in rows_of(
-            "SELECT mint, pnl_leg_rub FROM paper_fills WHERE portfolio='portfolio_a'"
-        ):
-            pnl_by_mint[mint] = pnl_by_mint.get(mint, 0.0) + float(pnl or 0.0)
-        a_only: dict[str, dict[str, Any]] = {}
-        for mint, b_opened, gate_values in a_only_rows:
-            if b_opened:
-                continue
-            try:
-                values = json.loads(gate_values or '{}')
-            except (TypeError, ValueError):
-                values = {}
-            klass = gate_status_from_values(values)
-            reason = str(values.get('guard_reason') or 'unknown')
-            slot = a_only.setdefault(klass, {'mints': 0, 'reasons': {}, 'pnl_leg_sum_rub': 0.0})
-            slot['mints'] += 1
-            slot['reasons'][reason] = slot['reasons'].get(reason, 0) + 1
-            # pnl_leg_rub sum excludes the entry fee; labelled as such.
-            slot['pnl_leg_sum_rub'] = round(
-                slot['pnl_leg_sum_rub'] + pnl_by_mint.get(mint, 0.0), 2,
-            )
-        report['a_only'] = {
-            klass: {
-                'mints': slot['mints'],
-                'reasons': dict(sorted(slot['reasons'].items(), key=lambda kv: -kv[1])),
-                'pnl_leg_sum_rub': slot['pnl_leg_sum_rub'],
-            }
-            for klass, slot in sorted(a_only.items())
-        }
+        # Run #7: the creator gate is gone from the live path (it lost against
+        # the average in 4/4 samples), so no gate funnel is reported.
 
         # --- P0-2: the blind spot that was never measured --------------------
         # Coins rejected by the security filters used to have no price series
