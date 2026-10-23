@@ -58,6 +58,9 @@ def child_environment(run_id: str, run_dir: Path, duration: int) -> dict[str, st
         'RUN_ID': run_id,
         'RUN_DIR': str(run_dir),
         'RUN_DURATION_SEC': str(int(duration)),
+        # Run #10: both stages (10a 1 h, 10b 12 h) are the same experiment and
+        # must land on the same report page; only the run directory differs.
+        'RUN_NUMBER': env.get('RUN_NUMBER', 'run10'),
         'PAPER_ONLY': '1',
         'MODE': 'portfolio',
         'SOURCES': 'pumpfun',

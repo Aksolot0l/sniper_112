@@ -43,6 +43,9 @@ fi
 # S2 — те же числа плюс два изменения входа: пол рождения 31.96 (dev_buy ≥ 2 SOL)
 # и запрет входа, если тот же тикер запускали за предыдущие 120 с.
 # Выход у обеих книг один и не менялся: hard stop −10 %, покрытие +3.5 %, иначе 5 с.
+# Прогон №10: тот же опыт, номер объявлен явно — иначе страница отчёта
+# соберётся как run9. 10a (1 ч) и 10b (12 ч) — один номер, разные каталоги.
+export RUN_NUMBER="${RUN_NUMBER:-run10}"
 export ARMS="${ARMS:-portfolio_s0,portfolio_s2}"
 export ALLOW_SINGLE_ARM="${ALLOW_SINGLE_ARM:-1}"
 export ENTRY_BIRTH_MIN_SOL="${ENTRY_BIRTH_MIN_SOL:-30.5}"

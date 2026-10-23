@@ -566,7 +566,16 @@ def _run_number() -> str:
     Read from the arms and the exit the profiles will actually use, so the
     report page can never be chosen by a constant that drifted away from the
     environment.
+
+    Run #10: the number can be declared outright with RUN_NUMBER. Both stages
+    of run 10 (the 1-hour 10a and the 12-hour 10b) run the same code with the
+    same books, so the composition alone would keep calling them `run9`; only
+    the run directory differs between the stages, and the report has to be the
+    same page for both.
     """
+    declared = (os.getenv('RUN_NUMBER') or '').strip()
+    if declared:
+        return declared
     try:
         profiles = profiles_from_settings(load_settings())
     except Exception:
@@ -584,10 +593,15 @@ def _run_number() -> str:
     return 'run7'
 
 
+# The page label stayed `run9` when run #10 took over the same experiment, so
+# both numbers must open the same report.
+RUN9_PAGE_NUMBERS: tuple[str, ...] = ('run9', 'run10')
+
+
 def _is_run9(manifest: dict[str, Any]) -> bool:
-    """Run #9 = the S0/S2 selection run; it also uses fee_cover."""
+    """Run #9/#10 = the S0/S2 selection run; it also uses fee_cover."""
     if manifest.get('run_number'):
-        return manifest['run_number'] == 'run9'
+        return str(manifest['run_number']) in RUN9_PAGE_NUMBERS
     return (
         'portfolio_s2' in (manifest.get('portfolio_scope') or [])
         and bool(manifest.get('entry_parameters'))

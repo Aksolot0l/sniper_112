@@ -56,6 +56,9 @@ rem S0 is run #8's book verbatim (30.50-34.50 / 0.00-1.00), no name-copy filter.
 rem S2 = S0 with two entry numbers moved: birth floor 31.96 (dev buy >= 2 SOL)
 rem and at most 0 launches of the same ticker in the previous 120 s.
 rem One exit for both books: hard stop -10%, cover +3.5%, else the 5 s clock.
+rem Run #10: the same experiment under the new number; 10a (1 h) and
+rem 10b (12 h) share it and differ only in the run directory.
+if "%RUN_NUMBER%"=="" set "RUN_NUMBER=run10"
 if "%ARMS%"=="" set "ARMS=portfolio_s0,portfolio_s2"
 if "%ALLOW_SINGLE_ARM%"=="" set "ALLOW_SINGLE_ARM=1"
 if "%ENTRY_BIRTH_MIN_SOL%"=="" set "ENTRY_BIRTH_MIN_SOL=30.5"
