@@ -108,13 +108,39 @@ missed — and still fell under 0.97: the `+10 s` point of one S2 exit arrived a
 uncovered count, the worst lateness and the per-point p95, so a late point is
 readable as late, not as lost.
 
-The 12-hour rps budget is met by one entry batch per candidate per cycle: the
-security read and the `+0 s` observation of the same coin used to read the same
-four accounts twice (3 094 of 10a's 6 565 requests). They now share a one-cycle
-in-memory cache (`entry_reads.py`, `ENTRY_CACHE_WINDOW_SEC = 0.25`), and
+The 12-hour rps budget is met by one entry batch per candidate per cycle. Run
+#10a spent 6 565 requests in 3 611 s (1.817 rps, 2.967 in the worst window), and
+the run's own artifacts split it like this:
+
+| source | requests | how it is counted |
+|---|---:|---|
+| security filters `[mint, curve, Global, FeeConfig]` | 1 547 | one per candidate that reached the filters |
+| observation `+0 s` — the same four accounts | 1 547 | one per candidate, moments later |
+| observation `+5 s` — one curve read | 1 540 | a genuinely different moment |
+| poll loop (open positions + due ghosts) | 1 869 | remainder of the manifest total |
+| 429 retries | 62 | `retry_count` |
+
+The `+0 s` sample now prices the snapshot the filter already read (same accounts,
+same slot) instead of re-reading it, and everything else that needs the four
+accounts goes through a one-cycle in-memory cache (`entry_reads.py`,
+`ENTRY_CACHE_WINDOW_SEC = 0.25`, single-flight, never written to disk). The
+position and ghost batch deliberately bypasses it: no exit may see a cached
+mark. `tools/rpc_decomposition.py` rebuilds both numbers from a finished run:
+
+```
+python3 tools/rpc_decomposition.py run-logs/run10a-1h-20261023T182637Z
+python3 tools/rpc_decomposition.py run-logs/run10a-1h-20261023T182637Z \
+        --from-min 21 --to-min 31
+```
+
+Projected on 10a: 4 956 requests for the hour (1.372 rps) instead of 6 565, and
+1 030 in the 21–31 min window (1.717 rps) instead of 1 393 — the window's poll
+part is scaled linearly and the script says so.
+
 `manifest.rpc_metrics` reports `entry_reads_per_candidate` measured rather than
-estimated. Each 429 burst is also written to the log (once per 10 s, with the
-running count and Retry-After) and the pace is summarised every 10 minutes.
+estimated, every logical read is tagged by source, each 429 burst is written to
+the log (once per 10 s, with the running count and Retry-After) and the pace is
+summarised every 10 minutes.
 
 Verdict, fixed before the start: S2's CI95 excludes 0 and is ≥ +2 % → the dev
 selection is accepted; includes 0 → not proven, the config is not repeated;
