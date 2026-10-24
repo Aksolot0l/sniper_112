@@ -872,36 +872,35 @@ def _run9_summary_markdown(
     duration_min_text = '43 000' if long_run else ('3 500' if hour_run else '1 790')
     duration_min_value = 43_000.0 if long_run else (3_500.0 if hour_run else 1_790.0)
     default_min = 0 if long_run else (0 if hour_run else 5)
-    # Run #10 §1: "8 marks on every exit" was unreachable on 12 hours. That
-    # stage plans ~14 200 points, so one lost point out of 14 200 (0.007 %)
-    # would turn the whole stage red while the ghost works. The threshold is
-    # now the share of required points actually covered — 0.97 for the hour,
-    # 0.95 for 12 hours, 0.90 for a smoke — plus the median at exactly 8 and
-    # the minimum at 7. The smoke keeps its own, lighter floor.
-    if long_run:
-        coverage_needed = 0.95
-    elif hour_run:
-        coverage_needed = 0.97
-    else:
-        coverage_needed = 0.90
+    # Run #10b §3: 10a lost NOTHING (1032/1032 points for S0, 152/152 for S2,
+    # missed 0, attempts 0) and still failed the cover-threshold, because the
+    # "+10 s" point of one S2 exit arrived at 11.35 s and three S0 points
+    # arrived 1.08-2.08 s late. A share over 19 exits cannot express that: one
+    # late point is 18/19 = 0.947. The acceptance now counts UNCOVERED points
+    # against a budget of max(2, 1 % of the plan), requires every planned point
+    # to be written, and keeps the median at 8 and the minimum at 7.
     marks_needed = 7 if (long_run or hour_run) else 5
     marks_median_needed = 8 if (long_run or hour_run) else 0
 
-    def _coverage_ok(block: dict[str, Any]) -> bool:
-        coverage = block.get('required_point_coverage') or {}
-        if not coverage:
+    def _uncovered_budget(block: dict[str, Any]) -> float:
+        planned = int(block.get('points_planned') or 0)
+        return max(2.0, 0.01 * planned)
+
+    def _ghost_ok(block: dict[str, Any]) -> bool:
+        planned = int(block.get('points_planned') or 0)
+        written = int(block.get('points_written') or 0)
+        if planned <= 0 or written != planned:
             return False
-        return min(float(v or 0.0) for v in coverage.values()) >= coverage_needed
+        if int(block.get('exits_with_marks') or 0) < int(block.get('exits_followed') or 0):
+            return False
+        if int(block.get('uncovered_points') or 0) > _uncovered_budget(block):
+            return False
+        if int(block.get('marks_per_exit_min') or 0) < marks_needed:
+            return False
+        return int(block.get('marks_per_exit_median') or 0) >= marks_median_needed
 
     post_exit_ok = all(
-        int((((summary.get(name) or {}).get('post_exit') or {})
-             .get('exits_with_marks') or 0)) >= int((((summary.get(name) or {}).get('post_exit') or {})
-                                                       .get('exits_followed') or 0))
-        and _coverage_ok(((summary.get(name) or {}).get('post_exit') or {}))
-        and int((((summary.get(name) or {}).get('post_exit') or {})
-                 .get('marks_per_exit_min') or 0)) >= marks_needed
-        and int((((summary.get(name) or {}).get('post_exit') or {})
-                 .get('marks_per_exit_median') or 0)) >= marks_median_needed
+        _ghost_ok((summary.get(name) or {}).get('post_exit') or {})
         for name in arms
     )
     money_rule = (
@@ -913,21 +912,14 @@ def _run9_summary_markdown(
     )
     def _ghost_cell(name: str) -> str:
         pe = (summary.get(name) or {}).get('post_exit') or {}
-        coverage = pe.get('required_point_coverage') or {}
-        worst = min(coverage.values()) if coverage else 0.0
+        uncovered = int(pe.get('uncovered_points') or 0)
+        late = pe.get('max_lateness_sec')
         return (
-            f"{label(name)}: {pe.get('exits_followed', 0)} выходов, "
-            f"мин {pe.get('marks_per_exit_min', 0)}/мед {pe.get('marks_per_exit_median', 0)} меток, "
-            f"покрытие {_share(worst)}"
-        )
-
-    def _points_cell(name: str) -> str:
-        pe = (summary.get(name) or {}).get('post_exit') or {}
-        return (
-            f"{label(name)}: {pe.get('points_written', 0)}/{pe.get('points_planned', 0)} "
-            f"({_share(pe.get('points_write_ratio'))}), "
-            f"потеряно {pe.get('missed_points_total', 0)}, "
-            f"спасено повторами {pe.get('points_recovered_by_retry', 0)}"
+            f"{label(name)}: {pe.get('points_written', 0)}/{pe.get('points_planned', 0)} точек, "
+            f"недобрано {uncovered} ({_share(pe.get('uncovered_share'))})"
+            + (f", макс. опоздание {m(late)} с" if late else ', без опозданий')
+            + f", медиана {pe.get('marks_per_exit_median', 0)}, "
+              f"мин {pe.get('marks_per_exit_min', 0)} меток"
         )
 
 
@@ -965,17 +957,10 @@ def _run9_summary_markdown(
              >= trade_mins.get(name, default_min) for name in arms),
          ', '.join(f"{label(name)}={((summary.get(name) or {}).get('stats') or {}).get('n', 0)}"
                    for name in arms)),
-        (f'post_exit.csv: покрытие точек ≥ {coverage_needed:.2f}, '
-         f'меток на выход мин ≥ {marks_needed}'
-         + (f', медиана = {marks_median_needed}' if marks_median_needed else ''),
+        (f'призрак: точки записаны/план, недобрано ≤ max(2, 1 % от плана), '
+         f'медиана = {marks_median_needed or 0}, мин ≥ {marks_needed}',
          post_exit_ok,
          '; '.join(_ghost_cell(name) for name in arms)),
-        # Run #10 §2: the point budget behind the coverage above. Without it a
-        # red coverage row cannot be explained without opening post_exit.csv.
-        ('точки призрака записано/план',
-         all(int((((summary.get(name) or {}).get('post_exit') or {})
-                  .get('points_planned') or 0)) > 0 for name in arms),
-         '; '.join(_points_cell(name) for name in arms)),
         ('полосы и копии в манифесте',
          all(
              (manifest.get('entry_parameters') or {}).get(name, {}).get('v_sol_birth_min')

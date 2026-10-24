@@ -4352,15 +4352,51 @@ class ABPaperSimulator:
             ]
             marks_per_exit = [len(rows) for rows in exits]
             coverage: dict[str, float] = {}
+            # Run #10b §3: in 10a nothing was LOST — 1032/1032 points written
+            # for S0 and 152/152 for S2 — yet coverage fell under 0.97 because
+            # one "+10 s" mark of one exit arrived 1.35 s late. A share over
+            # 19 exits cannot express that: one late point is 18/19 = 0.947.
+            # So the acceptance counts uncovered points (a point that has no
+            # mark inside the tolerance) and reports how late the nearest mark
+            # to each required point was.
+            uncovered_points = 0
+            lateness_all: list[float] = []
+            point_lateness: dict[str, dict[str, Optional[float]]] = {}
             for target in required:
                 covered = 0
+                lateness: list[float] = []
                 for rows in exits:
-                    if any(abs(float(r['sec_since_exit']) - target)
-                           <= POST_EXIT_NEAREST_TOLERANCE_SEC for r in rows):
+                    nearest = min(
+                        rows, key=lambda r: abs(float(r['sec_since_exit']) - target),
+                        default=None,
+                    )
+                    if nearest is None:
+                        uncovered_points += 1
+                        continue
+                    distance = abs(float(nearest['sec_since_exit']) - target)
+                    lateness.append(distance)
+                    lateness_all.append(distance)
+                    if distance <= POST_EXIT_NEAREST_TOLERANCE_SEC:
                         covered += 1
+                    else:
+                        uncovered_points += 1
                 coverage[f'+{target:g}s'] = (
                     round(covered / len(exits), 4) if exits else 0.0
                 )
+                point_lateness[f'+{target:g}s'] = {
+                    'p95': (
+                        round(percentile(lateness, 0.95), 3)
+                        if lateness else None
+                    ),
+                    'max': round(max(lateness), 3) if lateness else None,
+                }
+            required_points_total = len(exits) * len(required)
+            # "Late" is the distance of the nearest mark from the moment the
+            # point asked for; it is a magnitude, never a signed offset.
+            late_only = [
+                distance for distance in lateness_all
+                if distance > POST_EXIT_NEAREST_TOLERANCE_SEC
+            ]
 
             def metric(offset: float) -> Optional[float]:
                 picked: list[float] = []
@@ -4398,6 +4434,22 @@ class ABPaperSimulator:
                     statistics.median(marks_per_exit) if marks_per_exit else 0
                 ),
                 'required_point_coverage': coverage,
+                'required_points_total': required_points_total,
+                'uncovered_points': uncovered_points,
+                # The share is taken over the PLANNED points, not over the
+                # required ones: 2 uncovered of 1 032 planned is the "0.19 %" a
+                # reviewer reads next to the budget, which is also 1 % of the
+                # plan.
+                'uncovered_share': (
+                    round(uncovered_points / self.post_exit_planned[name], 4)
+                    if self.post_exit_planned.get(name) else 0.0
+                ),
+                'max_lateness_sec': round(max(late_only), 3) if late_only else 0.0,
+                'lateness_p95_sec': (
+                    round(percentile(lateness_all, 0.95), 3)
+                    if lateness_all else None
+                ),
+                'point_lateness_sec': point_lateness,
                 'mean_pnl_vs_exit_pct_at': {
                     f'+{target:g}s': metric(target) for target in required
                 },

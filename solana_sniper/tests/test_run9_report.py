@@ -119,6 +119,9 @@ class RunNineReportTests(unittest.TestCase):
                               'required_point_coverage': {
                                   '+0.5s': 1.0, '+1s': 1.0, '+2s': 1.0,
                                   '+5s': 1.0, '+10s': 1.0},
+                              'required_points_total': 10,
+                              'uncovered_points': 0, 'uncovered_share': 0.0,
+                              'max_lateness_sec': 0.0, 'lateness_p95_sec': 0.07,
                               'points_planned': 16, 'points_written': 16,
                               'points_write_ratio': 1.0, 'missed_points_total': 0,
                               'points_recovered_by_retry': 1, 'attempts_total': 1,
@@ -148,6 +151,9 @@ class RunNineReportTests(unittest.TestCase):
                               'required_point_coverage': {
                                   '+0.5s': 1.0, '+1s': 1.0, '+2s': 1.0,
                                   '+5s': 1.0, '+10s': 1.0},
+                              'required_points_total': 5,
+                              'uncovered_points': 0, 'uncovered_share': 0.0,
+                              'max_lateness_sec': 0.0, 'lateness_p95_sec': 0.07,
                               'points_planned': 8, 'points_written': 8,
                               'points_write_ratio': 1.0, 'missed_points_total': 0,
                               'points_recovered_by_retry': 0, 'attempts_total': 0,
@@ -209,10 +215,11 @@ class RunNineReportTests(unittest.TestCase):
         self.assertIn('длительность ≥ 3 500 c', text)
         self.assertIn('худшее 10-мин окно ≤ 2.2 rps', text)
         self.assertIn('429 ≤ 0.5 % запросов', text)
-        self.assertIn('post_exit.csv: покрытие точек ≥ 0.97', text)
-        self.assertIn('меток на выход мин ≥ 7, медиана = 8', text)
+        # Run #10b §3: the ghost is judged by uncovered points, not by a share.
+        self.assertIn('призрак: точки записаны/план', text)
+        self.assertIn('недобрано ≤ max(2, 1 % от плана)', text)
+        self.assertIn('медиана = 8, мин ≥ 7', text)
         self.assertIn('S0 ≥ 80, S2 ≥ 8', text)
-        self.assertIn('точки призрака записано/план', text)
         self.assertIn('неисправленные ошибки RPC ≤ 1 %', text)
         self.assertNotIn('технический смоук на 30 минут', text)
 
