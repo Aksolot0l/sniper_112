@@ -110,6 +110,14 @@ async def get_sol_usd(session: aiohttp.ClientSession) -> Optional[float]:
 # out of a log that simply never wrote it.
 THROTTLE_LOG_INTERVAL_SEC = 10.0
 PACE_LOG_INTERVAL_SEC = 600.0
+# Run #10c §1: the peak has to be auditable, not just asserted. Every request
+# lands in a 5-second bucket from the start of the run (12 per minute, 8 640 per
+# 12 hours, ~35 KB of JSON), the 10-minute peak is computed FROM those buckets,
+# and the array reaches the manifest so a reviewer can recount the window the
+# acceptance line names.
+RATE_BUCKET_SEC = 5.0
+RATE_PEAK_WINDOW_SEC = 600.0
+RATE_SHORT_WINDOW_SEC = 60.0
 
 
 class ReadOnlyRpcMetrics:
@@ -139,6 +147,9 @@ class ReadOnlyRpcMetrics:
         # timestamps are kept (an 8 h run is ~47 k floats) and the rolling
         # maximum is computed at snapshot time.
         self.request_times: deque[float] = deque(maxlen=200_000)
+        # Requests per RATE_BUCKET_SEC from started_wall; index 0 is the first
+        # five seconds. This is the single source of every peak number.
+        self.buckets: list[int] = []
         # Run #10b §1: which code path asked for the read. HTTP batches can
         # merge two paths, so the split is kept on LOGICAL reads — the number
         # that actually drives decisions and the one an RPS budget is made of.
@@ -170,10 +181,16 @@ class ReadOnlyRpcMetrics:
             return
         self._last_pace_log_epoch = now
         mean_rps = self.requests / max(1e-9, now - self.started_wall)
-        peak = self._max_rate_in_window(600.0, now=now)
+        peak_entry = self._window_peak(RATE_PEAK_WINDOW_SEC, now=now)
+        if peak_entry:
+            peak_text = (
+                f'{peak_entry["rps"]:.2f} rps худшее 10-мин окно '
+                f'({peak_entry["start_sec"]:.0f}-{peak_entry["end_sec"]:.0f} c)'
+            )
+        else:
+            peak_text = '10-мин окно ещё не набрано'
         log(
-            f'📊 Темп RPC: {mean_rps:.2f} rps средний, '
-            f'{peak if peak is not None else 0.0:.2f} rps худшее 10-мин окно, '
+            f'📊 Темп RPC: {mean_rps:.2f} rps средний, {peak_text}, '
             f'429 {self.http_429_count}, повторов {self.retry_count}; '
             f'логических чтений {self.logical_requests}, '
             f'не восстановлено {self.unrecovered_failures}',
@@ -188,6 +205,7 @@ class ReadOnlyRpcMetrics:
         now = time.time()
         self._log_pace(now)
         self.request_times.append(now)
+        self._count_buckets(now)
         self.accounts_requested += max(0, int(account_count))
         self.null_accounts += max(0, int(null_count))
         self.latencies_ms.append(max(0.0, float(latency_ms)))
@@ -202,33 +220,67 @@ class ReadOnlyRpcMetrics:
                 self.http_429_count += 1
                 self._log_throttle(now, retry_after)
 
+    def _bucket_index(self, now: float) -> int:
+        return max(0, int((now - self.started_wall) // RATE_BUCKET_SEC))
+
+    def _count_buckets(self, now: float) -> None:
+        index = self._bucket_index(now)
+        if index >= len(self.buckets):
+            self.buckets.extend([0] * (index + 1 - len(self.buckets)))
+        self.buckets[index] += 1
+
+    def _window_peak(
+        self, window_sec: float, now: Optional[float] = None,
+    ) -> Optional[dict[str, Any]]:
+        """The busiest `window_sec`, computed from the 5-second buckets.
+
+        A window that has not filled yet is divided by the time actually
+        elapsed, exactly as before: dividing a handful of early requests by a
+        full ten minutes would invent a quiet run, and dividing them by a
+        fraction of a second would invent a burst.
+        """
+        if not self.buckets:
+            return None
+        end_now = (time.time() if now is None else now) - self.started_wall
+        if end_now < window_sec:
+            # The run has not produced one full window yet: no number, not zero.
+            return None
+        span_buckets = max(1, int(round(window_sec / RATE_BUCKET_SEC)))
+        prefix = [0] * (len(self.buckets) + 1)
+        for index, value in enumerate(self.buckets):
+            prefix[index + 1] = prefix[index] + value
+        best: Optional[dict[str, Any]] = None
+        for end in range(len(self.buckets)):
+            start = max(0, end - span_buckets + 1)
+            count = prefix[end + 1] - prefix[start]
+            if not count:
+                continue
+            elapsed = min(window_sec, (end + 1) * RATE_BUCKET_SEC)
+            rate = count / max(1e-9, elapsed)
+            if best is None or rate > best['rps']:
+                best = {
+                    'rps': rate,
+                    'count': count,
+                    'start_sec': round(start * RATE_BUCKET_SEC, 1),
+                    'end_sec': round((end + 1) * RATE_BUCKET_SEC, 1),
+                    'elapsed_sec': round(elapsed, 1),
+                }
+        return best
+
     def _max_rate_in_window(
         self, window_sec: float, now: Optional[float] = None,
     ) -> Optional[float]:
-        """Highest requests/second over any window_sec sliding window."""
-        times = list(self.request_times)
-        if not times:
-            return 0.0
-        # A window shorter than its own length cannot be measured: dividing a
-        # handful of early requests by a fraction of a second invents bursts.
-        if (time.time() if now is None else now) - self.started_wall < window_sec:
-            return None
-        best = 0.0
-        left = 0
-        for right, now in enumerate(times):
-            while times[left] < now - window_sec:
-                left += 1
-            if left == 0:
-                # The window still touches the start of the run: divide by the
-                # elapsed time, not by a window that has not filled yet.
-                span = max(1e-9, now - self.started_wall)
-            else:
-                span = window_sec
-            best = max(best, (right - left + 1) / span)
-        return round(best, 3)
+        peak = self._window_peak(window_sec, now=now)
+        return round(peak['rps'], 3) if peak else None
 
     def snapshot(self) -> dict[str, Any]:
         values = sorted(self.latencies_ms)
+        peak_10 = self._window_peak(RATE_PEAK_WINDOW_SEC)
+        peak_60 = self._window_peak(RATE_SHORT_WINDOW_SEC)
+        mean_rps = (
+            self.requests / max(1e-9, time.time() - self.started_wall)
+            if self.requests else 0.0
+        )
         def percentile(p: float) -> Optional[float]:
             if not values:
                 return None
@@ -250,8 +302,31 @@ class ReadOnlyRpcMetrics:
                 self.requests / max(1e-9, time.time() - self.started_wall), 3,
             ) if self.requests else 0.0,
             # Run #7 acceptance: no 10-minute window may exceed 2.2 rps.
-            'requests_per_sec_max_10min': self._max_rate_in_window(600.0),
-            'requests_per_sec_max_60sec': self._max_rate_in_window(60.0),
+            # Run #10c §1: computed from the 5-second buckets that also reach
+            # the manifest, so the acceptance line and an audit cannot diverge.
+            'requests_per_sec_max_10min': (
+                round(peak_10['rps'], 3) if peak_10 else None
+            ),
+            'requests_per_sec_max_10min_count': (
+                peak_10['count'] if peak_10 else None
+            ),
+            'requests_per_sec_max_10min_window_sec': (
+                [peak_10['start_sec'], peak_10['end_sec']] if peak_10 else None
+            ),
+            'requests_per_sec_max_60sec': (
+                round(peak_60['rps'], 3) if peak_60 else None
+            ),
+            'requests_per_sec_max_60sec_window_sec': (
+                [peak_60['start_sec'], peak_60['end_sec']] if peak_60 else None
+            ),
+            # The peak means nothing alone: it is a property of the candidate
+            # flow. The ratio is what a reader compares with 1.75.
+            'requests_per_sec_peak_to_mean_ratio': (
+                round(peak_10['rps'] / mean_rps, 3)
+                if peak_10 and mean_rps else None
+            ),
+            'requests_per_5sec_bucket_sec': RATE_BUCKET_SEC,
+            'requests_per_5sec': list(self.buckets),
             'recovered_failures': self.recovered_requests,
             'accounts_requested': self.accounts_requested,
             'null_accounts': self.null_accounts,

@@ -14,3 +14,5 @@ solana_sniper/log_exports/
 *.sqlite
 *.db-wal
 *.db-shm
+*.sqlite-shm
+*.sqlite-wal

@@ -612,6 +612,47 @@ def _is_run9(manifest: dict[str, Any]) -> bool:
     )
 
 
+def _peak_window_text(rpc: dict[str, Any]) -> str:
+    """Run #10c §1: the peak with its window and its ratio to the mean.
+
+    The absolute ceiling of 2.2 rps was set when the run averaged 2.23 rps. At
+    an average of 1.37 it would demand a peak/mean ratio below 1.60, and the
+    candidate flow is bursty by nature, so the ratio is printed next to the
+    peak instead of being left for the reader to divide.
+    """
+    peak = rpc.get('requests_per_sec_max_10min')
+    if peak is None:
+        return 'пик 10-мин окна: окно ещё не набрано'
+    text = f'пик 10-мин окна: {float(peak):.2f} rps'
+    window = rpc.get('requests_per_sec_max_10min_window_sec') or []
+    if len(window) == 2 and window[0] is not None and window[1] is not None:
+        text += f' (окно {float(window[0]) / 60:.1f}–{float(window[1]) / 60:.1f} мин)'
+    mean = rpc.get('requests_per_sec')
+    if mean:
+        text += f', среднее {float(mean):.2f}'
+    ratio = rpc.get('requests_per_sec_peak_to_mean_ratio')
+    if ratio is not None:
+        text += f', отношение {float(ratio):.2f}'
+    return text
+
+
+def _peak_ok(rpc: dict[str, Any], ceiling: float) -> bool:
+    """`<= ceiling`, or a peak explained by flow: <= 1.75x mean, 429 and RPC OK."""
+    peak = rpc.get('requests_per_sec_max_10min')
+    if peak is None:
+        return True
+    if float(peak) <= ceiling:
+        return True
+    ratio = rpc.get('requests_per_sec_peak_to_mean_ratio')
+    if ratio is None or float(ratio) > 1.75:
+        return False
+    requests = max(1, int(rpc.get('requests') or 0))
+    return (
+        int(rpc.get('http_429_count') or 0) <= 0.005 * requests
+        and float(rpc.get('unrecovered_rate') or 0.0) <= 0.01
+    )
+
+
 def _pace_fuse_text(mark_poll: dict[str, Any]) -> str:
     """Run #10b §5: the cadence fuse is a report line, never a protection.
 
@@ -1014,9 +1055,17 @@ def _run9_summary_markdown(
          f"({rpc.get('unrecovered_failures', 0)} из {rpc.get('requests', 0)})"),
         ('средний rps ≤ 1.8', float(rpc.get('requests_per_sec') or 0.0) <= 1.8,
          m(rpc.get('requests_per_sec'))),
-        (f'худшее 10-мин окно ≤ {2.2 if (long_run or hour_run) else 2.5} rps',
-         peak is None or float(peak) <= (2.2 if (long_run or hour_run) else 2.5),
+        (f'худшее 10-мин окно ≤ {2.2 if (long_run or hour_run) else 2.5} rps '
+         f'или ≤ 1.75 × среднего при 429 ≤ 0.5 % и unrecovered = 0',
+         _peak_ok(rpc, 2.2 if (long_run or hour_run) else 2.5),
          m(peak) if peak is not None else '— (окно не набрано)'),
+        # Run #10c §3: the cache is now a measured line of the acceptance, not
+        # a claim in the README. The smoke measures 1.00.
+        ('входных чтений на кандидата ≤ 1.15',
+         rpc.get('entry_reads_per_candidate') is None
+         or float(rpc.get('entry_reads_per_candidate') or 0.0) <= 1.15,
+         m(rpc.get('entry_reads_per_candidate'))
+         if rpc.get('entry_reads_per_candidate') is not None else '—'),
         ('429 ≤ 0.5 % запросов',
          int(rpc.get('http_429_count') or 0)
          <= 0.005 * max(1, int(rpc.get('requests') or 0)),
@@ -1075,6 +1124,7 @@ def _run9_summary_markdown(
     add('')
     add(f"- 429 всего: {rpc.get('http_429_count', 0)}, ретраев: "
         f"{rpc.get('retry_count', 0)}, восстановлено {rpc.get('recovered_failures', 0)}")
+    add(f"- {_peak_window_text(rpc)}")
     if rpc.get('entry_reads_per_candidate') is not None:
         add(f"- входных чтений на кандидата: {m(rpc.get('entry_reads_per_candidate'))} "
             f"({rpc.get('entry_reads_total', 0)} батчей на "

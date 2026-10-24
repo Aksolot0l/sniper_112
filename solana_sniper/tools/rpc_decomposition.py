@@ -16,9 +16,11 @@ then applies the run #10b model to the same window:
   how many of them the 0.25 s entry cache would have merged anyway, so the two
   mechanisms are visible side by side.
 
-The poll loop (open positions + due ghosts) is not timestamped in the artifacts,
-so it is reported as the remainder of the manifest total and, for a window,
-scaled linearly — that assumption is printed with the number.
+The poll loop (open positions + due ghosts) has no per-call timestamps in the
+artifacts, so for a window it is taken from `rpc_metrics.requests_per_5sec` —
+the run's own five-second histogram — minus the candidate-driven reads counted
+from timestamps in that same window. Nothing is scaled: the window's total is
+the histogram's sum, and the poll part is the remainder inside the window.
 
 Usage:
     python3 tools/rpc_decomposition.py <run_dir> [--from-min 21 --to-min 31]
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -122,15 +125,40 @@ def decompose(run_dir: Path, from_min: Optional[float], to_min: Optional[float])
     retries = int(rpc.get('retry_count') or 0)
     poll_remainder = max(0, total - known_total - retries)
 
+    buckets = list(rpc.get('requests_per_5sec') or [])
+    bucket_sec = float(rpc.get('requests_per_5sec_bucket_sec') or 5.0)
+
+    def bucket_sum(start: Optional[float], end: Optional[float]) -> Optional[int]:
+        if not buckets or start is None or end is None:
+            return None
+        # Half-open [start, end) — the same convention as the peak itself, so
+        # a 600-second window is 120 buckets and not 121.
+        first = max(0, int((start - started) // bucket_sec))
+        last = min(len(buckets), math.ceil((end - started) / bucket_sec))
+        return int(sum(buckets[first:last]))
+
+    candidate_reads = filters + obs_five + max(0, obs_zero - obs_zero_merged)
     if window_start is None:
+        window_total = int(sum(buckets)) if buckets else total
         poll_estimate = poll_remainder
-        scale_note = 'measured as the remainder of the manifest total'
+        poll_note = 'remainder of the manifest total'
     else:
-        share = (
-            (window_end - window_start) / duration if duration else 0.0
-        )
-        poll_estimate = poll_remainder * share
-        scale_note = f'scaled linearly by {share:.3f} of the run'
+        measured = bucket_sum(window_start, window_end)
+        if measured is None:
+            # Run #10c §1 introduced the histogram; a run built before it has
+            # none, and the poll part can only be scaled. Said out loud.
+            share = (window_end - window_start) / duration if duration else 0.0
+            window_total = round(total * share, 1)
+            poll_estimate = round(poll_remainder * share, 1)
+            poll_note = (
+                f'legacy run without requests_per_5sec: scaled by {share:.3f}'
+            )
+        else:
+            # The window total comes from the histogram, so the poll part is a
+            # difference of measured numbers, not a rescale.
+            window_total = measured
+            poll_estimate = max(0, measured - candidate_reads)
+            poll_note = 'histogram total minus candidate reads counted in the window'
 
     after = filters + obs_five + poll_estimate
     before = filters + obs_zero + obs_five + poll_estimate
@@ -152,8 +180,13 @@ def decompose(run_dir: Path, from_min: Optional[float], to_min: Optional[float])
             round(obs_zero / obs_zero_total, 4) if obs_zero_total else None
         ),
         'observation_5': obs_five,
+        'window_total_from_histogram': window_total,
         'poll_estimate': round(poll_estimate, 1),
-        'poll_note': scale_note,
+        'poll_note': poll_note,
+        'peak_10min_rps': rpc.get('requests_per_sec_max_10min'),
+        'peak_10min_window_sec': rpc.get('requests_per_sec_max_10min_window_sec'),
+        'peak_to_mean_ratio': rpc.get('requests_per_sec_peak_to_mean_ratio'),
+        'buckets_available': len(buckets),
         'poll_with_positions_measured': poll_with_positions,
         'retry_count': retries,
         'before': round(before, 1),

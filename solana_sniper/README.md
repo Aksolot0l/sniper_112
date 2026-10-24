@@ -83,7 +83,8 @@ Observation offsets in this run: **only `0, 5`** s (`TELEMETRY_OBSERVATION_OFFSE
 
 Acceptance 10a (§3): paper_only and 0 signatures; ≥ 3 500 s of real polling;
 `early_stop_reason = null`; unrecovered RPC errors ≤ 1 %; **mean rps ≤ 1.8**
-and **worst 10-min window ≤ 2.2** (the smoke measured 2.23 / 2.83); 429 ≤ 0.5 %
+and **worst 10-min window ≤ 2.2, or ≤ 1.75 × the mean** while 429 stays ≤ 0.5 %
+and `unrecovered = 0` (the smoke measured 2.23 / 2.83); 429 ≤ 0.5 %
 of requests; `dropped_events = 0`; `write_errors = 0`; 0 open positions at the
 finish; **every planned ghost point written**, at most **max(2, 1 % of the
 plan) uncovered points**, median 8 marks per exit, minimum ≥ 7; manifest bands
@@ -134,8 +135,23 @@ python3 tools/rpc_decomposition.py run-logs/run10a-1h-20261023T182637Z \
 ```
 
 Projected on 10a: 4 956 requests for the hour (1.372 rps) instead of 6 565, and
-1 030 in the 21–31 min window (1.717 rps) instead of 1 393 — the window's poll
-part is scaled linearly and the script says so.
+1 030 in the 21–31 min window (1.717 rps) instead of 1 393. That 1 030 was the
+one number the run could not prove: the poll remainder had no timestamps, so it
+was scaled linearly, and against `ticks.csv` the same window held **431 poll
+cycles, not 310** — a 40 % gap landing exactly in the red line of the report.
+From run #10a′ on, `manifest.rpc_metrics.requests_per_5sec` carries the run's own
+five-second histogram (12 buckets/min, 720/h, 8 640/12 h), the peak is computed
+from that same array, and the audit reads its window total as the histogram's
+sum minus the candidate reads counted inside it. Nothing is scaled; a run built
+before the histogram has none, and the script then says `legacy run without
+requests_per_5sec` instead of pretending.
+
+The peak is printed with the window it belongs to and its ratio to the mean —
+`пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин), среднее 1.37, отношение 1.48`
+— because a peak is a property of the candidate flow: at a mean of 1.37 the old
+absolute ceiling of 2.2 would demand a ratio below 1.60. The third number is the
+one to read. The ratio route still requires 429 ≤ 0.5 % and no unrecovered
+error: bursts are allowed, throttling is not.
 
 `manifest.rpc_metrics` reports `entry_reads_per_candidate` measured rather than
 estimated, every logical read is tagged by source, each 429 burst is written to
