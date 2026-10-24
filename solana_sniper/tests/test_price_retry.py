@@ -162,8 +162,13 @@ class RpcRetryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(price.time, 'time', return_value=times[-1]):
             metrics = price.rpc_metrics_snapshot()
         self.assertLessEqual(metrics['requests_per_sec'], 1.8)
-        # 1 200 requests inside ~60 s is ~20 rps in that window.
-        self.assertGreater(metrics['requests_per_sec_max_10min'], 2.2)
+        # Run #10c §1a: only FULL windows count, so the burst of 1 200 inside
+        # 60 s is 1 200 / 600 s = 2.0 rps in the ten-minute window that
+        # contains it — not 20 rps, which would be a five-second window wearing
+        # a ten-minute label.
+        self.assertAlmostEqual(metrics['requests_per_sec_max_10min'], 2.0, places=2)
+        self.assertEqual(metrics['requests_per_sec_max_10min_window_kind'], 'full')
+        # The one-minute line still sees the burst itself: 20 rps.
         self.assertGreater(metrics['requests_per_sec_max_60sec'], 2.2)
 
     async def test_steady_rate_passes_both_criteria(self) -> None:

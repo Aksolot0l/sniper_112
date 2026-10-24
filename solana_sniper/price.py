@@ -232,12 +232,13 @@ class ReadOnlyRpcMetrics:
     def _window_peak(
         self, window_sec: float, now: Optional[float] = None,
     ) -> Optional[dict[str, Any]]:
-        """The busiest `window_sec`, computed from the 5-second buckets.
+        """The busiest FULL `window_sec`, from the 5-second buckets.
 
-        A window that has not filled yet is divided by the time actually
-        elapsed, exactly as before: dividing a handful of early requests by a
-        full ten minutes would invent a quiet run, and dividing them by a
-        fraction of a second would invent a burst.
+        Only windows of exactly `window_sec` count. A window that has not
+        filled yet is not one: dividing five seconds of a dense launch by
+        themselves reports the start-up burst as "the worst ten minutes", and
+        the acceptance line then fails on an artefact of the first seconds.
+        Until one full window exists the answer is None, not zero.
         """
         if not self.buckets:
             return None
@@ -246,24 +247,27 @@ class ReadOnlyRpcMetrics:
             # The run has not produced one full window yet: no number, not zero.
             return None
         span_buckets = max(1, int(round(window_sec / RATE_BUCKET_SEC)))
+        if len(self.buckets) < span_buckets:
+            return None
         prefix = [0] * (len(self.buckets) + 1)
         for index, value in enumerate(self.buckets):
             prefix[index + 1] = prefix[index] + value
         best: Optional[dict[str, Any]] = None
-        for end in range(len(self.buckets)):
-            start = max(0, end - span_buckets + 1)
+        # Start at the first bucket that closes a complete window.
+        for end in range(span_buckets - 1, len(self.buckets)):
+            start = end - span_buckets + 1
             count = prefix[end + 1] - prefix[start]
             if not count:
                 continue
-            elapsed = min(window_sec, (end + 1) * RATE_BUCKET_SEC)
-            rate = count / max(1e-9, elapsed)
+            rate = count / window_sec
             if best is None or rate > best['rps']:
                 best = {
                     'rps': rate,
                     'count': count,
                     'start_sec': round(start * RATE_BUCKET_SEC, 1),
                     'end_sec': round((end + 1) * RATE_BUCKET_SEC, 1),
-                    'elapsed_sec': round(elapsed, 1),
+                    'elapsed_sec': round(window_sec, 1),
+                    'kind': 'full',
                 }
         return best
 
@@ -312,6 +316,11 @@ class ReadOnlyRpcMetrics:
             ),
             'requests_per_sec_max_10min_window_sec': (
                 [peak_10['start_sec'], peak_10['end_sec']] if peak_10 else None
+            ),
+            # Run #10c §1a: the number is a peak over FULL 600-second windows
+            # and nothing else, and the manifest says so.
+            'requests_per_sec_max_10min_window_kind': (
+                peak_10['kind'] if peak_10 else None
             ),
             'requests_per_sec_max_60sec': (
                 round(peak_60['rps'], 3) if peak_60 else None

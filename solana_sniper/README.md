@@ -146,9 +146,20 @@ sum minus the candidate reads counted inside it. Nothing is scaled; a run built
 before the histogram has none, and the script then says `legacy run without
 requests_per_5sec` instead of pretending.
 
-The peak is printed with the window it belongs to and its ratio to the mean —
-`пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин), среднее 1.37, отношение 1.48`
-— because a peak is a property of the candidate flow: at a mean of 1.37 the old
+Only **full** windows count: a window that has not filled yet is not one, so the
+first seconds of a dense launch cannot be presented as "the worst ten minutes".
+The first version of this block divided every starting-biased prefix by its own
+length, which is how a five-second bucket of five requests reported the
+one-minute line as 1.000 rps when the busiest full minute was 0.833 — and how
+`requests_per_sec_max_60sec = 4.15` (10a) and `4.067` (run 9) appeared: both are
+start-up bursts wearing a one-minute label, and neither is comparable with any
+future run. A run shorter than the window reports no peak at all, and the report
+says `окно ещё не набрано` instead of printing a zero.
+
+The peak is printed with the window it belongs to, its length and its ratio to
+the mean —
+`пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин, 600 с), среднее 1.37,
+отношение 1.48` — because a peak is a property of the candidate flow: at a mean of 1.37 the old
 absolute ceiling of 2.2 would demand a ratio below 1.60. The third number is the
 one to read. The ratio route still requires 429 ≤ 0.5 % and no unrecovered
 error: bursts are allowed, throttling is not.

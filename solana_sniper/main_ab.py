@@ -626,7 +626,9 @@ def _peak_window_text(rpc: dict[str, Any]) -> str:
     text = f'пик 10-мин окна: {float(peak):.2f} rps'
     window = rpc.get('requests_per_sec_max_10min_window_sec') or []
     if len(window) == 2 and window[0] is not None and window[1] is not None:
-        text += f' (окно {float(window[0]) / 60:.1f}–{float(window[1]) / 60:.1f} мин)'
+        length = float(window[1]) - float(window[0])
+        text += (f' (окно {float(window[0]) / 60:.1f}–{float(window[1]) / 60:.1f} мин, '
+                 f'{length:.0f} с)')
     mean = rpc.get('requests_per_sec')
     if mean:
         text += f', среднее {float(mean):.2f}'

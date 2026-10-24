@@ -98,6 +98,94 @@ class HistogramTests(unittest.TestCase):
         self.assertIsNone(metrics['requests_per_sec_peak_to_mean_ratio'])
 
 
+class FullWindowTests(unittest.TestCase):
+    """§1a: "the worst 10 minutes" may only be a window of 600 seconds.
+
+    The first version divided every starting-biased prefix by its own length,
+    so the launch burst competed with real windows: a 5-second bucket of 5
+    requests reported the one-minute line as 1.000 rps when the busiest full
+    minute was 0.833, and on 10a's launch density it would have reported
+    "worst 10-minute window: 1.74 rps (window 0.0-0.6 min)" — a window that
+    does not exist.
+    """
+
+    def setUp(self) -> None:
+        price.reset_rpc_metrics()
+
+    def tearDown(self) -> None:
+        price.reset_rpc_metrics()
+
+    def _metrics(self, times: list[float], end_at: float) -> dict:
+        start = price._rpc_metrics.started_wall
+        with patch.object(price.time, 'time', side_effect=[start + t for t in times]):
+            for _ in times:
+                price._rpc_metrics.record(1.0, 1)
+        with patch.object(price.time, 'time', return_value=start + end_at):
+            return price.rpc_metrics_snapshot()
+
+    def test_a_dense_first_five_seconds_is_not_a_one_minute_peak(self) -> None:
+        # 5 requests inside the first 5 s (= 1.0 rps by the old prefix rule),
+        # then a steady one request every two seconds = 0.5 rps.
+        times = [0.5, 1.0, 1.5, 2.0, 2.5] + [float(t) for t in range(6, 400, 2)]
+        metrics = self._metrics(times, end_at=400.0)
+        buckets = metrics['requests_per_5sec']
+        self.assertEqual(buckets[0], 5)
+        # Hand-computed: the busiest twelve buckets of the array.
+        best = max(sum(buckets[i:i + 12]) for i in range(len(buckets) - 11))
+        self.assertAlmostEqual(metrics['requests_per_sec_max_60sec'],
+                               round(best / 60.0, 3), places=3)
+        self.assertLess(metrics['requests_per_sec_max_60sec'], 1.0)
+        self.assertNotAlmostEqual(metrics['requests_per_sec_max_60sec'], 1.0, places=2)
+
+    def test_a_dense_first_minute_is_not_a_ten_minute_peak(self) -> None:
+        # 150 requests inside the first 60 s (2.5 rps while it lasts), then a
+        # steady 0.5 rps for the rest of the hour. No full ten-minute window
+        # exceeds 1.8, so 1.8 must not appear anywhere.
+        times = [0.1 * index for index in range(1, 151)]
+        times += [60.0 + 2.0 * index for index in range(1, 1_700)]
+        metrics = self._metrics(times, end_at=3_500.0)
+        peak = metrics['requests_per_sec_max_10min']
+        self.assertIsNotNone(peak)
+        self.assertLess(peak, 1.8)
+        self.assertEqual(metrics['requests_per_sec_max_10min_window_kind'], 'full')
+        window = metrics['requests_per_sec_max_10min_window_sec']
+        self.assertAlmostEqual(window[1] - window[0], 600.0, places=1)
+
+    def test_a_real_dense_full_window_still_wins(self) -> None:
+        # Quiet for 20 minutes, then 1 500 requests inside one full minute,
+        # which is 1 500 / 600 = 2.5 rps over the window that contains it.
+        times = [float(t) for t in range(1, 1_200)]
+        times += [1_200.0 + 0.04 * index for index in range(1_500)]
+        metrics = self._metrics(times, end_at=3_000.0)
+        peak = metrics['requests_per_sec_max_10min']
+        self.assertGreater(peak, 2.2)
+        window = metrics['requests_per_sec_max_10min_window_sec']
+        self.assertLessEqual(window[0], 1_200.0)
+        self.assertGreaterEqual(window[1], 1_200.0 + 60.0)
+        self.assertAlmostEqual(window[1] - window[0], 600.0, places=1)
+
+    def test_a_run_shorter_than_the_window_has_no_peak(self) -> None:
+        metrics = self._metrics([float(t) for t in range(1, 500)], end_at=500.0)
+        self.assertIsNone(metrics['requests_per_sec_max_10min'])
+        self.assertIsNone(metrics['requests_per_sec_max_10min_window_kind'])
+        self.assertIn('окно ещё не набрано',
+                      _peak_window_text(metrics))
+
+    def test_the_peak_is_literally_the_busiest_run_of_buckets(self) -> None:
+        # A shape with several competing regions, so the definition and the
+        # implementation have to agree bucket by bucket.
+        times = [0.2 * index for index in range(1, 400)]          # 0-80 s
+        times += [400.0 + 3.0 * index for index in range(1, 400)]  # 400-1600 s
+        times += [1_600.0 + 0.15 * index for index in range(1, 300)]  # burst
+        times += [2_200.0 + 5.0 * index for index in range(1, 200)]
+        metrics = self._metrics(sorted(times), end_at=3_200.0)
+        buckets = metrics['requests_per_5sec']
+        best = max(sum(buckets[i:i + 120]) for i in range(len(buckets) - 119))
+        self.assertAlmostEqual(metrics['requests_per_sec_max_10min'],
+                               round(best / 600.0, 3), places=3)
+        self.assertEqual(metrics['requests_per_sec_max_10min_count'], best)
+
+
 class PeakAcceptanceTests(unittest.TestCase):
     """§3: 2.2 absolute, or a peak explained by flow — but never by errors."""
 
@@ -145,7 +233,7 @@ class PeakLineTests(unittest.TestCase):
         })
         self.assertEqual(
             text,
-            'пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин), '
+            'пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин, 600 с), '
             'среднее 1.37, отношение 1.48',
         )
 
@@ -267,7 +355,7 @@ class HourReportTests(unittest.TestCase):
     def test_the_bullet_carries_the_peak_the_window_and_the_ratio(self) -> None:
         text = self._report(self._rpc())
         self.assertIn(
-            '- пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин), '
+            '- пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин, 600 с), '
             'среднее 1.37, отношение 1.48',
             text,
         )
