@@ -612,6 +612,34 @@ def _is_run9(manifest: dict[str, Any]) -> bool:
     )
 
 
+def _pace_fuse_text(mark_poll: dict[str, Any]) -> str:
+    """Run #10b §5: the cadence fuse is a report line, never a protection.
+
+    In 10a `rps_seen_at_last_check` was 2.967 against a 2.5 limit with
+    `adaptation_blocked = true`: the run starts at MARK_POLL_SEC = 0.25, which
+    is exactly the value the fuse could slow down to. It saw the overshoot and
+    could do nothing, so the report says so instead of letting the field read
+    like a safety net. The cadence is not changed here: it is execution timing.
+    """
+    sec = mark_poll.get('mark_poll_sec')
+    limit = mark_poll.get('rps_limit_10min')
+    seen = mark_poll.get('rps_seen_at_last_check')
+    head = 'неактивен, каденция уже на полу' if mark_poll.get('adaptation_blocked') else (
+        'сработал, каденция замедлена' if mark_poll.get('mark_poll_adapted')
+        else 'активен, превышения не было'
+    )
+    parts = [head]
+    if sec is not None:
+        parts.append(f'каденция {sec} с')
+    if limit is not None:
+        parts.append(f'порог {limit} rps')
+    if seen is not None:
+        parts.append(f'видел {seen} rps')
+    if mark_poll.get('adaptation_blocked'):
+        parts.append('замедлять некуда — это не защита, а честная запись')
+    return ', '.join(parts)
+
+
 def _funnel_share(value: int, total: int) -> float:
     return (value / total) if total else 0.0
 
@@ -1046,6 +1074,12 @@ def _run9_summary_markdown(
     add('')
     add(f"- 429 всего: {rpc.get('http_429_count', 0)}, ретраев: "
         f"{rpc.get('retry_count', 0)}, восстановлено {rpc.get('recovered_failures', 0)}")
+    if rpc.get('entry_reads_per_candidate') is not None:
+        add(f"- входных чтений на кандидата: {m(rpc.get('entry_reads_per_candidate'))} "
+            f"({rpc.get('entry_reads_total', 0)} батчей на "
+            f"{rpc.get('entry_candidates', 0)} кандидатов, из кэша "
+            f"{rpc.get('entry_reads_served_from_cache', 0)})")
+    add(f"- **предохранитель темпа:** {_pace_fuse_text(summary.get('mark_poll') or {})}")
     add('')
     add(f"**Правило вывода, зафиксированное до старта:** {money_rule}.")
     add('')
