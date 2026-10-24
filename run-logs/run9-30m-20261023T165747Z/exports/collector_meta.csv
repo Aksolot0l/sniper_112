@@ -1,0 +1,15 @@
+﻿key,value,recorded_at_utc
+run_id,"""run9-30m-20261023T165747Z""",2026-10-23T16:57:47.752+00:00
+portfolio_scope,"[""portfolio_s0"",""portfolio_s2""]",2026-10-23T16:57:47.752+00:00
+shadow_quotes_enabled,false,2026-10-23T16:57:47.752+00:00
+paper_only,true,2026-10-23T16:57:47.752+00:00
+rpc_host,"""mainnet.helius-rpc.com""",2026-10-23T16:57:47.752+00:00
+run_started_at_utc,"""2026-10-23T16:57:48+00:00""",2026-10-23T16:57:48.266+00:00
+rpc_preflight_host,"""mainnet.helius-rpc.com""",2026-10-23T16:57:48.266+00:00
+pump_fee_context_latest,"{""source"":""on_chain_Global_and_FeeConfig"",""global_account"":""4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"",""fee_config_account"":""8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt"",""observed_at_epoch"":1792776459.6639202,""context_slot"":460527846,""global_fee_basis_points"":95,""global_creator_fee_basis_points"":5,""creator_fee_configurable"":true,""max_configurable_creator_fee_bps"":300,""fee_tiers"":[{""market_cap_lamports_threshold"":0,""lp_fee_bps"":0,""protocol_fee_bps"":95,""creator_fee_bps"":30}],""note"":""Pump SDK 4.1.0 curve quotes charge protocol+creator fees; LP fee is not charged on the bonding-curve leg.""}",2026-10-23T17:27:39.664+00:00
+rpc_metrics_final,"{""rpc_method"":""getMultipleAccounts"",""requests"":4032,""logical_requests"":4119,""batch_groups"":3974,""failed_requests"":0,""http_429_count"":11,""retry_count"":11,""unrecovered_failures"":0,""unrecovered_rate"":0.0,""requests_per_sec"":2.231,""requests_per_sec_max_10min"":2.832,""requests_per_sec_max_60sec"":4.067,""recovered_failures"":11,""accounts_requested"":11067,""null_accounts"":113,""null_retries"":67,""latency_ms_median"":44.31,""latency_ms_p95"":89.29,""latency_samples"":4032,""error_types"":{""http_429"":11},""requests_per_profile"":{""portfolio_s0"":719,""portfolio_s2"":103}}",2026-10-23T17:27:55.275+00:00
+run_error_type,"""none""",2026-10-23T17:27:55.275+00:00
+run_ended_at_utc,"""2026-10-23T17:27:55+00:00""",2026-10-23T17:27:55.275+00:00
+dropped_events,0,2026-10-23T17:27:55.276+00:00
+writer_errors,0,2026-10-23T17:27:55.276+00:00
+writer_error_type,ok,2026-10-23T17:27:55.276+00:00

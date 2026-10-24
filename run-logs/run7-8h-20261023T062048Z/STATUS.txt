@@ -1,0 +1,18 @@
+run_id: run7-8h-20261023T062048Z
+snapshot_utc: 2026-10-23T14:23:06Z
+mode: full
+run_dir_size: 305M
+opens: 1384
+closes: 1384
+[14:20:06] 🛑 2HQH…GhME — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[14:20:11] 👁️ Новая монета: CfQgqk39jy6DWuHRPuRVgyLJNZTkjgCimw72gxq8pump (Pump.fun | Daybreak)
+[14:20:13] 👁️ Новая монета: bAxBW1UsNuJCZHC8EXeoJYF7DmbmauZjYJq7zCHpump (Pump.fun | Daybreak)
+[14:20:13] 🛑 bAxB…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[14:20:17] 👁️ Новая монета: 7W929UM9ksJfhFVTEU2JXABNyiu3Q7Lt7EVHqx3Tpump (Pump.fun | Tiggien)
+[14:20:21] 👁️ Новая монета: 6vtdQGW3HJScLfrqjPxpVM5mfKt8Ee6GfCdee72TMfkF (Pump.fun | WEN)
+[14:20:21] 🛑 6vtd…MfkF — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R)
+[14:20:25] 👁️ Новая монета: Eaq7Nj37qHvQKnUcrrW9Vv6FqvkYE3sCf18y2MbPqrao (Pump.fun | WEN)
+[14:20:25] 🛑 Eaq7…qrao — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R)
+[14:20:26] 👁️ Новая монета: bpk3SFs31UEonJSXtUF2YnaJudzuLR8ttbfzkofpump (Pump.fun | OBLAUNCHPA)
+[14:20:58] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run7-8h-20261023T062048Z/SUMMARY.md
+[14:20:58] ⏹ A/B run finalized: run7-8h-20261023T062048Z; open and pending positions remain separately recorded.

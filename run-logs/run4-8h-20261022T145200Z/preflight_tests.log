@@ -1,0 +1,371 @@
+test_actor_field_is_none_when_curve_creator_is_the_real_wallet (test_creator_probe.CreatorActorDiagnosticTests.test_actor_field_is_none_when_curve_creator_is_the_real_wallet) ... ok
+test_actor_prior_tokens_recorded_but_never_gating (test_creator_probe.CreatorActorDiagnosticTests.test_actor_prior_tokens_recorded_but_never_gating) ... ok
+test_burst_wallet_is_rejected_without_extra_rpc (test_creator_probe.CreatorIdentityAndGuardTests.test_burst_wallet_is_rejected_without_extra_rpc) ... ok
+test_missing_probe_data_is_censored_not_silently_clean (test_creator_probe.CreatorIdentityAndGuardTests.test_missing_probe_data_is_censored_not_silently_clean) ... ok
+test_wallet_cache_keeps_rps_flat_for_repeat_launchers (test_creator_probe.CreatorIdentityAndGuardTests.test_wallet_cache_keeps_rps_flat_for_repeat_launchers) ... ok
+test_zero_history_fee_wallet_falls_back_to_event_actor (test_creator_probe.CreatorIdentityAndGuardTests.test_zero_history_fee_wallet_falls_back_to_event_actor) ... ok
+test_non_associated_token_account_does_not_satisfy_ata_gate (test_creator_probe.CreatorProbeTests.test_non_associated_token_account_does_not_satisfy_ata_gate) ... ok
+test_probe_runs_signature_and_ata_reads_in_parallel_without_gettransaction (test_creator_probe.CreatorProbeTests.test_probe_runs_signature_and_ata_reads_in_parallel_without_gettransaction) ... ok
+test_signature_count_is_uncached_capped_page_stat (test_creator_probe.CreatorProbeTests.test_signature_count_is_uncached_capped_page_stat) ... ok
+test_broken_watch_object_does_not_break_the_probe (test_creator_probe.CreatorRepeatDeployTests.test_broken_watch_object_does_not_break_the_probe) ... ok
+test_fallback_also_applies_when_curve_read_failed (test_creator_probe.CreatorRepeatDeployTests.test_fallback_also_applies_when_curve_read_failed) ... ok
+test_repeat_deploy_in_session_uses_local_telemetry_only (test_creator_probe.CreatorRepeatDeployTests.test_repeat_deploy_in_session_uses_local_telemetry_only) ... ok
+test_single_prior_launch_is_not_enough_to_reject (test_creator_probe.CreatorRepeatDeployTests.test_single_prior_launch_is_not_enough_to_reject) ... ok
+test_http_429_keeps_status_and_body (test_creator_probe.RpcErrorDetailTests.test_http_429_keeps_status_and_body) ... ok
+test_probe_result_carries_error_detail_and_never_gates_on_it (test_creator_probe.RpcErrorDetailTests.test_probe_result_carries_error_detail_and_never_gates_on_it) ... ok
+test_rpc_error_object_keeps_code_and_message (test_creator_probe.RpcErrorDetailTests.test_rpc_error_object_keeps_code_and_message) ... ok
+test_successful_read_clears_previous_failure_of_same_wallet (test_creator_probe.RpcErrorDetailTests.test_successful_read_clears_previous_failure_of_same_wallet)
+Stale detail must not ride along on a probe with empty errors[]. ... ok
+test_archive_scan_deduplicates_same_mint_across_run_snapshots (test_creator_watch.CreatorWatchTests.test_archive_scan_deduplicates_same_mint_across_run_snapshots) ... ok
+test_fifty_percent_drawdown_is_review_only_and_never_a_single_mint_auto_block (test_creator_watch.CreatorWatchTests.test_fifty_percent_drawdown_is_review_only_and_never_a_single_mint_auto_block) ... ok
+test_future_quote_failures_are_not_used_before_they_happen (test_creator_watch.CreatorWatchTests.test_future_quote_failures_are_not_used_before_they_happen) ... ok
+test_generic_transaction_identity_is_only_fee_payer_attribution (test_creator_watch.CreatorWatchTests.test_generic_transaction_identity_is_only_fee_payer_attribution) ... ok
+test_identity_observation_latency_is_causal_and_payer_is_not_curve_creator (test_creator_watch.CreatorWatchTests.test_identity_observation_latency_is_causal_and_payer_is_not_curve_creator) ... ok
+test_manual_blocklist_is_observed_in_warn_mode_and_blocks_only_in_explicit_block_mode (test_creator_watch.CreatorWatchTests.test_manual_blocklist_is_observed_in_warn_mode_and_blocks_only_in_explicit_block_mode) ... ok
+test_observations_arriving_before_creator_registration_are_retained (test_creator_watch.CreatorWatchTests.test_observations_arriving_before_creator_registration_are_retained) ... ok
+test_observed_price_collapse_is_only_counted_after_its_observation_time (test_creator_watch.CreatorWatchTests.test_observed_price_collapse_is_only_counted_after_its_observation_time) ... ok
+test_rejected_identity_candidate_is_not_added_to_creator_history (test_creator_watch.CreatorWatchTests.test_rejected_identity_candidate_is_not_added_to_creator_history) ... ok
+test_repeat_wallet_and_burst_are_timestamped_and_do_not_self_count (test_creator_watch.CreatorWatchTests.test_repeat_wallet_and_burst_are_timestamped_and_do_not_self_count) ... ok
+test_shadow_sell_quotes_alone_do_not_count_as_entry_route_loss_evidence (test_creator_watch.CreatorWatchTests.test_shadow_sell_quotes_alone_do_not_count_as_entry_route_loss_evidence) ... ok
+test_two_independent_prior_sell_route_losses_can_be_paper_blocked (test_creator_watch.CreatorWatchTests.test_two_independent_prior_sell_route_losses_can_be_paper_blocked) ... ok
+test_manifest_running_without_supervisor_heartbeat_is_not_live (test_live_ab_dashboard.LiveABDashboardTests.test_manifest_running_without_supervisor_heartbeat_is_not_live) ... ok
+test_missing_run_state_is_unknown_not_fabricated_as_1500_rub (test_live_ab_dashboard.LiveABDashboardTests.test_missing_run_state_is_unknown_not_fabricated_as_1500_rub) ... ok
+test_only_fresh_matching_alive_supervisor_heartbeat_is_live (test_live_ab_dashboard.LiveABDashboardTests.test_only_fresh_matching_alive_supervisor_heartbeat_is_live) ... ok
+test_page_has_separate_tabs_per_portfolio_plus_compare_and_logs (test_live_ab_dashboard.LiveABDashboardTests.test_page_has_separate_tabs_per_portfolio_plus_compare_and_logs) ... ok
+test_snapshot_exposes_portfolio_config_accounting_and_slot_state (test_live_ab_dashboard.LiveABDashboardTests.test_snapshot_exposes_portfolio_config_accounting_and_slot_state) ... ok
+test_60s_checkpoint_checks_process_manifest_sqlite_wss_and_creator_probes (test_overnight_session.OvernightSessionTests.test_60s_checkpoint_checks_process_manifest_sqlite_wss_and_creator_probes) ... ok
+test_60s_checkpoint_is_not_ok_without_wss_marker (test_overnight_session.OvernightSessionTests.test_60s_checkpoint_is_not_ok_without_wss_marker) ... ok
+test_child_environment_forwards_only_readonly_helius_credential_and_paper_flags (test_overnight_session.OvernightSessionTests.test_child_environment_forwards_only_readonly_helius_credential_and_paper_flags) ... ok
+test_configurable_session_window_accepts_sixty_minutes (test_overnight_session.OvernightSessionTests.test_configurable_session_window_accepts_sixty_minutes) ... ok
+test_manifest_uses_helius_host_without_serializing_url_credentials (test_overnight_session.OvernightSessionTests.test_manifest_uses_helius_host_without_serializing_url_credentials) ... ok
+test_requested_window_defaults_to_two_hours_thirty_minutes (test_overnight_session.OvernightSessionTests.test_requested_window_defaults_to_two_hours_thirty_minutes) ... ok
+test_session_archive_fails_closed_if_helius_key_value_is_in_a_file (test_overnight_session.OvernightSessionTests.test_session_archive_fails_closed_if_helius_key_value_is_in_a_file) ... ok
+test_session_archive_is_append_only_and_contains_only_new_session_inputs (test_overnight_session.OvernightSessionTests.test_session_archive_is_append_only_and_contains_only_new_session_inputs) ... ok
+test_session_summary_create_is_atomic_and_refuses_overwrite (test_overnight_session.OvernightSessionTests.test_session_summary_create_is_atomic_and_refuses_overwrite) ... ok
+test_supervisor_heartbeat_is_atomic_and_contains_no_credential_material (test_overnight_session.OvernightSessionTests.test_supervisor_heartbeat_is_atomic_and_contains_no_credential_material) ... ok
+test_liquidity_at_threshold_is_accepted (test_paper_execution.LiquidityThresholdTests.test_liquidity_at_threshold_is_accepted) ... ok
+test_liquidity_below_threshold_is_rejected (test_paper_execution.LiquidityThresholdTests.test_liquidity_below_threshold_is_rejected) ... ok
+test_liquidity_retries_when_new_pool_is_not_indexed_yet (test_paper_execution.LiquidityThresholdTests.test_liquidity_retries_when_new_pool_is_not_indexed_yet) ... ok
+test_entry_rejects_excessive_price_impact (test_paper_execution.PaperExecutionTests.test_entry_rejects_excessive_price_impact) ... /usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d7b0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d990>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d300>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d4e0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91db4e3a60>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91db4e3b50>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d5d0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/unittest/mock.py:2253: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8db70>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[90m[14:49:55][0m [33m⏸ Mint…pact — impact покупки 100.00% выше лимита 5.00% или не подтверждён; вход пропущен[0m
+ok
+test_entry_requires_exact_size_exit_route_before_debit (test_paper_execution.PaperExecutionTests.test_entry_requires_exact_size_exit_route_before_debit) ... [90m[14:49:55][0m [33m⏸ Mint…heck — нет подтверждённого Jupiter-маршрута продажи для точного количества токенов; вход пропущен[0m
+ok
+test_entry_retries_missing_buy_quote_before_paper_fill (test_paper_execution.PaperExecutionTests.test_entry_retries_missing_buy_quote_before_paper_fill) ... [90m[14:49:55][0m [2m↻ Mint…yBuy — нет точной Jupiter quote покупки; повтор 1/2 через 0.0с[0m
+[90m[14:49:55][0m [2m✅ Mint…yBuy — exact Jupiter quote покупки появилась после 1 повтора(ов)[0m
+[90m[14:49:55][0m [32m[1m🟢 ФЕЙК ПОКУПКА монеты MintRetryBuy на 500.00 рублей (баланс до входа 1500.00 ₽, кап 1500 ₽)[0m
+[90m[14:49:55][0m [90m   quote Jupiter ExactIn: 0.055555555 SOL → 1980000 токенов (decimals=6); маршрут Raydium; impact 2.00%; нижний порог slippage 1%[0m
+[90m[14:49:55][0m [90m   exact-size precheck продажи: 1980000000000 raw токенов → Raydium; impact 1.50% (не гарантия будущего fill)[0m
+[90m[14:49:55][0m [90m   входная средняя цена $2.805836111e-06 | сеть 4.50 ₽ отдельно | TP1: +40% (50%) → BE +7.0% → трейлинг −20% от ATH | SL: −12% | MAX_HOLD_SEC=120[0m
+ok
+test_entry_retries_missing_exact_sell_precheck (test_paper_execution.PaperExecutionTests.test_entry_retries_missing_exact_sell_precheck) ... [90m[14:49:55][0m [2m↻ Mint…Sell — нет точной Jupiter quote точной продажи; повтор 1/1 через 0.0с[0m
+[90m[14:49:55][0m [2m✅ Mint…Sell — exact Jupiter quote точной продажи появилась после 1 повтора(ов)[0m
+[90m[14:49:55][0m [32m[1m🟢 ФЕЙК ПОКУПКА монеты MintRetrySell на 500.00 рублей (баланс до входа 1500.00 ₽, кап 1500 ₽)[0m
+[90m[14:49:55][0m [90m   quote Jupiter ExactIn: 0.055555555 SOL → 1980000 токенов (decimals=6); маршрут Raydium; impact 2.00%; нижний порог slippage 1%[0m
+[90m[14:49:55][0m [90m   exact-size precheck продажи: 1980000000000 raw токенов → Raydium; impact 1.50% (не гарантия будущего fill)[0m
+[90m[14:49:55][0m [90m   входная средняя цена $2.805836111e-06 | сеть 4.50 ₽ отдельно | TP1: +40% (50%) → BE +7.0% → трейлинг −20% от ATH | SL: −12% | MAX_HOLD_SEC=120[0m
+ok
+test_entry_retry_exhaustion_keeps_wallet_unchanged (test_paper_execution.PaperExecutionTests.test_entry_retry_exhaustion_keeps_wallet_unchanged) ... [90m[14:49:55][0m [2m↻ Mint…sted — нет точной Jupiter quote покупки; повтор 1/2 через 0.0с[0m
+[90m[14:49:55][0m [2m↻ Mint…sted — нет точной Jupiter quote покупки; повтор 2/2 через 0.0с[0m
+[90m[14:49:55][0m [33m⏸ Mint…sted — Jupiter не подтвердил маршрут покупки для фактического размера; вход и списание пропущены[0m
+ok
+test_entry_uses_mint_decimals_and_exact_quote_amount (test_paper_execution.PaperExecutionTests.test_entry_uses_mint_decimals_and_exact_quote_amount) ... [90m[14:49:55][0m [32m[1m🟢 ФЕЙК ПОКУПКА монеты Mint111 на 500.00 рублей (баланс до входа 1500.00 ₽, кап 1500 ₽)[0m
+[90m[14:49:55][0m [90m   quote Jupiter ExactIn: 0.055555555 SOL → 1980000 токенов (decimals=6); маршрут Raydium; impact 2.00%; нижний порог slippage 1%[0m
+[90m[14:49:55][0m [90m   exact-size precheck продажи: 1980000000000 raw токенов → Raydium; impact 1.50% (не гарантия будущего fill)[0m
+[90m[14:49:55][0m [90m   входная средняя цена $2.805836111e-06 | сеть 4.50 ₽ отдельно | TP1: +35% (50%) → BE +6.0% → трейлинг −18% от ATH | SL: −10% | MAX_HOLD_SEC=120[0m
+ok
+test_exit_thresholds_use_quote_price_not_indexer_spot (test_paper_execution.PaperExecutionTests.test_exit_thresholds_use_quote_price_not_indexer_spot) ... ok
+test_fresh_mint_metadata_retries_transient_public_rpc_miss (test_paper_execution.PaperExecutionTests.test_fresh_mint_metadata_retries_transient_public_rpc_miss) ... ok
+test_jupiter_quote_keeps_raw_size_and_slippage_floor (test_paper_execution.PaperExecutionTests.test_jupiter_quote_keeps_raw_size_and_slippage_floor) ... ok
+test_max_hold_exit_uses_quote_without_waiting_for_spot_price (test_paper_execution.PaperExecutionTests.test_max_hold_exit_uses_quote_without_waiting_for_spot_price) ... [90m[14:49:55][0m [36m💰 Paper-fill по quote: продано 100.00% (Timeout (максимум держания)), чистыми 444.60 ₽ (PnL части -59.90 ₽, сеть 0.90 ₽)[0m
+[90m[14:49:55][0m [90m   маршрут: Pump.fun | price impact 2.00% | выручка по порогу slippage 1%: 49500000 lamports SOL | средняя цена fill $4.95e-06[0m
+ok
+test_missing_sell_route_records_no_fill_or_revenue (test_paper_execution.PaperExecutionTests.test_missing_sell_route_records_no_fill_or_revenue) ... [90m[14:49:55][0m [33m⚠️ Mint222: Jupiter не подтвердил свежий маршрут для 1000000000 raw-токенов; продажи/выручки нет, позиция остаётся открытой и занятая сумма не высвобождается[0m
+ok
+test_sell_quote_is_for_exact_raw_position_and_updates_ledger (test_paper_execution.PaperExecutionTests.test_sell_quote_is_for_exact_raw_position_and_updates_ledger) ... [90m[14:49:55][0m [36m💰 Paper-fill по quote: продано 100.00% (Timeout), чистыми 890.10 ₽ (PnL части +385.60 ₽, сеть 0.90 ₽)[0m
+[90m[14:49:55][0m [90m   маршрут: Pump.fun | price impact 1.50% | выручка по порогу slippage 1%: 99000000 lamports SOL | средняя цена fill $5e-06[0m
+ok
+test_spot_stop_is_not_filled_when_exact_quote_stays_above_stop (test_paper_execution.PaperExecutionTests.test_spot_stop_is_not_filled_when_exact_quote_stays_above_stop) ... [90m[14:49:55][0m [33m⏸ Mint…uard: spot-триггер «SL (стоп-лосс −12%)» не подтверждён исполнимой quote-ценой $9.5e-05 (spot $7.04e-05); paper-fill не записан, повтор проверки после cooldown[0m
+ok
+test_early_stop_requires_both_books_empty_and_below_500 (test_portfolio_ab.ABEarlyStopAndPollingTests.test_early_stop_requires_both_books_empty_and_below_500) ... ok
+test_empty_slots_issue_no_position_poll_rpc (test_portfolio_ab.ABEarlyStopAndPollingTests.test_empty_slots_issue_no_position_poll_rpc) ... ok
+test_b_enters_the_same_coin_a_does_even_for_bad_creator (test_portfolio_ab.ABEntryGateAndAccountingTests.test_b_enters_the_same_coin_a_does_even_for_bad_creator) ... [90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+ok
+test_gate_lives_in_shadow_so_b_is_never_filtered_by_creator (test_portfolio_ab.ABEntryGateAndAccountingTests.test_gate_lives_in_shadow_so_b_is_never_filtered_by_creator) ... [90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_gate] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+ok
+test_one_snapshot_timestamp_and_out_amount_entry_fill_with_min_out_shadow (test_portfolio_ab.ABEntryGateAndAccountingTests.test_one_snapshot_timestamp_and_out_amount_entry_fill_with_min_out_shadow) ... [90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…test | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [31m✅ [portfolio_a] CLOSE mint…test | Timeout (35s) | PnL=-15.58 ₽ (-3.1%) | cash=1484.42 ₽[0m
+ok
+test_new_high_timestamp_uses_plus_0_4_pp_and_rising_marks_refresh_every_2_5s (test_portfolio_ab.ABExitRuleTests.test_new_high_timestamp_uses_plus_0_4_pp_and_rising_marks_refresh_every_2_5s) ... ok
+test_no_progress_is_checked_once_at_five_seconds (test_portfolio_ab.ABExitRuleTests.test_no_progress_is_checked_once_at_five_seconds) ... ok
+test_rocket_bypass_holds_through_100_then_exits_at_85_percent_of_peak (test_portfolio_ab.ABExitRuleTests.test_rocket_bypass_holds_through_100_then_exits_at_85_percent_of_peak) ... ok
+test_shelf_stagnation_after_tp1_closes_only_the_remaining_half (test_portfolio_ab.ABExitRuleTests.test_shelf_stagnation_after_tp1_closes_only_the_remaining_half) ... ok
+test_stagnation_at_plus_22_closes_full_position_after_4_5_seconds (test_portfolio_ab.ABExitRuleTests.test_stagnation_at_plus_22_closes_full_position_after_4_5_seconds) ... ok
+test_stop_loss_and_timeouts (test_portfolio_ab.ABExitRuleTests.test_stop_loss_and_timeouts) ... ok
+test_tp1_fill_marks_done_and_trailing_closes_only_remainder (test_portfolio_ab.ABExitRuleTests.test_tp1_fill_marks_done_and_trailing_closes_only_remainder) ... [90m[14:49:55][0m [36m💰 [portfolio_a] PARTIAL mint-test | TP1 +30% partial 50% | leg=-253.40 ₽ | remaining=50%[0m
+ok
+test_tp1_quote_unavailable_retries_same_partial_amount (test_portfolio_ab.ABExitRuleTests.test_tp1_quote_unavailable_retries_same_partial_amount) ... ok
+test_tp1_zone_sells_half_but_exact_50_percent_bypasses_tp1 (test_portfolio_ab.ABExitRuleTests.test_tp1_zone_sells_half_but_exact_50_percent_bypasses_tp1) ... ok
+test_arms_differ_only_in_delta_cap (test_portfolio_ab.ABProfileTests.test_arms_differ_only_in_delta_cap) ... ok
+test_birth_max_boundary_is_34_5_and_delta_band_is_untouched (test_portfolio_ab.ABProfileTests.test_birth_max_boundary_is_34_5_and_delta_band_is_untouched) ... ok
+test_books_use_isolated_wallet_files (test_portfolio_ab.ABProfileTests.test_books_use_isolated_wallet_files) ... ok
+test_delta_buckets_and_shadow_caps_are_pure_arithmetic (test_portfolio_ab.ABProfileTests.test_delta_buckets_and_shadow_caps_are_pure_arithmetic) ... ok
+test_entry_state_carries_dev_buy_fields_from_create_message (test_portfolio_ab.ABProfileTests.test_entry_state_carries_dev_buy_fields_from_create_message) ... ok
+test_entry_thresholds_come_from_settings (test_portfolio_ab.ABProfileTests.test_entry_thresholds_come_from_settings) ... ok
+test_gate_status_separates_blind_spot_from_risk (test_portfolio_ab.ABProfileTests.test_gate_status_separates_blind_spot_from_risk) ... ok
+test_shared_entry_rule_requires_live_momentum (test_portfolio_ab.ABProfileTests.test_shared_entry_rule_requires_live_momentum) ... ok
+test_active_curve_uses_local_quote_and_complete_curve_uses_jupiter_only (test_portfolio_ab.ABQuoteRoutingTests.test_active_curve_uses_local_quote_and_complete_curve_uses_jupiter_only) ... ok
+test_close_after_stop_keeps_artifacts_and_reason (test_portfolio_ab.RunThreeBankAndStopListTests.test_close_after_stop_keeps_artifacts_and_reason) ... ok
+test_minus_1200_realized_gives_exactly_one_top_up_and_the_trade_opens (test_portfolio_ab.RunThreeBankAndStopListTests.test_minus_1200_realized_gives_exactly_one_top_up_and_the_trade_opens) ... [90m[14:49:55][0m [36m🏦 [portfolio_a] TOP-UP +1200.00 ₽ (cash 300.00 -> 1500.00; injected total 1200.00 ₽)[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…nk-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…nk-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+ok
+test_pnl_alone_never_stops_the_run (test_portfolio_ab.RunThreeBankAndStopListTests.test_pnl_alone_never_stops_the_run) ... ok
+test_stop_list_rpc_stall_and_resource_reasons (test_portfolio_ab.RunThreeBankAndStopListTests.test_stop_list_rpc_stall_and_resource_reasons) ... ok
+test_stop_list_telemetry_loss_stops_and_is_recorded (test_portfolio_ab.RunThreeBankAndStopListTests.test_stop_list_telemetry_loss_stops_and_is_recorded) ... [90m[14:49:55][0m [33m⏹ Stop-list fired: telemetry_loss (dropped_events=3, write_errors=0)[0m
+ok
+test_summary_reports_bank_fields_per_profile (test_portfolio_ab.RunThreeBankAndStopListTests.test_summary_reports_bank_fields_per_profile) ... [90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…nk-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🏦 [portfolio_b] TOP-UP +1150.00 ₽ (cash 350.00 -> 1500.00; injected total 1150.00 ₽)[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…nk-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+ok
+test_top_up_changes_only_availability_not_a_single_fill (test_portfolio_ab.RunThreeBankAndStopListTests.test_top_up_changes_only_availability_not_a_single_fill) ... [90m[14:49:55][0m [36m🏦 [portfolio_a] TOP-UP +1200.00 ₽ (cash 300.00 -> 1500.00; injected total 1200.00 ₽)[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-a | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-a | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-a | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-b | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-b | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-b | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [31m✅ [portfolio_a] CLOSE mint…so-a | Timeout (35s) | PnL=-15.58 ₽ (-3.1%) | cash=984.42 ₽[0m
+[90m[14:49:55][0m [31m✅ [portfolio_b] CLOSE mint…so-a | Timeout (35s) | PnL=-15.58 ₽ (-3.1%) | cash=984.42 ₽[0m
+ok
+test_disabling_shadows_does_not_change_the_live_arms (test_portfolio_ab.RunThreeShadowTests.test_disabling_shadows_does_not_change_the_live_arms) ... [90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_gate] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_exit25] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-1 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_gate] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_exit25] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…so-2 | birth=32.00 now=32.40 delta=+0.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+ok
+test_per_profile_delta_cap_splits_the_2_5_to_3_band (test_portfolio_ab.RunThreeShadowTests.test_per_profile_delta_cap_splits_the_2_5_to_3_band) ... [90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…plit | birth=32.00 now=34.90 delta=+2.90 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_a] OPEN mint…side | birth=32.00 now=34.40 delta=+2.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [portfolio_b] OPEN mint…side | birth=32.00 now=34.40 delta=+2.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=2/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_gate] OPEN mint…side | birth=32.00 now=34.40 delta=+2.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+[90m[14:49:55][0m [36m🧪 [shadow_exit25] OPEN mint…side | birth=32.00 now=34.40 delta=+2.40 SOL | cost≈500.00 ₽ | tokens(out)=980356246774 | fee=95+30 bps | slots=1/3[0m
+ok
+test_shadow_exit25_sells_everything_on_the_first_tick_at_25 (test_portfolio_ab.RunThreeShadowTests.test_shadow_exit25_sells_everything_on_the_first_tick_at_25) ... ok
+test_exact_buy_quote_matches_sdk_integer_rounding_vector (test_pump_curve_quote.PumpCurveQuoteTests.test_exact_buy_quote_matches_sdk_integer_rounding_vector) ... ok
+test_exact_sell_quote_uses_per_component_ceil_fees (test_pump_curve_quote.PumpCurveQuoteTests.test_exact_sell_quote_uses_per_component_ceil_fees) ... ok
+test_fail_closed_for_unknown_or_unsupported_state (test_pump_curve_quote.PumpCurveQuoteTests.test_fail_closed_for_unknown_or_unsupported_state) ... ok
+test_fee_config_borsh_vectors_decode (test_pump_curve_quote.PumpCurveQuoteTests.test_fee_config_borsh_vectors_decode) ... ok
+test_pdas_are_derived_and_nonempty (test_pump_curve_quote.PumpCurveQuoteTests.test_pdas_are_derived_and_nonempty) ... ok
+test_tier_and_creator_fee_override_follow_global_gate (test_pump_curve_quote.PumpCurveQuoteTests.test_tier_and_creator_fee_override_follow_global_gate) ... ok
+test_curve_quote_mint_is_checked_from_live_account_bytes (test_pumpportal_validation.PumpPortalValidationTests.test_curve_quote_mint_is_checked_from_live_account_bytes) ... ok
+test_dev_buy_fields_are_none_when_absent_or_malformed (test_pumpportal_validation.PumpPortalValidationTests.test_dev_buy_fields_are_none_when_absent_or_malformed) ... ok
+test_known_curve_pda_matches_event_mint (test_pumpportal_validation.PumpPortalValidationTests.test_known_curve_pda_matches_event_mint) ... ok
+test_listener_signal_stamps_receive_time_and_verified_identity (test_pumpportal_validation.PumpPortalValidationTests.test_listener_signal_stamps_receive_time_and_verified_identity) ... ok
+test_mint_and_curve_are_read_in_one_owner_checked_rpc_request (test_pumpportal_validation.PumpPortalValidationTests.test_mint_and_curve_are_read_in_one_owner_checked_rpc_request) ... ok
+test_mislabeled_quote_mint_is_rejected_before_network_or_trade (test_pumpportal_validation.PumpPortalValidationTests.test_mislabeled_quote_mint_is_rejected_before_network_or_trade) ... ok
+test_missing_signature_non_sol_quote_and_bad_reserves_fail_closed (test_pumpportal_validation.PumpPortalValidationTests.test_missing_signature_non_sol_quote_and_bad_reserves_fail_closed) ... ok
+test_pump_filter_requires_local_pda_proof_and_checks_on_chain_quote (test_pumpportal_validation.PumpPortalValidationTests.test_pump_filter_requires_local_pda_proof_and_checks_on_chain_quote) ... ok
+test_pump_supply_requires_six_decimals_standard_range_and_curve_match (test_pumpportal_validation.PumpPortalValidationTests.test_pump_supply_requires_six_decimals_standard_range_and_curve_match) ... ok
+test_concurrent_requests_are_coalesced_into_one_read_only_batch (test_rpc_batcher.ReadOnlyRpcBatchTests.test_concurrent_requests_are_coalesced_into_one_read_only_batch) ... ok
+test_more_than_100_accounts_are_split_and_null_is_retried_once (test_rpc_batcher.ReadOnlyRpcBatchTests.test_more_than_100_accounts_are_split_and_null_is_retried_once) ... ok
+test_duration_is_a_parameter_not_a_constant (test_run_report.FunnelReportTests.test_duration_is_a_parameter_not_a_constant) ... ok
+test_funnel_counts_a_only_split_and_shadow_caps (test_run_report.FunnelReportTests.test_funnel_counts_a_only_split_and_shadow_caps) ... ok
+test_funnel_lines_do_not_glue_reason_and_count (test_run_report.FunnelReportTests.test_funnel_lines_do_not_glue_reason_and_count) ... ok
+test_manifest_declares_fix_7_and_keeps_cap_and_ladder (test_run_report.FunnelReportTests.test_manifest_declares_fix_7_and_keeps_cap_and_ladder) ... ok
+test_missing_db_is_reported_not_raised (test_run_report.FunnelReportTests.test_missing_db_is_reported_not_raised) ... ok
+test_money_columns_use_two_decimals_and_dash_for_missing (test_run_report.FunnelReportTests.test_money_columns_use_two_decimals_and_dash_for_missing) ... ok
+test_per_trade_row_keeps_each_arm_in_its_own_column (test_run_report.FunnelReportTests.test_per_trade_row_keeps_each_arm_in_its_own_column)
+Regression: both arms used to print into the portfolio_a column. ... ok
+test_summary_markdown_contains_funnel_and_baseline_columns (test_run_report.FunnelReportTests.test_summary_markdown_contains_funnel_and_baseline_columns) ... ok
+test_summary_renders_bank_top_ups_and_bust (test_run_report.FunnelReportTests.test_summary_renders_bank_top_ups_and_bust) ... ok
+test_summary_renders_shadow_table_and_preregistered_verdict (test_run_report.FunnelReportTests.test_summary_renders_shadow_table_and_preregistered_verdict) ... ok
+test_summary_reports_failure_of_the_criterion_without_spin (test_run_report.FunnelReportTests.test_summary_reports_failure_of_the_criterion_without_spin) ... ok
+test_summary_shows_early_stop_reason (test_run_report.FunnelReportTests.test_summary_shows_early_stop_reason) ... ok
+test_summary_surfaces_lost_telemetry_rows (test_run_report.FunnelReportTests.test_summary_surfaces_lost_telemetry_rows)
+A dropped row used to be one yellow log line and nothing else. ... ok
+test_summary_tolerates_scalar_top_level_summary_keys (test_run_report.FunnelReportTests.test_summary_tolerates_scalar_top_level_summary_keys) ... ok
+test_helper_agrees_with_portfolio_ab_classification (test_run_report.LegacyGateReplayTests.test_helper_agrees_with_portfolio_ab_classification) ... ok
+test_missing_gate_status_is_derived_from_guard_reason (test_run_report.LegacyGateReplayTests.test_missing_gate_status_is_derived_from_guard_reason) ... ok
+test_creator_risk_policy_can_be_set_to_warn (test_safe_config.SafeRpcConfigTests.test_creator_risk_policy_can_be_set_to_warn) ... ok
+test_explicit_endpoints_override_defaults_without_key (test_safe_config.SafeRpcConfigTests.test_explicit_endpoints_override_defaults_without_key) ... ok
+test_no_key_uses_public_readonly_endpoints (test_safe_config.SafeRpcConfigTests.test_no_key_uses_public_readonly_endpoints) ... ok
+test_run_snapshot_index_is_append_only_and_includes_each_present_db (test_sqlite_snapshots.SQLiteSnapshotTests.test_run_snapshot_index_is_append_only_and_includes_each_present_db) ... ok
+test_sqlite_backup_is_consistent_compressed_and_no_clobber (test_sqlite_snapshots.SQLiteSnapshotTests.test_sqlite_backup_is_consistent_compressed_and_no_clobber) ... ok
+test_worker_always_writes_final_snapshot_on_stop (test_sqlite_snapshots.SQLiteSnapshotTests.test_worker_always_writes_final_snapshot_on_stop) ... ok
+test_candidate_decision_quote_fill_and_exports (test_telemetry.CandidateTelemetryTests.test_candidate_decision_quote_fill_and_exports) ... ⚠️ HELIUS_API_KEY не задан — использую публичный RPC без ключа; возможны лимиты провайдера.
+⚠️ HELIUS_API_KEY не задан — использую публичный RPC без ключа; возможны лимиты провайдера.
+⚠️ HELIUS_API_KEY не задан — использую публичный RPC без ключа; возможны лимиты провайдера.
+[90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmp9jqzoo2x/telemetry.sqlite[0m
+ok
+test_disabled_shadow_quotes_and_helius_key_are_not_exported (test_telemetry.CandidateTelemetryTests.test_disabled_shadow_quotes_and_helius_key_are_not_exported) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmp2ec6ez3o/telemetry.sqlite[0m
+ok
+test_failed_probe_without_detail_derives_one_from_payload (test_telemetry.CandidateTelemetryTests.test_failed_probe_without_detail_derives_one_from_payload) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpvxrkdowt/telemetry.sqlite[0m
+ok
+test_legacy_candidates_table_gets_dev_buy_columns_added (test_telemetry.CandidateTelemetryTests.test_legacy_candidates_table_gets_dev_buy_columns_added) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpom4eqm4v/telemetry.sqlite[0m
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8db70>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8ef20>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8ee30>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8f1f0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8f010>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8f100>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8d7b0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8fb50>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8fc40>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8fd30>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8fe20>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8ff10>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8c310>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dad8c220>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94040>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94130>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94220>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94310>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94400>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab945e0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab944f0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab946d0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95210>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab956c0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95300>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94f40>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab947c0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95030>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95d50>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab94c70>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95990>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab958a0>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab95f30>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/usr/local/lib/python3.13/linecache.py:75: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x7f91dab96020>
+  entry = cache.get(filename, None)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_observation_deadlines_use_absolute_target_not_task_start (test_telemetry.CandidateTelemetryTests.test_observation_deadlines_use_absolute_target_not_task_start)
+P0-1: six offsets must not inherit the collector's startup delay. ... ok
+test_observations_are_stamped_at_the_scheduled_target (test_telemetry.CandidateTelemetryTests.test_observations_are_stamped_at_the_scheduled_target) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpkw66mb60/telemetry.sqlite[0m
+ok
+test_probe_error_detail_accepts_a_string_and_none (test_telemetry.CandidateTelemetryTests.test_probe_error_detail_accepts_a_string_and_none) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpojozq68a/telemetry.sqlite[0m
+ok
+test_probe_error_detail_list_is_written_through_the_database (test_telemetry.CandidateTelemetryTests.test_probe_error_detail_list_is_written_through_the_database)
+Regression: a list[dict] in a TEXT column silently dropped the row. ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmp_7xc5dwi/telemetry.sqlite[0m
+ok
+test_queue_overflow_is_counted_without_raising (test_telemetry.CandidateTelemetryTests.test_queue_overflow_is_counted_without_raising) ... ok
+test_shadow_quotes_and_followups_are_scheduled_without_trades (test_telemetry.CandidateTelemetryTests.test_shadow_quotes_and_followups_are_scheduled_without_trades) ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpcxahjtza/telemetry.sqlite[0m
+ok
+test_writer_errors_are_durable_after_queue_drain (test_telemetry.CandidateTelemetryTests.test_writer_errors_are_durable_after_queue_drain)
+close() must persist counters *after* join(), not before it. ... [90m[14:49:56][0m [32m💾 Пассивная телеметрия готова: /home/user/tmp/tmpx0cbtnau/telemetry.sqlite[0m
+[90m[14:49:56][0m [33m⚠️ Телеметрия: dropped=0, write_errors=1, writer=ProgrammingError[0m
+ok
+test_curve_state_uses_real_sol_reserve_offset_and_mayhem_byte (test_watchlist.WatchlistRuleTests.test_curve_state_uses_real_sol_reserve_offset_and_mayhem_byte) ... ok
+test_entry_age_growth_reserve_and_retrace_boundaries (test_watchlist.WatchlistRuleTests.test_entry_age_growth_reserve_and_retrace_boundaries) ... ok
+test_entry_requires_two_prior_rising_intervals_and_current_delta (test_watchlist.WatchlistRuleTests.test_entry_requires_two_prior_rising_intervals_and_current_delta) ... ok
+test_exact_sell_quote_thresholds (test_watchlist.WatchlistRuleTests.test_exact_sell_quote_thresholds) ... ok
+test_insufficient_watchlist_cash_does_not_downsize_the_entry (test_watchlist.WatchlistSizingTests.test_insufficient_watchlist_cash_does_not_downsize_the_entry) ... ok
+test_watchlist_uses_exact_max_trade_rub_with_separate_virtual_balance (test_watchlist.WatchlistSizingTests.test_watchlist_uses_exact_max_trade_rub_with_separate_virtual_balance) ... ok
+
+----------------------------------------------------------------------
+Ran 149 tests in 0.870s
+
+OK

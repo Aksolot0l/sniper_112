@@ -1,0 +1,18 @@
+run_id: run10a2-20261024T065615Z
+snapshot_utc: 2026-10-24T08:16:19Z
+mode: full
+run_dir_size: 30M
+opens: 118
+closes: 118
+[08:13:38] 🛑 Ah5c…sb2m — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[08:13:39] 👁️ Новая монета: B8ZzMuS1LMZZTGx2NPyM4qyAMGGN2jZgCASP4HR5pump (Pump.fun | ANON)
+[08:13:47] 👁️ Новая монета: AW5ZX2J92VjT7K6EdmGvwcsjDQHiXCKRE5CuqVNNpump (Pump.fun | SHELBICOIN)
+[08:13:48] 🛑 AW5Z…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_supply_outside_standard_range (2000000000000000; expected 990000000000000..1000000000000000); pump_supply_mismatch_curve_token_total_supply (mint=2000000000000000, curve=1000000000000000); Pump.fun: кривая торгуется только за SOL; pump_mayhem_mode_excluded
+[08:13:58] 👁️ Новая монета: FnY9VoaC8vdZguyi3r4Yk5emgrkFFh7MsiUyUZW1pump (Pump.fun | A)
+[08:13:59] 👁️ Новая монета: 4JchNgDpFC6SFaTHugcLu5QFAq1EnnnhMeeFvKEvpGgG (Pump.fun | A)
+[08:13:59] 🛑 FnY9…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo)
+[08:13:59] 🛑 4Jch…pGgG — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo)
+[08:14:12] 👁️ Новая монета: CYNPVg21zA6HvwaTM5w9iRdFzyMeGP13qSKUkvE3pump (Pump.fun | GC)
+[08:14:17] 📉 Входных чтений на кандидата: 2.00 (1221 батчей на 609 кандидатов, из кэша 605)
+[08:14:17] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a2-20261024T065615Z/SUMMARY.md
+[08:14:17] ⏹ A/B run finalized: run10a2-20261024T065615Z; open and pending positions remain separately recorded.

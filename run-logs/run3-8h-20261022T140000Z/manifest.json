@@ -1,0 +1,558 @@
+{
+  "run_id": "run3-8h-20261022T140000Z",
+  "build": "979f94c",
+  "build_baseline": "run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics",
+  "strategy_version": "run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0",
+  "fix_7": "v_sol_birth_max 50.0 -> 34.5. Measured on run #1: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such candidates fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. Expected 22-26 entries instead of 26 and A near -500 RUB: this cuts the catastrophic tail, it does NOT create profit.",
+  "comparison_policy": "не смешивать с сессиями до 2026-10-22",
+  "timeouts_35_90": "slot safety net, not part of 4-mode ladder",
+  "known_hole": "no_progress is one-shot at 5s; corridor -9.9%..+1.4% exits only by timeout",
+  "known_gap": "repeat_deploy indexed by program_creator only; event_actor path is log-only this run (creator_prior_tokens_10m_actor)",
+  "edge_status": "no proven edge; cap 2.5 chosen for drawdown/slot hygiene (archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap",
+  "judgement": "archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: 9 dead / 2 rockets (+38.3%, +106.8%)",
+  "delta_min_note": "delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the single exception is 6m3gx2eaH +26.8%",
+  "experiment_next": "discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, unique buyers. Run #1 added the missing half: the entry price is always worse than observations t0, and the 0.1-2.5 band has a median move of 0.0% with an asymmetric ladder, so zero movement becomes -6..-8% per trade. No threshold fixes that",
+  "expected_flow": "run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 (12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 expect 22-26 A entries and 3-6 B entries per 30 min. admitted_by_current_cap in the manifest answers this from data",
+  "open_question_cap": "delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, not quality. Changing the cap is fix #8, deliberately not mixed with #7",
+  "entry": "30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0",
+  "entry_note": "run #3 keeps every entry/exit constant and moves exactly one number: the delta cap (A 2.5, B 3.0). The creator gate is no longer part of any live arm.",
+  "run3_single_difference": "delta_max_sol",
+  "run3_decision_rule": "B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples)",
+  "run3_why": "at 8 h the resolvable difference is +/-12 RUB per trade at n=200 and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth about +1.5 RUB/trade, so it is unobservable and stays a shadow; the delta band is worth about 29 RUB/trade, so it is the A/B arm. Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, 0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28",
+  "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой: пополнение срабатывает лишь при cash < 500, а не после каждого убытка",
+  "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. PnL не является причиной остановки",
+  "profiles": {
+    "portfolio_a": {
+      "delta_cap": 2.5,
+      "creator_gate": false
+    },
+    "portfolio_b": {
+      "delta_cap": 3.0,
+      "creator_gate": false
+    },
+    "shadow_gate": {
+      "capital_rub": 0.0,
+      "mirror_of": "portfolio_a",
+      "delta_cap": 2.5,
+      "creator_gate": true
+    },
+    "shadow_exit25": {
+      "capital_rub": 0.0,
+      "mirror_of": "portfolio_a",
+      "delta_cap": 2.5,
+      "single_exit_pct": 25.0
+    }
+  },
+  "status": "completed_early",
+  "early_stop_reason": "rpc_error_rate (failed=16/1408 = 1.14% over 600s > 1%)",
+  "created_at_utc": "2026-10-22T13:59:16+00:00",
+  "planned_duration_sec": 28800,
+  "paper_only": true,
+  "signed_transactions": 0,
+  "submitted_transactions": 0,
+  "portfolio_scope": [
+    "portfolio_a",
+    "portfolio_b"
+  ],
+  "strategies": {
+    "portfolio_a": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "run #3 keeps every entry/exit constant and moves exactly one number: the delta cap (A 2.5, B 3.0). The creator gate is no longer part of any live arm.",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "979f94c",
+      "build_baseline": "run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics",
+      "strategy_version": "run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0",
+      "fix_7": "v_sol_birth_max 50.0 -> 34.5. Measured on run #1: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such candidates fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. Expected 22-26 entries instead of 26 and A near -500 RUB: this cuts the catastrophic tail, it does NOT create profit.",
+      "comparison_policy": "не смешивать с сессиями до 2026-10-22",
+      "timeouts_35_90": "slot safety net, not part of 4-mode ladder",
+      "known_hole": "no_progress is one-shot at 5s; corridor -9.9%..+1.4% exits only by timeout",
+      "known_gap": "repeat_deploy indexed by program_creator only; event_actor path is log-only this run (creator_prior_tokens_10m_actor)",
+      "edge_status": "no proven edge; cap 2.5 chosen for drawdown/slot hygiene (archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap",
+      "judgement": "archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: 9 dead / 2 rockets (+38.3%, +106.8%)",
+      "delta_min_note": "delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the single exception is 6m3gx2eaH +26.8%",
+      "experiment_next": "discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, unique buyers. Run #1 added the missing half: the entry price is always worse than observations t0, and the 0.1-2.5 band has a median move of 0.0% with an asymmetric ladder, so zero movement becomes -6..-8% per trade. No threshold fixes that",
+      "expected_flow": "run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 (12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 expect 22-26 A entries and 3-6 B entries per 30 min. admitted_by_current_cap in the manifest answers this from data",
+      "open_question_cap": "delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, not quality. Changing the cap is fix #8, deliberately not mixed with #7",
+      "entry": "30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0",
+      "run3_single_difference": "delta_max_sol",
+      "run3_decision_rule": "B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples)",
+      "run3_why": "at 8 h the resolvable difference is +/-12 RUB per trade at n=200 and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth about +1.5 RUB/trade, so it is unobservable and stays a shadow; the delta band is worth about 29 RUB/trade, so it is the A/B arm. Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, 0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой: пополнение срабатывает лишь при cash < 500, а не после каждого убытка",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "delta_cap": 2.5,
+          "creator_gate": false
+        },
+        "portfolio_b": {
+          "delta_cap": 3.0,
+          "creator_gate": false
+        },
+        "shadow_gate": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "creator_gate": true
+        },
+        "shadow_exit25": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "single_exit_pct": 25.0
+        }
+      },
+      "creator_probe": "telemetry_only; no entry gate"
+    },
+    "portfolio_b": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "run #3 keeps every entry/exit constant and moves exactly one number: the delta cap (A 2.5, B 3.0). The creator gate is no longer part of any live arm.",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "979f94c",
+      "build_baseline": "run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics",
+      "strategy_version": "run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0",
+      "fix_7": "v_sol_birth_max 50.0 -> 34.5. Measured on run #1: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such candidates fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. Expected 22-26 entries instead of 26 and A near -500 RUB: this cuts the catastrophic tail, it does NOT create profit.",
+      "comparison_policy": "не смешивать с сессиями до 2026-10-22",
+      "timeouts_35_90": "slot safety net, not part of 4-mode ladder",
+      "known_hole": "no_progress is one-shot at 5s; corridor -9.9%..+1.4% exits only by timeout",
+      "known_gap": "repeat_deploy indexed by program_creator only; event_actor path is log-only this run (creator_prior_tokens_10m_actor)",
+      "edge_status": "no proven edge; cap 2.5 chosen for drawdown/slot hygiene (archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap",
+      "judgement": "archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: 9 dead / 2 rockets (+38.3%, +106.8%)",
+      "delta_min_note": "delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the single exception is 6m3gx2eaH +26.8%",
+      "experiment_next": "discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, unique buyers. Run #1 added the missing half: the entry price is always worse than observations t0, and the 0.1-2.5 band has a median move of 0.0% with an asymmetric ladder, so zero movement becomes -6..-8% per trade. No threshold fixes that",
+      "expected_flow": "run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 (12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 expect 22-26 A entries and 3-6 B entries per 30 min. admitted_by_current_cap in the manifest answers this from data",
+      "open_question_cap": "delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, not quality. Changing the cap is fix #8, deliberately not mixed with #7",
+      "entry": "30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0",
+      "run3_single_difference": "delta_max_sol",
+      "run3_decision_rule": "B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples)",
+      "run3_why": "at 8 h the resolvable difference is +/-12 RUB per trade at n=200 and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth about +1.5 RUB/trade, so it is unobservable and stays a shadow; the delta band is worth about 29 RUB/trade, so it is the A/B arm. Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, 0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой: пополнение срабатывает лишь при cash < 500, а не после каждого убытка",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "delta_cap": 2.5,
+          "creator_gate": false
+        },
+        "portfolio_b": {
+          "delta_cap": 3.0,
+          "creator_gate": false
+        },
+        "shadow_gate": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "creator_gate": true
+        },
+        "shadow_exit25": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "single_exit_pct": 25.0
+        }
+      },
+      "creator_gate": false,
+      "delta_max_sol": 3.0
+    },
+    "shadow_gate": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "run #3 keeps every entry/exit constant and moves exactly one number: the delta cap (A 2.5, B 3.0). The creator gate is no longer part of any live arm.",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "979f94c",
+      "build_baseline": "run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics",
+      "strategy_version": "run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0",
+      "fix_7": "v_sol_birth_max 50.0 -> 34.5. Measured on run #1: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such candidates fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. Expected 22-26 entries instead of 26 and A near -500 RUB: this cuts the catastrophic tail, it does NOT create profit.",
+      "comparison_policy": "не смешивать с сессиями до 2026-10-22",
+      "timeouts_35_90": "slot safety net, not part of 4-mode ladder",
+      "known_hole": "no_progress is one-shot at 5s; corridor -9.9%..+1.4% exits only by timeout",
+      "known_gap": "repeat_deploy indexed by program_creator only; event_actor path is log-only this run (creator_prior_tokens_10m_actor)",
+      "edge_status": "no proven edge; cap 2.5 chosen for drawdown/slot hygiene (archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap",
+      "judgement": "archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: 9 dead / 2 rockets (+38.3%, +106.8%)",
+      "delta_min_note": "delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the single exception is 6m3gx2eaH +26.8%",
+      "experiment_next": "discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, unique buyers. Run #1 added the missing half: the entry price is always worse than observations t0, and the 0.1-2.5 band has a median move of 0.0% with an asymmetric ladder, so zero movement becomes -6..-8% per trade. No threshold fixes that",
+      "expected_flow": "run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 (12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 expect 22-26 A entries and 3-6 B entries per 30 min. admitted_by_current_cap in the manifest answers this from data",
+      "open_question_cap": "delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, not quality. Changing the cap is fix #8, deliberately not mixed with #7",
+      "entry": "30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0",
+      "run3_single_difference": "delta_max_sol",
+      "run3_decision_rule": "B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples)",
+      "run3_why": "at 8 h the resolvable difference is +/-12 RUB per trade at n=200 and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth about +1.5 RUB/trade, so it is unobservable and stays a shadow; the delta band is worth about 29 RUB/trade, so it is the A/B arm. Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, 0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой: пополнение срабатывает лишь при cash < 500, а не после каждого убытка",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "delta_cap": 2.5,
+          "creator_gate": false
+        },
+        "portfolio_b": {
+          "delta_cap": 3.0,
+          "creator_gate": false
+        },
+        "shadow_gate": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "creator_gate": true
+        },
+        "shadow_exit25": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "single_exit_pct": 25.0
+        }
+      },
+      "capital_rub": 0.0,
+      "mirror_of": "portfolio_a",
+      "creator_gate": "signature_count_0_25 >= 25 AND NOT burst (25+ sigs inside 1h) AND NOT repeat_deploy (>=2 tokens in 10m) AND ata_exists AND token_balance_raw > 0"
+    },
+    "shadow_exit25": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "entry_note": "run #3 keeps every entry/exit constant and moves exactly one number: the delta cap (A 2.5, B 3.0). The creator gate is no longer part of any live arm.",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "979f94c",
+      "build_baseline": "run #1 = 9f2cd08 (30 min, birth_max 50.0): A -1035.56 RUB, B -672.77 RUB. This build is fix #7: birth_max 34.5 + diagnostics",
+      "strategy_version": "run3: entry_v3+birth_max_34.5+delta_cap_A2.5_B3.0",
+      "fix_7": "v_sol_birth_max 50.0 -> 34.5. Measured on run #1: v_sol_birth = 29.96 + dev_buy_SOL (corr 0.99988, n=145), so the old ceiling admitted dev buys of 4-6 SOL; 36 of 50 such candidates fell <= -25% (median minimum -33.2%), and in the live run they were 4 mints for -538.57 RUB in A and -552.79 RUB in B. Expected 22-26 entries instead of 26 and A near -500 RUB: this cuts the catastrophic tail, it does NOT create profit.",
+      "comparison_policy": "не смешивать с сессиями до 2026-10-22",
+      "timeouts_35_90": "slot safety net, not part of 4-mode ladder",
+      "known_hole": "no_progress is one-shot at 5s; corridor -9.9%..+1.4% exits only by timeout",
+      "known_gap": "repeat_deploy indexed by program_creator only; event_actor path is log-only this run (creator_prior_tokens_10m_actor)",
+      "edge_status": "no proven edge; cap 2.5 chosen for drawdown/slot hygiene (archive: delta >= 2.5 -> median -19.8% drawdown, 11 of 13 observed stop-outs). It cuts 3 rockets, not 2: TzXn6LeT +106.8%, E8q82QfE +38.3%, and 6m3gx2eaH +26.8% — the last one from the delta == 0 bucket, so it is cut by delta_min 0.10, not by the cap",
+      "judgement": "archive: 2.5-4 median max +6.7% (0 rockets); 4-12 bimodal: 9 dead / 2 rockets (+38.3%, +106.8%)",
+      "delta_min_note": "delta == 0 bucket: 26 of 27 observed dead, not 27 of 27; the single exception is 6m3gx2eaH +26.8%",
+      "experiment_next": "discriminator inside 4-12 bucket: initialBuy, 5s v_sol velocity, unique buyers. Run #1 added the missing half: the entry price is always worse than observations t0, and the 0.1-2.5 band has a median move of 0.0% with an asymmetric ladder, so zero movement becomes -6..-8% per trade. No threshold fixes that",
+      "expected_flow": "run #1 measured 236 entry_state per 30 min; cap 2.5 admitted 29 (12.3%), cap 4 would admit 43, cap 12 -> 103. With birth_max 34.5 expect 22-26 A entries and 3-6 B entries per 30 min. admitted_by_current_cap in the manifest answers this from data",
+      "open_question_cap": "delta cap 2.5 is an anti-selector: in the bought 0.1-2.5 band there was 1 rocket in 33 candidates (3%) and 0 rugs, while 4-12 held 9 rockets in 42 (21%) AND 25 rugs. Delta selects volatility, not quality. Changing the cap is fix #8, deliberately not mixed with #7",
+      "entry": "30.5 <= v_sol_birth <= 34.5 and 0.10 <= (v_sol_now - v_sol_birth) <= A 2.5 / B 3.0",
+      "run3_single_difference": "delta_max_sol",
+      "run3_decision_rule": "B beats A iff mean(B) - mean(A) >= +10 RUB and the 95% bootstrap CI of the difference excludes 0 (20 000 resamples)",
+      "run3_why": "at 8 h the resolvable difference is +/-12 RUB per trade at n=200 and +/-10 at n=400. The 100%-at-first-tick-+25% exit is worth about +1.5 RUB/trade, so it is unobservable and stays a shadow; the delta band is worth about 29 RUB/trade, so it is the A/B arm. Band EV per trade: 0.1-2.5 = -20, 2.5-4 = +9, 4-12 = -7, 0.1-0.6 = -6, 0.6-1.5 = -33, 1.5-2.5 = -28",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой: пополнение срабатывает лишь при cash < 500, а не после каждого убытка",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля ошибок RPC > 1% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "delta_cap": 2.5,
+          "creator_gate": false
+        },
+        "portfolio_b": {
+          "delta_cap": 3.0,
+          "creator_gate": false
+        },
+        "shadow_gate": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "creator_gate": true
+        },
+        "shadow_exit25": {
+          "capital_rub": 0.0,
+          "mirror_of": "portfolio_a",
+          "delta_cap": 2.5,
+          "single_exit_pct": 25.0
+        }
+      },
+      "capital_rub": 0.0,
+      "mirror_of": "portfolio_a",
+      "single_exit_pct": 25.0,
+      "creator_gate": false
+    }
+  },
+  "rpc": {
+    "provider": "Helius",
+    "http_host": "mainnet.helius-rpc.com",
+    "wss_host": "mainnet.helius-rpc.com",
+    "methods": [
+      "getMultipleAccounts",
+      "getSignaturesForAddress",
+      "getTokenAccountsByOwner"
+    ],
+    "read_only": true,
+    "credentials_stored": false,
+    "http_shadows_enabled": false,
+    "candidate_entry_batch_accounts": [
+      "mint",
+      "curve",
+      "PUMP_GLOBAL_PDA",
+      "PUMP_FEE_CONFIG_PDA"
+    ],
+    "candidate_entry_batch_commitment": "processed",
+    "null_retry": "one retry after 120 ms",
+    "latency_policy": "measure actual latency/errors; no SLA or coverage promise"
+  },
+  "fees": {
+    "source": "on-chain Pump Global + FeeConfig; quote fills use SDK integer math",
+    "entry_network_fee_sol_model": 8e-05,
+    "exit_network_fee_sol_model_per_sell": 5e-05,
+    "network_fees_are_simulation_assumptions": true,
+    "on_chain_curve_fees": "included in out_amount_raw; reported separately from network fees",
+    "unsupported_or_unknown": "fail closed"
+  },
+  "filters": {
+    "sources": "pumpfun",
+    "standard_supply": true,
+    "is_mayhem": false,
+    "quote_mint": "SOL/WSOL only",
+    "mint_authority_revoked": true,
+    "freeze_authority_revoked": true,
+    "duplicate_symbol_gate": false,
+    "creator_history_policy": "advisory telemetry/warnings only",
+    "portfolio_a_creator_gate": false,
+    "portfolio_b_creator_gate": false,
+    "shadow_gate_creator_gate": "signature_count_0_25 == 25 AND derived ATA exists AND ATA token balance > 0",
+    "creator_probe_failures": "fail closed for shadow_gate; never gate A or B"
+  },
+  "observations_sec": [
+    0,
+    5,
+    10,
+    15,
+    60,
+    120
+  ],
+  "observation_policy": "scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun",
+  "accounting": {
+    "snapshot_fill": "out_amount_raw",
+    "conservative_shadow": "min_out_raw at QUOTE_SLIPPAGE_BPS=100",
+    "quote_slippage_bps": 100,
+    "gross_curve_pnl_rub": "realized snapshot PnL before modeled network fees; on-chain curve fee remains embedded in quote output",
+    "network_fees": "tracked separately; deducted from realized returns and shown as open fee liability",
+    "usd_rub_rate": 90.0
+  },
+  "wallet_state_files": [
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/wallet_portfolio_a.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/wallet_portfolio_b.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/wallet_shadow_gate.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/wallet_shadow_exit25.json"
+  ],
+  "data_files": {
+    "sniper_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/sniper.db",
+    "telemetry_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/telemetry.sqlite",
+    "exports": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/exports"
+  },
+  "api_key_or_rpc_url_with_query": false,
+  "started_at_utc": "2026-10-22T13:59:16+00:00",
+  "pumpportal_fast_source": true,
+  "helius_program_fallback": false,
+  "sources": "pumpfun",
+  "ended_at_utc": "2026-10-22T14:49:24+00:00",
+  "actual_duration_sec": 3007.405,
+  "external_stop_reason": null,
+  "run_error_type": null,
+  "rpc_metrics": {
+    "rpc_method": "getMultipleAccounts",
+    "requests": 6699,
+    "logical_requests": 6913,
+    "batch_groups": 6674,
+    "failed_requests": 16,
+    "accounts_requested": 11760,
+    "null_accounts": 36,
+    "null_retries": 44,
+    "latency_ms_median": 42.96,
+    "latency_ms_p95": 87.74,
+    "latency_samples": 6699,
+    "error_types": {
+      "http_429": 16
+    }
+  },
+  "portfolio_summary_file": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run3-8h-20261022T140000Z/ab_summary.json",
+  "telemetry": {
+    "dropped_events": 0,
+    "write_errors": 0,
+    "writer_error": null,
+    "failed": false
+  },
+  "funnel": {
+    "available": true,
+    "db": "telemetry.sqlite",
+    "candidates": 859,
+    "security_pass": 393,
+    "entry_state": 393,
+    "portfolio_a_signal": {
+      "birth_out_of_band": 204,
+      "live_momentum_entry": 32,
+      "momentum_too_late": 103,
+      "no_live_momentum": 54
+    },
+    "portfolio_b_signal": {
+      "birth_out_of_band": 204,
+      "live_momentum_entry": 36,
+      "momentum_too_late": 99,
+      "no_live_momentum": 54
+    },
+    "opened": {
+      "portfolio_a": 32,
+      "portfolio_b": 36
+    },
+    "entry_skips": {
+      "portfolio_a": {},
+      "portfolio_b": {}
+    },
+    "delta_buckets": {
+      "0": 155,
+      "0.1-1": 54,
+      "1-2.5": 31,
+      "2.5-4": 33,
+      "4-12": 107,
+      ">12": 13
+    },
+    "pass_if_cap": {
+      "pass_if_cap_1": 14,
+      "pass_if_cap_12": 129,
+      "pass_if_cap_2.5": 32,
+      "pass_if_cap_3": 36,
+      "pass_if_cap_4": 59
+    },
+    "dev_buy_presence": {
+      "bought": 358,
+      "unknown": 35
+    },
+    "chain": "candidates=859 -> security_pass=393 -> birth_reject=204 -> no_live_momentum=54 -> momentum_too_late=103 -> admits=32 -> opened=32 -> cash_below_slot=0",
+    "admitted_by_current_cap": 32,
+    "gate_status": {
+      "fail_history": 15,
+      "fail_risk": 2,
+      "pass": 8,
+      "unavailable": 7
+    },
+    "gate_reasons": {
+      "creator_history_too_short": 16,
+      "creator_token_ata_missing": 6,
+      "creator_burst_activity": 2
+    },
+    "probe_identity": {
+      "pump_curve_creator": 24,
+      "pumpportal_event_actor": 8
+    },
+    "a_only": {},
+    "observation_timing": {
+      "0": {
+        "rows": 847,
+        "within_250ms": 847,
+        "share": 1.0
+      },
+      "5": {
+        "rows": 847,
+        "within_250ms": 846,
+        "share": 0.9988
+      },
+      "10": {
+        "rows": 847,
+        "within_250ms": 839,
+        "share": 0.9906
+      },
+      "15": {
+        "rows": 847,
+        "within_250ms": 836,
+        "share": 0.987
+      },
+      "60": {
+        "rows": 847,
+        "within_250ms": 819,
+        "share": 0.9669
+      },
+      "120": {
+        "rows": 847,
+        "within_250ms": 791,
+        "share": 0.9339
+      }
+    },
+    "error_detail_coverage": {
+      "probes": 842,
+      "failed": 212,
+      "with_detail": 212,
+      "share": 1.0
+    }
+  },
+  "creator_gate": {
+    "status_counts": {
+      "fail_history": 15,
+      "fail_risk": 2,
+      "pass": 8,
+      "unavailable": 7
+    },
+    "reason_counts": {
+      "creator_burst_activity": 2,
+      "creator_history_too_short": 16,
+      "creator_token_ata_missing": 6
+    },
+    "probe_identity_counts": {
+      "pump_curve_creator": 24,
+      "pumpportal_event_actor": 8
+    },
+    "unavailable_share": 0.2188
+  },
+  "stop_policy": {
+    "reason": "rpc_error_rate (failed=16/1408 = 1.14% over 600s > 1%)",
+    "telemetry": {
+      "dropped_events": 0,
+      "write_errors": 0
+    },
+    "rpc": {
+      "window_requests": 1408,
+      "window_failed": 16,
+      "error_rate": 0.011364
+    },
+    "stall": {
+      "portfolio_a": {
+        "sec_without_entry": 11.9,
+        "entry_state_since_last_entry": 8
+      },
+      "portfolio_b": {
+        "sec_without_entry": 11.9,
+        "entry_state_since_last_entry": 8
+      }
+    },
+    "resources": {
+      "disk_free_bytes": 21444612096,
+      "disk_free_gb": 19.972,
+      "helius_quota_remaining_pct": null
+    },
+    "thresholds": {
+      "rpc_error_rate": 0.01,
+      "rpc_window_sec": 600.0,
+      "rpc_latency_ms": 1000.0,
+      "rpc_latency_hold_sec": 300.0,
+      "stall_sec": 1800.0,
+      "disk_free_gb": 2.0,
+      "helius_quota_pct": 10.0
+    },
+    "pnl_never_stops_the_run": true
+  }
+}

@@ -1,0 +1,18 @@
+run_id: run10a-1h-20261023T182637Z
+snapshot_utc: 2026-10-23T19:27:54Z
+mode: full
+run_dir_size: 72M
+opens: 148
+closes: 148
+[19:26:24] 🛑 Fwxs…HoF2 — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF)
+[19:26:24] ✅ [portfolio_s0] CLOSE BE7y…pump | Fee cover (+3.5%) | PnL=+47.97 ₽ (+9.6%) | cash=2343.49 ₽
+[19:26:25] 👁️ Новая монета: 4MfugRU6PYHCXE9xTuK4iqt1YYDDxJU1wS6DTAj7Gztb (Pump.fun | KAI)
+[19:26:26] 🛑 4Mfu…Gztb — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[19:26:26] 👁️ Новая монета: 5z1xTyzPas57Xbi8SoqdkPbZsRp6uAB7Xh92xPXHXqHn (Pump.fun | KTO)
+[19:26:27] 🛑 5z1x…XqHn — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF)
+[19:26:33] 👁️ Новая монета: CfmhfhvTwDgaBvaSTnKpgFthiKKDNzxhzJkAsQejpump (Pump.fun | Kimchi)
+[19:26:33] 🧪 [portfolio_s0] OPEN Cfmh…pump | birth=31.67 now=31.67 delta=+0.00 SOL | cost≈500.00 ₽ | tokens(out)=1695746248636 | fee=95+30 bps | slots=1/3
+[19:26:37] 👁️ Новая монета: 2RtefGzgNakGxf1SGXdkNEPaimvT5bhGwTPsJZwipump (Pump.fun | YMB2)
+[19:26:38] ✅ [portfolio_s0] CLOSE Cfmh…pump | Time exit (5.0s) | PnL=-15.18 ₽ (-3.0%) | cash=2328.31 ₽
+[19:26:50] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/SUMMARY.md
+[19:26:50] ⏹ A/B run finalized: run10a-1h-20261023T182637Z; open and pending positions remain separately recorded.

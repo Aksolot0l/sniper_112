@@ -1,0 +1,15 @@
+﻿key,value,recorded_at_utc
+run_id,"""run5-8h-20261022T145300Z""",2026-10-22T14:52:36.264+00:00
+portfolio_scope,"[""portfolio_a"",""portfolio_b""]",2026-10-22T14:52:36.264+00:00
+shadow_quotes_enabled,false,2026-10-22T14:52:36.264+00:00
+paper_only,true,2026-10-22T14:52:36.264+00:00
+rpc_host,"""mainnet.helius-rpc.com""",2026-10-22T14:52:36.264+00:00
+run_started_at_utc,"""2026-10-22T14:52:36+00:00""",2026-10-22T14:52:36.775+00:00
+rpc_preflight_host,"""mainnet.helius-rpc.com""",2026-10-22T14:52:36.775+00:00
+pump_fee_context_latest,"{""source"":""on_chain_Global_and_FeeConfig"",""global_account"":""4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"",""fee_config_account"":""8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt"",""observed_at_epoch"":1792683593.3908987,""context_slot"":460089441,""global_fee_basis_points"":95,""global_creator_fee_basis_points"":5,""creator_fee_configurable"":true,""max_configurable_creator_fee_bps"":300,""fee_tiers"":[{""market_cap_lamports_threshold"":0,""lp_fee_bps"":0,""protocol_fee_bps"":95,""creator_fee_bps"":30}],""note"":""Pump SDK 4.1.0 curve quotes charge protocol+creator fees; LP fee is not charged on the bonding-curve leg.""}",2026-10-22T15:39:53.391+00:00
+rpc_metrics_final,"{""rpc_method"":""getMultipleAccounts"",""requests"":7796,""logical_requests"":8058,""batch_groups"":7669,""failed_requests"":102,""accounts_requested"":14605,""null_accounts"":139,""null_retries"":228,""latency_ms_median"":43.27,""latency_ms_p95"":84.16,""latency_samples"":7796,""error_types"":{""http_429"":102}}",2026-10-22T15:40:46.802+00:00
+run_error_type,"""none""",2026-10-22T15:40:46.802+00:00
+run_ended_at_utc,"""2026-10-22T15:40:46+00:00""",2026-10-22T15:40:46.802+00:00
+dropped_events,0,2026-10-22T15:40:46.842+00:00
+writer_errors,0,2026-10-22T15:40:46.843+00:00
+writer_error_type,ok,2026-10-22T15:40:46.843+00:00

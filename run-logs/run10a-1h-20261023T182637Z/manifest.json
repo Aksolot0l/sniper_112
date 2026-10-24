@@ -1,0 +1,770 @@
+{
+  "run_id": "run10a-1h-20261023T182637Z",
+  "build": "651695f",
+  "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+  "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+  "run7_single_difference": "entry_band",
+  "entry_latency_ms": 0.0,
+  "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+  "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress",
+  "exit_mode": "fee_cover",
+  "run8_design": "S1 = B1 verbatim (birth 30.50-34.50, delta 0.10-1.00); S0 = S1 with the momentum gate removed (delta_min 0.00). Both books carry one exit: hard stop -10%, sell 100% at +3.5%, else the 5 s clock. No reference arm A in this run, so S0 is compared with S1 and nothing is compared with A.",
+  "run8_why_fee_cover": "the replay of run #7's 167 real B1 trades, priced from observations and net of the measured 3.25% round trip: B1 + fee-cover 3.5% = -4.93%; B1 held to 5 s = -2.22%; the whole t0 band + 5 s + stop -10% = +1.46% (n=1533). Median entry premium: B1 2.89%, A 5.55%, B3 0.00% — delta >= 0.10 buys somebody else's move and then sells it at +3.5%.",
+  "run8_out_of_scope": "no money verdict: 30-60 trades per book cannot resolve anything. The replay expects about -4.9% for S1 and -4.6% for S0, the best measured variant about +1%; what this run measures is latency, execution cost and whether fee_cover fires at all. No comparison with A, no better/worse claim.",
+  "run8_acceptance": "paper_only=true and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.2 (or the 0.25 s cadence adaptation recorded); dropped_events = 0; write_errors = 0; 0 open positions at the end; fee_cover fired at least once in each book; t_total_ms median recorded without a threshold",
+  "run8_latency_chain": "t_detect_ms WSS packet -> candidate row; t_filters_ms candidate row -> security verdict; t_read_ms verdict -> the curve read the fill is priced from (0 when the filter batch IS that read); t_fill_ms read -> fill row; t_total_ms packet -> fill row",
+  "run8_mark_poll": "MARK_POLL_SEC default 0.15 s (floor 0.05); if a 10-min window passes 2.2 rps the cadence rises to 0.25 s once and mark_poll_adapted=true is reported. accountSubscribe is not used: a second mark source would make exit timing depend on which stream arrived first",
+  "run8_single_difference": "delta_min_sol (S0 vs S1)",
+  "run9_design": "S0 is run #8's S0 verbatim: birth 30.50-34.50, delta 0.00-1.00, no name-copy filter. S2 moves two entry numbers only: birth floor 31.96 (dev buy >= 2 SOL) and at most 0 launches of the same ticker in the previous 120 s. Exit (hard stop -10%, sell 100% at +3.5%, else 5 s), stake 500 RUB, 3 slots and cadence are identical in both books, so the difference between the books is the selection only.",
+  "run9_why": "run #8 replay: the misses are already -3.03% at 0.5 s and every take fires inside 0.17-3.02 s, so clock and latency are not the problem; the -3% round trip (2.5 pp of it pump.fun fees) is paid on every trade. The only lever left is the share of coins that actually jump, so only the selection of the second book changes.",
+  "run9_out_of_scope": "no exit change in any book, no band/copies/stake/cadence change mid-run, no arms A/B1/B2/B3, no direct comparison with run #8 (that run had no name-copy filter and a softer window: 5 stops of 64 vs the 28% the grid expects), no PnL claim without n, mean, median, CI95 and the exit breakdown.",
+  "run9_acceptance_a": "A = 30-min technical smoke, not money: paper_only and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.5; dropped_events = 0 and write_errors = 0; 0 open positions at the end; >= 5 trades per book (otherwise report the actual count); post_exit.csv exists with >= 5 marks per exit; manifest shows the bands 30.50-34.50 (S0) and 31.96-34.50 (S2), copies off (S0) and 0 (S2); median round_trip_cost_pct recorded, and if it is above 4.0% run B is not started",
+  "run9_acceptance_b": "B = 12-h money run: duration >= 43000 s of actual polling; early_stop_reason = null; mean rps <= 1.8 and worst window <= 2.5; unrecovered RPC errors <= 1%; 0 open positions at the end; post_exit.csv filled for every exit",
+  "run9_effect_rule": "fixed before the start: (1) S2 CI95 of the mean excludes 0 and the estimate is >= +2% -> selection accepted, go discuss a real run; (2) CI95 includes 0 -> not proven, the same config may not be repeated and the next step is a pointed change; (3) estimate negative with CI95 entirely below 0 -> selection rejected; (4) S0 vs S2 also compared pairwise by minute (same candidates at the same moment): share of minutes where S2 earned more and the mean difference in RUB; (5) inside S0, split dev 2-4.5 & copies=0 vs dev 2-4.5 & copies>0 vs dev < 2",
+  "run9_early_stop": "ONE pre-agreed exception to \"PnL never stops a run\": at hour 8, if the CI95 of the S2 mean is entirely below zero, the run stops with early_stop_reason = negative_edge_S2 and a report. Nothing else stops a run on money",
+  "run9_post_exit": "after a position closes the coin stays in the mark poll for 10 s and every mark goes to exports/post_exit.csv (portfolio, mint, exit_at_epoch, sec_since_exit, price_usd, pnl_vs_entry_pct, pnl_vs_exit_pct). It shares the getMultipleAccounts batch the open positions already trigger, so it costs no extra RPC; it measures what a paper fill that books the trigger price in the same snapshot would lose against a real one",
+  "run9_price_at_5s": "every trade carries price_at_5s: the real price 5 s after the entry, from the tick stream while open or from the post-exit ghost after it closed (nearest mark within 0.75 s, else null). It is the only way to answer what the 5 s clock would have returned instead of the take",
+  "run9_single_difference": "entry selection: birth floor 31.96 and name copies <= 0 (S2 vs S0); the exit, the stake, the slots and the cadence are identical",
+  "arms": {
+    "portfolio_a": {
+      "arm_id": "A",
+      "band": "30.5-34.5 / 0.10-2.50",
+      "role": "reference, unchanged in every symbol"
+    },
+    "portfolio_b1_narrow": {
+      "arm_id": "B1",
+      "band": "30.5-34.5 / 0.10-1.00",
+      "changed": "delta_max 2.50 -> 1.00",
+      "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+    },
+    "portfolio_b2_birth": {
+      "arm_id": "B2",
+      "band": "30.5-31.0 / 0.10-2.50",
+      "changed": "v_sol_birth_max 34.50 -> 31.00",
+      "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+    },
+    "portfolio_s1": {
+      "arm_id": "S1",
+      "band": "30.5-34.5 / 0.10-1.00",
+      "changed": "nothing: S1 IS B1 (delta_max 2.50 -> 1.00)",
+      "role": "run #8 book under fee_cover exit"
+    },
+    "portfolio_s0": {
+      "arm_id": "S0",
+      "band": "30.5-34.5 / 0.00-1.00",
+      "changed": "delta_min 0.10 -> 0.00, against S1 not A",
+      "role": "run #8 control: same band as S1 minus the momentum gate; run #9 keeps it unchanged"
+    },
+    "portfolio_s2": {
+      "arm_id": "S2",
+      "band": "31.96-34.5 / 0.00-1.00",
+      "changed": "v_sol_birth_min 30.50 -> 31.96 (dev buy >= 2 SOL) and the name-copy filter 0 copies in 120 s",
+      "role": "run #9 treatment book, measured against S0 with the same exit"
+    },
+    "portfolio_b3_t0": {
+      "arm_id": "B3",
+      "band": "30.5-34.5 / 0.00-2.50",
+      "changed": "delta_min 0.10 -> 0.00",
+      "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+    }
+  },
+  "run7_expectation": {
+    "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+    "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+    "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+  },
+  "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+  "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+  "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+  "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+  "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+  "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+  "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+  "profiles": {
+    "portfolio_a": {
+      "arm_id": "A",
+      "entry_band": "30.5-34.5 / 0.10-2.50",
+      "changed_vs_a": "none",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_b1_narrow": {
+      "arm_id": "B1",
+      "entry_band": "30.5-34.5 / 0.10-1.00",
+      "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_b2_birth": {
+      "arm_id": "B2",
+      "entry_band": "30.5-31.0 / 0.10-2.50",
+      "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_b3_t0": {
+      "arm_id": "B3",
+      "entry_band": "30.5-34.5 / 0.00-2.50",
+      "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_s1": {
+      "arm_id": "S1",
+      "entry_band": "30.5-34.5 / 0.10-1.00",
+      "changed_vs_a": "none vs B1; no A in this run",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_s0": {
+      "arm_id": "S0",
+      "entry_band": "30.5-34.5 / 0.00-1.00",
+      "changed_vs_a": "delta_min_sol 0.10 -> 0.00, vs S1",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    },
+    "portfolio_s2": {
+      "arm_id": "S2",
+      "entry_band": "31.96-34.5 / 0.00-1.00",
+      "changed_vs_a": "v_sol_birth_min 30.50 -> 31.96 + name copies 0 / 120 s, vs S0",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+    }
+  },
+  "ab_test": {
+    "single_difference": "entry_band",
+    "reference_arm": null,
+    "mode": "single_arm_smoke",
+    "reference_note": "сравнения с A в этом прогоне нет",
+    "arm_reference": {
+      "portfolio_a": "portfolio_a",
+      "portfolio_b1_narrow": "portfolio_a",
+      "portfolio_b2_birth": "portfolio_a",
+      "portfolio_b3_t0": "portfolio_a",
+      "portfolio_s1": "portfolio_a",
+      "portfolio_s0": "portfolio_s1",
+      "portfolio_s2": "portfolio_s0"
+    },
+    "entry_latency_ms": 0.0,
+    "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress",
+    "arms": {
+      "portfolio_a": {
+        "arm_id": "A",
+        "band": "30.5-34.5 / 0.10-2.50",
+        "role": "reference, unchanged in every symbol"
+      },
+      "portfolio_b1_narrow": {
+        "arm_id": "B1",
+        "band": "30.5-34.5 / 0.10-1.00",
+        "changed": "delta_max 2.50 -> 1.00",
+        "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+      },
+      "portfolio_b2_birth": {
+        "arm_id": "B2",
+        "band": "30.5-31.0 / 0.10-2.50",
+        "changed": "v_sol_birth_max 34.50 -> 31.00",
+        "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+      },
+      "portfolio_s1": {
+        "arm_id": "S1",
+        "band": "30.5-34.5 / 0.10-1.00",
+        "changed": "nothing: S1 IS B1 (delta_max 2.50 -> 1.00)",
+        "role": "run #8 book under fee_cover exit"
+      },
+      "portfolio_s0": {
+        "arm_id": "S0",
+        "band": "30.5-34.5 / 0.00-1.00",
+        "changed": "delta_min 0.10 -> 0.00, against S1 not A",
+        "role": "run #8 control: same band as S1 minus the momentum gate; run #9 keeps it unchanged"
+      },
+      "portfolio_s2": {
+        "arm_id": "S2",
+        "band": "31.96-34.5 / 0.00-1.00",
+        "changed": "v_sol_birth_min 30.50 -> 31.96 (dev buy >= 2 SOL) and the name-copy filter 0 copies in 120 s",
+        "role": "run #9 treatment book, measured against S0 with the same exit"
+      },
+      "portfolio_b3_t0": {
+        "arm_id": "B3",
+        "band": "30.5-34.5 / 0.00-2.50",
+        "changed": "delta_min 0.10 -> 0.00",
+        "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+      }
+    },
+    "decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+    "expectation": {
+      "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+      "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+      "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+    },
+    "power_note": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow"
+  },
+  "run_number": "run10",
+  "status": "completed",
+  "early_stop_reason": null,
+  "created_at_utc": "2026-10-23T18:26:37+00:00",
+  "planned_duration_sec": 3600,
+  "paper_only": true,
+  "signed_transactions": 0,
+  "submitted_transactions": 0,
+  "portfolio_scope": [
+    "portfolio_s0",
+    "portfolio_s2"
+  ],
+  "enrich": {
+    "enabled": true,
+    "rows": 1064,
+    "ok": 1039,
+    "unavailable": 25,
+    "observed_share": 0.9765,
+    "status": "written",
+    "host_status": "ok"
+  },
+  "strategies": {
+    "portfolio_s0": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "exit_mode": "fee_cover",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress",
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "651695f",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "run8_design": "S1 = B1 verbatim (birth 30.50-34.50, delta 0.10-1.00); S0 = S1 with the momentum gate removed (delta_min 0.00). Both books carry one exit: hard stop -10%, sell 100% at +3.5%, else the 5 s clock. No reference arm A in this run, so S0 is compared with S1 and nothing is compared with A.",
+      "run8_why_fee_cover": "the replay of run #7's 167 real B1 trades, priced from observations and net of the measured 3.25% round trip: B1 + fee-cover 3.5% = -4.93%; B1 held to 5 s = -2.22%; the whole t0 band + 5 s + stop -10% = +1.46% (n=1533). Median entry premium: B1 2.89%, A 5.55%, B3 0.00% — delta >= 0.10 buys somebody else's move and then sells it at +3.5%.",
+      "run8_out_of_scope": "no money verdict: 30-60 trades per book cannot resolve anything. The replay expects about -4.9% for S1 and -4.6% for S0, the best measured variant about +1%; what this run measures is latency, execution cost and whether fee_cover fires at all. No comparison with A, no better/worse claim.",
+      "run8_acceptance": "paper_only=true and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.2 (or the 0.25 s cadence adaptation recorded); dropped_events = 0; write_errors = 0; 0 open positions at the end; fee_cover fired at least once in each book; t_total_ms median recorded without a threshold",
+      "run8_latency_chain": "t_detect_ms WSS packet -> candidate row; t_filters_ms candidate row -> security verdict; t_read_ms verdict -> the curve read the fill is priced from (0 when the filter batch IS that read); t_fill_ms read -> fill row; t_total_ms packet -> fill row",
+      "run8_mark_poll": "MARK_POLL_SEC default 0.15 s (floor 0.05); if a 10-min window passes 2.2 rps the cadence rises to 0.25 s once and mark_poll_adapted=true is reported. accountSubscribe is not used: a second mark source would make exit timing depend on which stream arrived first",
+      "run8_single_difference": "delta_min_sol (S0 vs S1)",
+      "run9_design": "S0 is run #8's S0 verbatim: birth 30.50-34.50, delta 0.00-1.00, no name-copy filter. S2 moves two entry numbers only: birth floor 31.96 (dev buy >= 2 SOL) and at most 0 launches of the same ticker in the previous 120 s. Exit (hard stop -10%, sell 100% at +3.5%, else 5 s), stake 500 RUB, 3 slots and cadence are identical in both books, so the difference between the books is the selection only.",
+      "run9_why": "run #8 replay: the misses are already -3.03% at 0.5 s and every take fires inside 0.17-3.02 s, so clock and latency are not the problem; the -3% round trip (2.5 pp of it pump.fun fees) is paid on every trade. The only lever left is the share of coins that actually jump, so only the selection of the second book changes.",
+      "run9_out_of_scope": "no exit change in any book, no band/copies/stake/cadence change mid-run, no arms A/B1/B2/B3, no direct comparison with run #8 (that run had no name-copy filter and a softer window: 5 stops of 64 vs the 28% the grid expects), no PnL claim without n, mean, median, CI95 and the exit breakdown.",
+      "run9_acceptance_a": "A = 30-min technical smoke, not money: paper_only and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.5; dropped_events = 0 and write_errors = 0; 0 open positions at the end; >= 5 trades per book (otherwise report the actual count); post_exit.csv exists with >= 5 marks per exit; manifest shows the bands 30.50-34.50 (S0) and 31.96-34.50 (S2), copies off (S0) and 0 (S2); median round_trip_cost_pct recorded, and if it is above 4.0% run B is not started",
+      "run9_acceptance_b": "B = 12-h money run: duration >= 43000 s of actual polling; early_stop_reason = null; mean rps <= 1.8 and worst window <= 2.5; unrecovered RPC errors <= 1%; 0 open positions at the end; post_exit.csv filled for every exit",
+      "run9_effect_rule": "fixed before the start: (1) S2 CI95 of the mean excludes 0 and the estimate is >= +2% -> selection accepted, go discuss a real run; (2) CI95 includes 0 -> not proven, the same config may not be repeated and the next step is a pointed change; (3) estimate negative with CI95 entirely below 0 -> selection rejected; (4) S0 vs S2 also compared pairwise by minute (same candidates at the same moment): share of minutes where S2 earned more and the mean difference in RUB; (5) inside S0, split dev 2-4.5 & copies=0 vs dev 2-4.5 & copies>0 vs dev < 2",
+      "run9_early_stop": "ONE pre-agreed exception to \"PnL never stops a run\": at hour 8, if the CI95 of the S2 mean is entirely below zero, the run stops with early_stop_reason = negative_edge_S2 and a report. Nothing else stops a run on money",
+      "run9_post_exit": "after a position closes the coin stays in the mark poll for 10 s and every mark goes to exports/post_exit.csv (portfolio, mint, exit_at_epoch, sec_since_exit, price_usd, pnl_vs_entry_pct, pnl_vs_exit_pct). It shares the getMultipleAccounts batch the open positions already trigger, so it costs no extra RPC; it measures what a paper fill that books the trigger price in the same snapshot would lose against a real one",
+      "run9_price_at_5s": "every trade carries price_at_5s: the real price 5 s after the entry, from the tick stream while open or from the post-exit ghost after it closed (nearest mark within 0.75 s, else null). It is the only way to answer what the 5 s clock would have returned instead of the take",
+      "run9_single_difference": "entry selection: birth floor 31.96 and name copies <= 0 (S2 vs S0); the exit, the stake, the slots and the cadence are identical",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_s1": {
+          "arm_id": "S1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "nothing: S1 IS B1 (delta_max 2.50 -> 1.00)",
+          "role": "run #8 book under fee_cover exit"
+        },
+        "portfolio_s0": {
+          "arm_id": "S0",
+          "band": "30.5-34.5 / 0.00-1.00",
+          "changed": "delta_min 0.10 -> 0.00, against S1 not A",
+          "role": "run #8 control: same band as S1 minus the momentum gate; run #9 keeps it unchanged"
+        },
+        "portfolio_s2": {
+          "arm_id": "S2",
+          "band": "31.96-34.5 / 0.00-1.00",
+          "changed": "v_sol_birth_min 30.50 -> 31.96 (dev buy >= 2 SOL) and the name-copy filter 0 copies in 120 s",
+          "role": "run #9 treatment book, measured against S0 with the same exit"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s1": {
+          "arm_id": "S1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "none vs B1; no A in this run",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s0": {
+          "arm_id": "S0",
+          "entry_band": "30.5-34.5 / 0.00-1.00",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00, vs S1",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s2": {
+          "arm_id": "S2",
+          "entry_band": "31.96-34.5 / 0.00-1.00",
+          "changed_vs_a": "v_sol_birth_min 30.50 -> 31.96 + name copies 0 / 120 s, vs S0",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        }
+      },
+      "arm_id": "S0",
+      "entry_band": "30.5-34.5 / 0.00-1.00",
+      "changed_vs_a": "delta_min_sol 0.10 -> 0.00, vs S1",
+      "entry_band_label": "30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies: off",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    },
+    "portfolio_s2": {
+      "initial_balance_rub": 1500,
+      "position_size_rub": 500,
+      "max_slots": 3,
+      "exit_mode": "fee_cover",
+      "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress",
+      "entry_note": "live-momentum band replaces the 2026-10 anti-filter (v_sol_now <= v_sol_birth + 0.8 rejected every real runner and bought dead delta==0 decoys). Birth ceiling is 34.5 since fix #7: v_sol_birth = 29.96 + dev_buy_SOL, so 50 admitted dev buys of 4-6 SOL and 36 of 50 such launches fell <= -25%",
+      "stop_loss": "before TP1/rocket bypass only, while best_pnl_pct < +10.0: pnl_pct <= -10.0; sell 100%",
+      "tp1": "when +30.0 <= pnl_pct < +50.0 before TP1/rocket bypass: sell 50%; retry same partial if exact-size quote is unavailable",
+      "rocket_bypass": "at pnl_pct >= +50.0 before TP1: retain 100%, set bypass, do not sell half",
+      "trailing": "once best_pnl_pct >= +10.0: sell remaining at pnl_pct <= 0.85 * best_pnl_pct (labelled SL/trail, not a take-profit)",
+      "shelf_stagnation": "sell remaining when pnl_pct >= +1.5 and no >=+0.4pp new high for 4.5s",
+      "no_progress": "once at held >= 5s: best_pnl_pct < +4.0 and pnl_pct < +1.5; evaluate once",
+      "peak_timestamp_update": "update only when pnl_pct >= best_pnl_pct + 0.4 percentage points",
+      "timeout_before_trailing_sec": 35,
+      "timeout_after_trailing_sec": 90,
+      "build": "651695f",
+      "build_baseline": "run #6 = 4ba22b9 (3 h, exit experiment): A +248.61 RUB / +1.49 per trade, B -375.35 / -2.27, paired B-A -4.24, CI [-19.2, +10.7]",
+      "strategy_version": "run7: entry_v3+birth_max_34.5, four entry-band arms",
+      "run7_single_difference": "entry_band",
+      "entry_latency_ms": 150.0,
+      "entry_fill_price": "the first on-chain curve read after detection (the same getMultipleAccounts context that passed the security filters). The WSS packet price is never used for a fill; entry_lag_ms records how old the read was and entry_premium_pct compares the entry mid with the coin t0 mid of that read",
+      "run8_design": "S1 = B1 verbatim (birth 30.50-34.50, delta 0.10-1.00); S0 = S1 with the momentum gate removed (delta_min 0.00). Both books carry one exit: hard stop -10%, sell 100% at +3.5%, else the 5 s clock. No reference arm A in this run, so S0 is compared with S1 and nothing is compared with A.",
+      "run8_why_fee_cover": "the replay of run #7's 167 real B1 trades, priced from observations and net of the measured 3.25% round trip: B1 + fee-cover 3.5% = -4.93%; B1 held to 5 s = -2.22%; the whole t0 band + 5 s + stop -10% = +1.46% (n=1533). Median entry premium: B1 2.89%, A 5.55%, B3 0.00% — delta >= 0.10 buys somebody else's move and then sells it at +3.5%.",
+      "run8_out_of_scope": "no money verdict: 30-60 trades per book cannot resolve anything. The replay expects about -4.9% for S1 and -4.6% for S0, the best measured variant about +1%; what this run measures is latency, execution cost and whether fee_cover fires at all. No comparison with A, no better/worse claim.",
+      "run8_acceptance": "paper_only=true and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.2 (or the 0.25 s cadence adaptation recorded); dropped_events = 0; write_errors = 0; 0 open positions at the end; fee_cover fired at least once in each book; t_total_ms median recorded without a threshold",
+      "run8_latency_chain": "t_detect_ms WSS packet -> candidate row; t_filters_ms candidate row -> security verdict; t_read_ms verdict -> the curve read the fill is priced from (0 when the filter batch IS that read); t_fill_ms read -> fill row; t_total_ms packet -> fill row",
+      "run8_mark_poll": "MARK_POLL_SEC default 0.15 s (floor 0.05); if a 10-min window passes 2.2 rps the cadence rises to 0.25 s once and mark_poll_adapted=true is reported. accountSubscribe is not used: a second mark source would make exit timing depend on which stream arrived first",
+      "run8_single_difference": "delta_min_sol (S0 vs S1)",
+      "run9_design": "S0 is run #8's S0 verbatim: birth 30.50-34.50, delta 0.00-1.00, no name-copy filter. S2 moves two entry numbers only: birth floor 31.96 (dev buy >= 2 SOL) and at most 0 launches of the same ticker in the previous 120 s. Exit (hard stop -10%, sell 100% at +3.5%, else 5 s), stake 500 RUB, 3 slots and cadence are identical in both books, so the difference between the books is the selection only.",
+      "run9_why": "run #8 replay: the misses are already -3.03% at 0.5 s and every take fires inside 0.17-3.02 s, so clock and latency are not the problem; the -3% round trip (2.5 pp of it pump.fun fees) is paid on every trade. The only lever left is the share of coins that actually jump, so only the selection of the second book changes.",
+      "run9_out_of_scope": "no exit change in any book, no band/copies/stake/cadence change mid-run, no arms A/B1/B2/B3, no direct comparison with run #8 (that run had no name-copy filter and a softer window: 5 stops of 64 vs the 28% the grid expects), no PnL claim without n, mean, median, CI95 and the exit breakdown.",
+      "run9_acceptance_a": "A = 30-min technical smoke, not money: paper_only and 0 signed; duration >= 1790 s; early_stop_reason = null; unrecovered RPC errors <= 2%; mean rps <= 1.8 and worst 10-min window <= 2.5; dropped_events = 0 and write_errors = 0; 0 open positions at the end; >= 5 trades per book (otherwise report the actual count); post_exit.csv exists with >= 5 marks per exit; manifest shows the bands 30.50-34.50 (S0) and 31.96-34.50 (S2), copies off (S0) and 0 (S2); median round_trip_cost_pct recorded, and if it is above 4.0% run B is not started",
+      "run9_acceptance_b": "B = 12-h money run: duration >= 43000 s of actual polling; early_stop_reason = null; mean rps <= 1.8 and worst window <= 2.5; unrecovered RPC errors <= 1%; 0 open positions at the end; post_exit.csv filled for every exit",
+      "run9_effect_rule": "fixed before the start: (1) S2 CI95 of the mean excludes 0 and the estimate is >= +2% -> selection accepted, go discuss a real run; (2) CI95 includes 0 -> not proven, the same config may not be repeated and the next step is a pointed change; (3) estimate negative with CI95 entirely below 0 -> selection rejected; (4) S0 vs S2 also compared pairwise by minute (same candidates at the same moment): share of minutes where S2 earned more and the mean difference in RUB; (5) inside S0, split dev 2-4.5 & copies=0 vs dev 2-4.5 & copies>0 vs dev < 2",
+      "run9_early_stop": "ONE pre-agreed exception to \"PnL never stops a run\": at hour 8, if the CI95 of the S2 mean is entirely below zero, the run stops with early_stop_reason = negative_edge_S2 and a report. Nothing else stops a run on money",
+      "run9_post_exit": "after a position closes the coin stays in the mark poll for 10 s and every mark goes to exports/post_exit.csv (portfolio, mint, exit_at_epoch, sec_since_exit, price_usd, pnl_vs_entry_pct, pnl_vs_exit_pct). It shares the getMultipleAccounts batch the open positions already trigger, so it costs no extra RPC; it measures what a paper fill that books the trigger price in the same snapshot would lose against a real one",
+      "run9_price_at_5s": "every trade carries price_at_5s: the real price 5 s after the entry, from the tick stream while open or from the post-exit ghost after it closed (nearest mark within 0.75 s, else null). It is the only way to answer what the 5 s clock would have returned instead of the take",
+      "run9_single_difference": "entry selection: birth floor 31.96 and name copies <= 0 (S2 vs S0); the exit, the stake, the slots and the cadence are identical",
+      "arms": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "band": "30.5-34.5 / 0.10-2.50",
+          "role": "reference, unchanged in every symbol"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "delta_max 2.50 -> 1.00",
+          "why": "the only band with non-negative EV at 5-10 s in all three runs (+0.47/+1.42/+1.82 %), and better on the real ladder in run3/run5 (-11.1/-7.2 vs -23.7/-20.1); risk: three rockets carried the 1-2.5 band in run6"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "band": "30.5-31.0 / 0.10-2.50",
+          "changed": "v_sol_birth_max 34.50 -> 31.00",
+          "why": "the only filter with a stable sign 4/4 on a fixed exit, and identical to dev_buy <= 1 SOL; risk: on the run6 ladder it lost (-507 RUB vs +755 RUB for birth > 31)"
+        },
+        "portfolio_s1": {
+          "arm_id": "S1",
+          "band": "30.5-34.5 / 0.10-1.00",
+          "changed": "nothing: S1 IS B1 (delta_max 2.50 -> 1.00)",
+          "role": "run #8 book under fee_cover exit"
+        },
+        "portfolio_s0": {
+          "arm_id": "S0",
+          "band": "30.5-34.5 / 0.00-1.00",
+          "changed": "delta_min 0.10 -> 0.00, against S1 not A",
+          "role": "run #8 control: same band as S1 minus the momentum gate; run #9 keeps it unchanged"
+        },
+        "portfolio_s2": {
+          "arm_id": "S2",
+          "band": "31.96-34.5 / 0.00-1.00",
+          "changed": "v_sol_birth_min 30.50 -> 31.96 (dev buy >= 2 SOL) and the name-copy filter 0 copies in 120 s",
+          "role": "run #9 treatment book, measured against S0 with the same exit"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "band": "30.5-34.5 / 0.00-2.50",
+          "changed": "delta_min 0.10 -> 0.00",
+          "why": "the only arm whose expected gain is arithmetic: it enters on the first curve read (A waits for a 0.10 SOL impulse) and so does not pay the measured 1.416 % entry_fill_premium (~7 RUB on 500 RUB); it also sees 438 coins instead of 167 inside the same birth band, with the same 6.6 % rocket share (60 s window). Risk: entering without an impulse confirmation"
+        }
+      },
+      "run7_expectation": {
+        "portfolio_b1_narrow": "+1..+6 RUB/trade vs A (better in 3/3 runs on a fixed exit and in run3/run5 on the ladder; the narrow band cuts the flow 1.8x)",
+        "portfolio_b2_birth": "-8..+8 RUB (model says better in 2/3 runs, the run6 ladder lost 15.7 RUB/trade: the run decides)",
+        "portfolio_b3_t0": "+3..+9 RUB from removing the 1.416 % entry premium (~7 RUB on 500 RUB); EV itself is neutral"
+      },
+      "run7_decision_rule": "an arm confirms its hypothesis iff the PAIRED mean(arm - A) >= +8 RUB on the coins both arms traded, the 98.75 % bootstrap CI (Bonferroni over three hypotheses, alpha 0.0125) excludes 0, and the sign is the same in both halves of the run",
+      "run7_power": "paired sd ~98 RUB, ~56 trades/hour per arm: the CI half width is ~15 RUB at ~165 pairs, so a 3-hour run cannot resolve anything below ~15 RUB/trade, and the +8 RUB threshold needs ~1 700 pairs after Bonferroni, i.e. ~21 h at this flow",
+      "run7_p0_accepted": "early_stop_reason = null, unrecovered RPC failures <= 2 %, dropped_events = 0, write_errors = 0, requests_per_sec <= 1.8, security_fail_skipped_deep > 0, no shadow profiles, enrich.csv written",
+      "run7_p0_fixes": "P0-2 verdict resolved inside the offset loop (run6 read every offset because the verdict was set after observe_candidate); ticks carry price_usd instead of a rouble price divided by sol_usd; security_fail_reasons use the LAST reason (the verdict, not the passed check); ticks gain mark_prev_pct/step_gap_pp/mark_gap_ms and exit_kind; observation offsets 0/5/15/60, with the 60 s read taken for a hash-selected third of the coins; entry_lag_ms replaces the \"floor violations\" counter that measured the model, not a failure",
+      "run7_not_doing": "no exit change in any arm, no delta > 2.5 arm (EV@15 -9.25/-5.84/-5.54 % in three runs and no extra rockets inside A's birth band), no creator gate live (worse than average in 4/4 samples), no fourth experimental arm, no band tuning mid-run",
+      "bank_rule": "каждый профиль ведёт свой кэш; если перед входом cash < 500 ₽, книга пополняется до 1500 ₽ и сделка открывается. Ставка 500 ₽, 3 слота и все входы/выходы не меняются — пополнение влияет только на «торговать / не торговать». Счётчик top_ups остаётся метрикой",
+      "stop_list": "прогон останавливается только по четырём причинам: telemetry dropped_events/write_errors > 0; доля НЕИСПРАВЛЕННЫХ ошибок RPC (после 3 ретраев 0.2/0.5/1.2 c + джиттер, с учётом Retry-After) > 2% за 10 мин или p95 > 1000 мс пять минут подряд; профиль без входов 30 мин при растущем entry_state; остаток квоты Helius < 10% или < 2 ГБ на диске. Порог 2% поднимать запрещено. PnL не является причиной остановки",
+      "profiles": {
+        "portfolio_a": {
+          "arm_id": "A",
+          "entry_band": "30.5-34.5 / 0.10-2.50",
+          "changed_vs_a": "none",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b1_narrow": {
+          "arm_id": "B1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "delta_max_sol 2.50 -> 1.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b2_birth": {
+          "arm_id": "B2",
+          "entry_band": "30.5-31.0 / 0.10-2.50",
+          "changed_vs_a": "v_sol_birth_max 34.50 -> 31.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_b3_t0": {
+          "arm_id": "B3",
+          "entry_band": "30.5-34.5 / 0.00-2.50",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s1": {
+          "arm_id": "S1",
+          "entry_band": "30.5-34.5 / 0.10-1.00",
+          "changed_vs_a": "none vs B1; no A in this run",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s0": {
+          "arm_id": "S0",
+          "entry_band": "30.5-34.5 / 0.00-1.00",
+          "changed_vs_a": "delta_min_sol 0.10 -> 0.00, vs S1",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        },
+        "portfolio_s2": {
+          "arm_id": "S2",
+          "entry_band": "31.96-34.5 / 0.00-1.00",
+          "changed_vs_a": "v_sol_birth_min 30.50 -> 31.96 + name copies 0 / 120 s, vs S0",
+          "exit_rule": "fee cover: hard stop −10%, sell 100% at +3.5%, else time exit 5s; no TP1, no trail, no shelf, no no-progress"
+        }
+      },
+      "arm_id": "S2",
+      "entry_band": "31.96-34.5 / 0.00-1.00",
+      "changed_vs_a": "v_sol_birth_min 30.50 -> 31.96 + name copies 0 / 120 s, vs S0",
+      "entry_band_label": "31.96 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies 120s <= 0",
+      "creator_probe": "telemetry only; no entry gate in any arm",
+      "creator_gate": false
+    }
+  },
+  "entry_parameters": {
+    "portfolio_s0": {
+      "arm_id": "S0",
+      "v_sol_birth_min": 30.5,
+      "v_sol_birth_max": 34.5,
+      "delta_min_sol": 0.0,
+      "delta_max_sol": 1.0,
+      "max_name_copies_120s": null,
+      "name_copies_window_sec": 120.0,
+      "entry_band_label": "30.50 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies: off",
+      "exit_mode": "fee_cover",
+      "entry_latency_ms": 0.0
+    },
+    "portfolio_s2": {
+      "arm_id": "S2",
+      "v_sol_birth_min": 31.96,
+      "v_sol_birth_max": 34.5,
+      "delta_min_sol": 0.0,
+      "delta_max_sol": 1.0,
+      "max_name_copies_120s": 0,
+      "name_copies_window_sec": 120.0,
+      "entry_band_label": "31.96 <= v_sol_birth <= 34.50; 0.00 <= delta <= 1.00; name copies 120s <= 0",
+      "exit_mode": "fee_cover",
+      "entry_latency_ms": 0.0
+    }
+  },
+  "rpc": {
+    "provider": "Helius",
+    "http_host": "mainnet.helius-rpc.com",
+    "wss_host": "mainnet.helius-rpc.com",
+    "methods": [
+      "getMultipleAccounts",
+      "getSignaturesForAddress",
+      "getTokenAccountsByOwner"
+    ],
+    "read_only": true,
+    "credentials_stored": false,
+    "http_shadows_enabled": false,
+    "candidate_entry_batch_accounts": [
+      "mint",
+      "curve",
+      "PUMP_GLOBAL_PDA",
+      "PUMP_FEE_CONFIG_PDA"
+    ],
+    "candidate_entry_batch_commitment": "processed",
+    "null_retry": "one retry after 120 ms",
+    "latency_policy": "measure actual latency/errors; no SLA or coverage promise"
+  },
+  "fees": {
+    "source": "on-chain Pump Global + FeeConfig; quote fills use SDK integer math",
+    "entry_network_fee_sol_model": 8e-05,
+    "exit_network_fee_sol_model_per_sell": 5e-05,
+    "network_fees_are_simulation_assumptions": true,
+    "on_chain_curve_fees": "included in out_amount_raw; reported separately from network fees",
+    "unsupported_or_unknown": "fail closed"
+  },
+  "filters": {
+    "sources": "pumpfun",
+    "standard_supply": true,
+    "is_mayhem": false,
+    "quote_mint": "SOL/WSOL only",
+    "mint_authority_revoked": true,
+    "freeze_authority_revoked": true,
+    "duplicate_symbol_gate": false,
+    "creator_history_policy": "advisory telemetry/warnings only",
+    "creator_gate_in_live_arms": false,
+    "creator_gate_note": "the creator gate lost against the average in 4/4 independent samples (run3 -6.29 %, run5 -4.77 %, run6 both halves -4.01 / -6.44 % vs -2.99/-2.86/-4.11/-4.51) and is not used anywhere"
+  },
+  "observations_sec": [
+    0,
+    5
+  ],
+  "observation_policy": "scheduled real Pump curve RPC reads; no interpolation or DexScreener/GeckoTerminal fallback for Pump.fun",
+  "accounting": {
+    "snapshot_fill": "out_amount_raw",
+    "conservative_shadow": "min_out_raw at QUOTE_SLIPPAGE_BPS=100",
+    "quote_slippage_bps": 100,
+    "gross_curve_pnl_rub": "realized snapshot PnL before modeled network fees; on-chain curve fee remains embedded in quote output",
+    "network_fees": "tracked separately; deducted from realized returns and shown as open fee liability",
+    "usd_rub_rate": 90.0
+  },
+  "wallet_state_files": [
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/wallet_portfolio_s0.json",
+    "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/wallet_portfolio_s2.json"
+  ],
+  "data_files": {
+    "sniper_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/sniper.db",
+    "telemetry_db": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/telemetry.sqlite",
+    "exports": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/exports"
+  },
+  "api_key_or_rpc_url_with_query": false,
+  "started_at_utc": "2026-10-23T18:26:37+00:00",
+  "pumpportal_fast_source": true,
+  "helius_program_fallback": false,
+  "sources": "pumpfun",
+  "ended_at_utc": "2026-10-23T19:26:50+00:00",
+  "actual_duration_sec": 3612.436,
+  "external_stop_reason": null,
+  "run_error_type": null,
+  "rpc_metrics": {
+    "rpc_method": "getMultipleAccounts",
+    "requests": 6565,
+    "logical_requests": 7007,
+    "batch_groups": 6480,
+    "failed_requests": 0,
+    "http_429_count": 62,
+    "retry_count": 62,
+    "unrecovered_failures": 0,
+    "unrecovered_rate": 0.0,
+    "requests_per_sec": 1.817,
+    "requests_per_sec_max_10min": 2.967,
+    "requests_per_sec_max_60sec": 4.15,
+    "recovered_failures": 62,
+    "accounts_requested": 16603,
+    "null_accounts": 47,
+    "null_retries": 31,
+    "latency_ms_median": 42.77,
+    "latency_ms_p95": 86.12,
+    "latency_samples": 6565,
+    "error_types": {
+      "http_429": 62
+    },
+    "requests_per_profile": {
+      "portfolio_s0": 1556,
+      "portfolio_s2": 226
+    }
+  },
+  "portfolio_summary_file": "/home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run10a-1h-20261023T182637Z/ab_summary.json",
+  "telemetry": {
+    "dropped_events": 0,
+    "write_errors": 0,
+    "writer_error": null,
+    "failed": false
+  },
+  "funnel": {
+    "available": true,
+    "db": "telemetry.sqlite",
+    "candidates": 1567,
+    "security_pass": 1064,
+    "entry_state": 1064,
+    "arms": [
+      "portfolio_s0",
+      "portfolio_s2"
+    ],
+    "portfolio_s0_signal": {
+      "birth_out_of_band": 768,
+      "live_momentum_entry": 129,
+      "momentum_too_late": 167
+    },
+    "portfolio_s2_signal": {
+      "birth_out_of_band": 474,
+      "live_momentum_entry": 19,
+      "momentum_too_late": 46
+    },
+    "opened": {
+      "portfolio_s0": 129,
+      "portfolio_s2": 19
+    },
+    "entry_skips": {
+      "portfolio_s0": {},
+      "portfolio_s2": {
+        "name_copies_120s": 525
+      }
+    },
+    "delta_buckets": {
+      "0": 717,
+      "0.1-1": 99,
+      "1-2.5": 51,
+      "2.5-4": 49,
+      "4-12": 102,
+      ">12": 46
+    },
+    "pass_if_cap": {
+      "pass_if_cap_1": 129,
+      "pass_if_cap_12": 258,
+      "pass_if_cap_2.5": 162,
+      "pass_if_cap_3": 168,
+      "pass_if_cap_4": 198
+    },
+    "dev_buy_presence": {
+      "bought": 702,
+      "unknown": 362
+    },
+    "chain_arm": "portfolio_s0",
+    "chain": "candidates=1567 -> security_pass=1064 -> birth_reject=768 -> no_live_momentum=0 -> momentum_too_late=167 -> admits=129 -> opened=129 -> cash_below_slot=0",
+    "admitted_by_current_cap": 129,
+    "security_fail_total": 483,
+    "security_fail_observed": 140,
+    "security_fail_observed_share": 0.2899,
+    "security_fail_rockets": 0,
+    "security_fail_rocket_share": 0.0,
+    "security_fail_reasons": {
+      "pump_mayhem_mode": 138,
+      "mint_curve_read_failed": 2
+    },
+    "security_fail_skipped_deep": 7,
+    "window_sample_skipped": 0,
+    "observation_timing": {
+      "0": {
+        "rows": 1547,
+        "within_250ms": 1547,
+        "share": 1.0
+      },
+      "5": {
+        "rows": 1547,
+        "within_250ms": 1539,
+        "share": 0.9948
+      }
+    },
+    "observation_status": {
+      "no_price": 799,
+      "ok": 2288,
+      "skipped_security_deep": 7
+    },
+    "cancelled_observations": 0,
+    "cancelled_excluded_from_stats": true,
+    "excluded_observations": 0,
+    "error_detail_coverage": {
+      "probes": 1544,
+      "failed": 419,
+      "with_detail": 419,
+      "share": 1.0
+    }
+  },
+  "stop_policy": {
+    "reason": null,
+    "telemetry": {
+      "dropped_events": 0,
+      "write_errors": 0
+    },
+    "rpc": {
+      "window_requests": 918,
+      "window_failed_attempts": 0,
+      "window_unrecovered": 0,
+      "unrecovered_rate": 0.0,
+      "raw_error_rate": 0.0
+    },
+    "stall": {
+      "portfolio_s0": {
+        "sec_without_entry": 15.4,
+        "entry_state_since_last_entry": 1
+      },
+      "portfolio_s2": {
+        "sec_without_entry": 246.3,
+        "entry_state_since_last_entry": 48
+      }
+    },
+    "resources": {
+      "disk_free_bytes": 21405409280,
+      "disk_free_gb": 19.935,
+      "helius_quota_remaining_pct": null
+    },
+    "thresholds": {
+      "rpc_error_rate": 0.02,
+      "rpc_window_sec": 600.0,
+      "rpc_latency_ms": 1000.0,
+      "rpc_latency_hold_sec": 300.0,
+      "stall_sec": 1800.0,
+      "disk_free_gb": 2.0,
+      "helius_quota_pct": 10.0
+    },
+    "pnl_never_stops_the_run": true
+  }
+}

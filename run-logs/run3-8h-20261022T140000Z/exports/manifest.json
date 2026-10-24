@@ -1,0 +1,36 @@
+{
+  "run_id": "run3-8h-20261022T140000Z",
+  "mode": "paper_only",
+  "transactions_signed_or_sent": false,
+  "quote_rows_are_fills": false,
+  "shadow_quotes_enabled": false,
+  "shadow_notional_rub": 0.0,
+  "observation_offsets_sec": [
+    0,
+    5,
+    10,
+    15,
+    60,
+    120
+  ],
+  "rpc_http_host": "mainnet.helius-rpc.com",
+  "rpc_wss_host": "mainnet.helius-rpc.com",
+  "counts": {
+    "candidates": 859,
+    "detections": 1722,
+    "decisions": 5638,
+    "creator_attributions": 847,
+    "creator_probes": 842,
+    "watchlist_events": 0,
+    "quotes": 217,
+    "observations": 5082,
+    "paper_fills": 109,
+    "collector_meta": 14
+  },
+  "timestamps": "UTC ISO-8601",
+  "bias_controls": [
+    "append-only events",
+    "future outcomes separated from discovery-time features",
+    "filtered/skipped candidates retained"
+  ]
+}

@@ -1,0 +1,18 @@
+run_id: run8-30m-20261023T151850Z
+snapshot_utc: 2026-10-23T15:49:27Z
+mode: full
+run_dir_size: 29M
+opens: 81
+closes: 81
+[15:48:37] 👁️ Новая монета: JB7eVQ739ESm9ZjVHFVbF6ndG5UjJHRXnj27fjUCpump (Pump.fun | TRAD)
+[15:48:38] 👁️ Новая монета: Dsy1ybH5QsERsQhsXHHVmsXnzYq3Yco8fGRHnHTspump (Pump.fun | GOAT)
+[15:48:39] 👁️ Новая монета: Ebigk2aJHi2jxtDHAxicFd83uqtjYt29tfuuJYecpump (Pump.fun | TRAD)
+[15:48:40] 🛑 Ebig…pump — Pump.fun security filters blocked: mint authority отозван — допечатать нельзя; freeze authority отозван — заморозить нельзя; pump_standard_supply_verified (decimals=6; curve token_total_supply matches mint); Pump.fun: кривая торгуется только за SOL; Pump.fun кривая использует не SOL quote (pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn)
+[15:48:40] 👁️ Новая монета: 5bgrzG5j47xr1BXg5bmJp4593zcq11E1V748XNPsxEp1 (Pump.fun | PROXY)
+[15:48:46] 👁️ Новая монета: Bwtr3RCYNN9Q6G58MDTUCKsH61q3AkQ8CeT1GSR4pump (Pump.fun | BLUEBEAM)
+[15:48:48] 👁️ Новая монета: 4SZYFWtjUjqbFJTxjKRc8qK6XiJeKUo4zzqFVnYLFS1v (Pump.fun | TRADBOT)
+[15:48:49] 👁️ Новая монета: GipWfXbVttrv8WhhZHftf5M4nXXyH3zJhAyp3s9Ppump (Pump.fun | LockDown)
+[15:48:49] 👁️ Новая монета: 5yYQ7nQxXcdWpDa9AJSugURRGKraPPkVWs2TaJjKpump (Pump.fun | LockDown)
+[15:48:49] 👁️ Новая монета: BkMkfo1jScsYrfaMaTJYiQgBfSgSZwvBrYbAuFvwpump (Pump.fun | LockDown)
+[15:48:51] 📄 SUMMARY.md записан: /home/user/sniper_112/solana_sniper/runs/rocket2-ab-paper-run8-30m-20261023T151850Z/SUMMARY.md
+[15:48:51] ⏹ A/B run finalized: run8-30m-20261023T151850Z; open and pending positions remain separately recorded.
