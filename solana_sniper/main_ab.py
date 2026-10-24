@@ -1033,8 +1033,9 @@ def _run9_summary_markdown(
              >= trade_mins.get(name, default_min) for name in arms),
          ', '.join(f"{label(name)}={((summary.get(name) or {}).get('stats') or {}).get('n', 0)}"
                    for name in arms)),
-        (f'призрак: точки записаны/план, недобрано ≤ max(2, 1 % от плана), '
-         f'медиана = {marks_median_needed or 0}, мин ≥ {marks_needed}',
+        ('призрак: точки записаны/план, недобрано ≤ max(2, 1 % от плана)'
+         + (f', медиана = {marks_median_needed}' if marks_median_needed else '')
+         + f', мин ≥ {marks_needed}',
          post_exit_ok,
          '; '.join(_ghost_cell(name) for name in arms)),
         ('полосы и копии в манифесте',

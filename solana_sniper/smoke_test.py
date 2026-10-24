@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import math
 import random
@@ -42,8 +43,13 @@ from portfolio_ab import (
     ExecutableQuote,
     profiles_from_settings,
 )
+from entry_reads import entry_account_cache, reset_entry_account_cache
+from price import pump_curve_price_from_raw
 from pump_curve_quote import (
     BONDING_CURVE_DISCRIMINATOR,
+    PUMP_FEE_CONFIG_PDA,
+    PUMP_FEE_PROGRAM_ID,
+    PUMP_GLOBAL_PDA,
     FEE_CONFIG_DISCRIMINATOR,
     GLOBAL_DISCRIMINATOR,
     CurveState,
@@ -51,7 +57,14 @@ from pump_curve_quote import (
     quote_buy_exact_quote_in,
     quote_sell_exact_tokens,
 )
-from pumpportal_validation import WSOL_MINT
+from filters import fetch_pump_mint_curve_accounts
+from pumpportal_validation import (
+    PUMP_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    WSOL_MINT,
+    b58encode,
+    derive_pump_bonding_curve,
+)
 from telemetry import CandidateCollector, funnel_from_db, set_collector
 
 PROJECT = Path(__file__).resolve().parent
@@ -61,7 +74,8 @@ SOL_USD = 200.0
 
 
 # --------------------------------------------------------------------- curves
-def _fee_context():
+def _fee_raw() -> tuple[bytes, bytes]:
+    """The Global + FeeConfig bytes the entry batch carries (run #10b §1)."""
     global_raw = bytearray(1_088)
     global_raw[:8] = GLOBAL_DISCRIMINATOR
     struct.pack_into('<Q', global_raw, 105, 95)
@@ -77,10 +91,16 @@ def _fee_context():
     fee_raw.extend(struct.pack('<QQQ', 0, 95, 30))
     fee_raw.extend(struct.pack('<I', 0))
     fee_raw.extend(struct.pack('<QQQ', 0, 0, 0))
-    return make_fee_context(bytes(global_raw), bytes(fee_raw), context_slot=12)
+    return bytes(global_raw), bytes(fee_raw)
 
 
-def _curve(v_quote_sol: float, v_tokens: int = 1_073_000_000_000_000) -> CurveState:
+def _fee_context():
+    global_raw, fee_raw = _fee_raw()
+    return make_fee_context(global_raw, fee_raw, context_slot=12)
+
+
+def _curve_raw(v_quote_sol: float, v_tokens: int = 1_073_000_000_000_000) -> bytes:
+    """The curve account bytes, straight from the wire."""
     raw = bytearray(166)
     raw[:8] = BONDING_CURVE_DISCRIMINATOR
     struct.pack_into('<QQQQQ', raw, 8, v_tokens, int(v_quote_sol * LAMPORTS),
@@ -88,7 +108,95 @@ def _curve(v_quote_sol: float, v_tokens: int = 1_073_000_000_000_000) -> CurveSt
     raw[48] = 0
     raw[49:81] = bytes([7]) * 32
     raw[83:115] = bytes(32)
-    return CurveState.decode(bytes(raw))
+    return bytes(raw)
+
+
+def _entry_curve_raw(v_quote_sol: float) -> bytes:
+    """A curve whose reserves sit on the real CPMM invariant, for the batch.
+
+    The synthetic price paths move v_sol with v_tokens held constant, which no
+    real curve does — `pump_curve_price_from_raw` correctly refuses such bytes
+    (|k - k0| > 1 %). The entry batch therefore carries the consistent reserves
+    for the same v_sol, so the smoke exercises the real t0 pricing too.
+    """
+    k0 = int(1_073_000_191_279_242 * 30 * LAMPORTS)
+    v_lamports = max(1, int(v_quote_sol * LAMPORTS))
+    return _curve_raw(v_quote_sol, max(1, k0 // v_lamports))
+
+
+def _mint_raw(supply_raw: int = 1_000_000_000_000_000, decimals: int = 6) -> bytes:
+    raw = bytearray(82)
+    struct.pack_into('<Q', raw, 36, supply_raw)
+    raw[44] = decimals
+    raw[45] = 1
+    return bytes(raw)
+
+
+class _FakeEntrySession:
+    """Answers one getMultipleAccounts batch with the four entry accounts.
+
+    Run #10b §1: the smoke drives the REAL entry read (`filters.fetch_pump_mint_
+    curve_accounts` → `entry_reads` cache) instead of fabricating a snapshot, so
+    `entry_reads_per_candidate` is measured here too and a broken batch shape
+    cannot ship.
+    """
+
+    def __init__(self, mint: str, curve: str, curve_raw: bytes) -> None:
+        global_raw, fee_raw = _fee_raw()
+        self.mint = mint
+        self.curve = curve
+        self.accounts = {
+            'mint': _mint_raw(),
+            'curve': curve_raw,
+            'global': global_raw,
+            'fee': fee_raw,
+        }
+        self.batches = 0
+
+    def post(self, url: str, **kwargs):  # noqa: ANN003 - aiohttp-shaped stub
+        payload = kwargs.get('json') or {}
+        addresses = (payload.get('params') or [[]])[0]
+        values = []
+        for address in addresses:
+            if address == PUMP_GLOBAL_PDA:
+                values.append({'owner': PUMP_PROGRAM_ID,
+                               'data': [base64_b64(self.accounts['global']), 'base64']})
+            elif address == PUMP_FEE_CONFIG_PDA:
+                values.append({'owner': PUMP_FEE_PROGRAM_ID,
+                               'data': [base64_b64(self.accounts['fee']), 'base64']})
+            elif address == self.mint:
+                values.append({'owner': TOKEN_PROGRAM_ID,
+                               'data': [base64_b64(self.accounts['mint']), 'base64']})
+            elif address == self.curve:
+                values.append({'owner': PUMP_PROGRAM_ID,
+                               'data': [base64_b64(self.accounts['curve']), 'base64']})
+            else:
+                values.append(None)
+        self.batches += 1
+        return _FakeResponse({'result': {'context': {'slot': 12}, 'value': values}})
+
+
+class _FakeResponse:
+    def __init__(self, data: dict) -> None:
+        self.data = data
+        self.status = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+    async def json(self):
+        return self.data
+
+
+def base64_b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode('ascii')
+
+
+def _curve(v_quote_sol: float, v_tokens: int = 1_073_000_000_000_000) -> CurveState:
+    return CurveState.decode(_curve_raw(v_quote_sol, v_tokens))
 
 
 # ------------------------------------------------------------------ scenarios
@@ -179,10 +287,13 @@ def _probe_for(kind: str) -> dict[str, Any]:
     }
 
 
-def _coin(mint: str, scenario: Scenario, fees, symbol: str | None = None) -> NewCoin:
+def _coin(
+    mint: str, scenario: Scenario, fees, symbol: str | None = None,
+    curve: str | None = None,
+) -> NewCoin:
     coin = NewCoin(
         mint=mint, source='Pump.fun', signature=f'smoke-sig-{mint[-6:]}',
-        curve=f'curve-{mint[-6:]}',
+        curve=curve or f'curve-{mint[-6:]}',
         packet={'v_sol': scenario.birth, 'symbol': symbol or scenario.symbol},
     )
     coin.decimals = 6
@@ -226,6 +337,8 @@ async def run(seconds: float) -> int:
     )
     await collector.start()
     set_collector(collector)
+    # Run #10b §1: a fresh entry cache, then one batch per candidate per cycle.
+    reset_entry_account_cache()
 
     simulator = ABPaperSimulator(
         session=object(), settings=settings, run_id=run_id, run_dir=run_dir,
@@ -293,14 +406,36 @@ async def run(seconds: float) -> int:
                 probe_kind = 'thin'
             scenario.probe = probe_kind
             counters['candidates'] += 1
-            mint = f'SMOKE{counters["candidates"]:04d}mint'.ljust(32, 'x')
+            # Run #10b §1: a real base58 mint, so the four-account entry batch
+            # (mint + derived curve + Global + FeeConfig) is exercised end to
+            # end instead of being faked. The mint pays one read; the "+0 s"
+            # observation prices the same snapshot and pays none.
+            mint = b58encode(bytes(
+                random.getrandbits(8) for _ in range(32)
+            ))
+            curve = derive_pump_bonding_curve(mint)
+            if not curve:
+                raise RuntimeError('smoke: cannot derive the Pump.fun curve PDA')
             symbol = (
                 scenario.symbol if scenario.symbol_explicit
                 else f'{scenario.symbol}{counters["candidates"]}'
             )
-            coin = _coin(mint, scenario, fees, symbol)
+            coin = _coin(mint, scenario, fees, symbol, curve=curve)
             v_now = scenario.birth + scenario.delta
-            snapshot = EntrySnapshot(_curve(v_now), fees, 12, time.time())
+            entry_session = _FakeEntrySession(mint, curve, _entry_curve_raw(v_now))
+            entry_read = await fetch_pump_mint_curve_accounts(
+                entry_session, 'https://rpc.smoke.invalid', mint, curve, retries=0,
+            )
+            if entry_read is None:
+                raise RuntimeError('smoke: the four-account entry batch failed')
+            coin.entry_snapshot = entry_read[2]
+            snapshot = simulator._entry_snapshot_from_coin(coin)
+            if snapshot is None:
+                raise RuntimeError('smoke: the entry snapshot did not decode')
+            # The t0 sample of the collector is this same read, priced without
+            # a second request — the run #10b §1 rule the report measures.
+            if not pump_curve_price_from_raw(coin.entry_snapshot['curve_raw'], SOL_USD):
+                raise RuntimeError('smoke: the t0 sample did not price')
             simulator.record_entry_state(
                 coin, snapshot, scenario.birth, v_now, time.time(),
             )
