@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
-from console import log
+from console import Color, log
 from models import SwapQuote
 
 DEXSCREENER_URL = 'https://api.dexscreener.com/latest/dex/tokens/{mint}'
@@ -103,6 +103,15 @@ async def get_sol_usd(session: aiohttp.ClientSession) -> Optional[float]:
     return price
 
 
+# Run #10b §2: run #10a throttled 62 times and the console showed none of it —
+# `grep 429 run.log` matched only three token totals. A burst is logged at most
+# once per interval (with the running count) and the pace is summarised once a
+# period, so an operator watching the console can never read "429 not growing"
+# out of a log that simply never wrote it.
+THROTTLE_LOG_INTERVAL_SEC = 10.0
+PACE_LOG_INTERVAL_SEC = 600.0
+
+
 class ReadOnlyRpcMetrics:
     """Small in-memory measurements for read-only JSON-RPC batch calls."""
 
@@ -134,13 +143,51 @@ class ReadOnlyRpcMetrics:
         # merge two paths, so the split is kept on LOGICAL reads — the number
         # that actually drives decisions and the one an RPS budget is made of.
         self.logical_by_source: Counter[str] = Counter()
+        # Run #10b §2: throttling and pace go to the log, not only to the file.
+        self.last_retry_after_sec: Optional[float] = None
+        self._last_throttle_log_epoch = 0.0
+        self._last_pace_log_epoch = time.time()
+
+    def _log_throttle(self, now: float, retry_after: Optional[float]) -> None:
+        if retry_after is not None:
+            self.last_retry_after_sec = float(retry_after)
+        if now - self._last_throttle_log_epoch < THROTTLE_LOG_INTERVAL_SEC:
+            return
+        self._last_throttle_log_epoch = now
+        wait = (
+            f'{self.last_retry_after_sec:.1f} c'
+            if self.last_retry_after_sec is not None else 'без Retry-After'
+        )
+        log(
+            f'🚦 429 (провайдер тормозит): {self.http_429_count} за прогон, '
+            f'повторов {self.retry_count}, пауза {wait}; запрос повторяется',
+            Color.YELLOW,
+        )
+
+    def _log_pace(self, now: float) -> None:
+        """One line every PACE_LOG_INTERVAL_SEC: rps, worst window, 429, retry."""
+        if now - self._last_pace_log_epoch < PACE_LOG_INTERVAL_SEC:
+            return
+        self._last_pace_log_epoch = now
+        mean_rps = self.requests / max(1e-9, now - self.started_wall)
+        peak = self._max_rate_in_window(600.0, now=now)
+        log(
+            f'📊 Темп RPC: {mean_rps:.2f} rps средний, '
+            f'{peak if peak is not None else 0.0:.2f} rps худшее 10-мин окно, '
+            f'429 {self.http_429_count}, повторов {self.retry_count}; '
+            f'логических чтений {self.logical_requests}, '
+            f'не восстановлено {self.unrecovered_failures}',
+            Color.CYAN,
+        )
 
     def record(
         self, latency_ms: float, account_count: int, null_count: int = 0,
-        error_type: Optional[str] = None,
+        error_type: Optional[str] = None, retry_after: Optional[float] = None,
     ) -> None:
         self.requests += 1
-        self.request_times.append(time.time())
+        now = time.time()
+        self._log_pace(now)
+        self.request_times.append(now)
         self.accounts_requested += max(0, int(account_count))
         self.null_accounts += max(0, int(null_count))
         self.latencies_ms.append(max(0.0, float(latency_ms)))
@@ -153,15 +200,18 @@ class ReadOnlyRpcMetrics:
             self.errors[str(error_type)] += 1
             if str(error_type) == 'http_429':
                 self.http_429_count += 1
+                self._log_throttle(now, retry_after)
 
-    def _max_rate_in_window(self, window_sec: float) -> Optional[float]:
+    def _max_rate_in_window(
+        self, window_sec: float, now: Optional[float] = None,
+    ) -> Optional[float]:
         """Highest requests/second over any window_sec sliding window."""
         times = list(self.request_times)
         if not times:
             return 0.0
         # A window shorter than its own length cannot be measured: dividing a
         # handful of early requests by a fraction of a second invents bursts.
-        if time.time() - self.started_wall < window_sec:
+        if (time.time() if now is None else now) - self.started_wall < window_sec:
             return None
         best = 0.0
         left = 0
@@ -249,7 +299,10 @@ async def _rpc_multiple_accounts_once(
                 if status != 200:
                     error_type = f'http_{status}'
                     retry_after = _retry_after_sec(resp)
-                    _rpc_metrics.record((time.monotonic() - started) * 1000, len(addresses), error_type=error_type)
+                    _rpc_metrics.record(
+                        (time.monotonic() - started) * 1000, len(addresses),
+                        error_type=error_type, retry_after=retry_after,
+                    )
                     return [None] * len(addresses), None, error_type, retry_after
                 data = await resp.json()
         if not isinstance(data, dict) or data.get('error'):
