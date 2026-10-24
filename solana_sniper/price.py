@@ -783,9 +783,26 @@ async def pump_curve_price_usd(
         session, http_rpc_url, str(mint or curve), mint, curve, source=source,
     )
     raw = _account_raw(accounts.get(curve))
-    if not raw or len(raw) < 48:
+    if not raw:
         return None
+    sol_usd = await get_sol_usd(session)
+    if not sol_usd:
+        return None
+    return pump_curve_price_from_raw(raw, sol_usd)
 
+
+def pump_curve_price_from_raw(raw: Optional[bytes], sol_usd: Optional[float]) -> Optional[float]:
+    """The same price, computed from curve bytes already in hand.
+
+    Run #10b §1: the "+0 s" observation of a coin is the read the security
+    filter already made — same accounts, same slot, taken moments earlier. It
+    used to be a second identical RPC batch (1 547 of 10a's 6 565 requests), so
+    the observation now prices the snapshot instead of re-reading it. The
+    function is the same arithmetic as `pump_curve_price_usd`: no
+    interpolation, no indexer fallback.
+    """
+    if not raw or len(raw) < 48 or not sol_usd:
+        return None
     vtok, vsol = struct.unpack_from('<QQ', raw, 8)
     complete = bool(raw[48]) if len(raw) > 48 else False
     if complete or vtok == 0:
@@ -802,9 +819,6 @@ async def pump_curve_price_usd(
         return None
 
     price_sol = (vsol / 1e9) / (vtok / 1e6)
-    sol_usd = await get_sol_usd(session)
-    if not sol_usd:
-        return None
     return price_sol * sol_usd
 
 

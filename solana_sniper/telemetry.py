@@ -19,7 +19,14 @@ import aiosqlite
 
 from console import Color, log
 from models import NewCoin, SwapQuote
-from price import WSOL, get_jupiter_quote, get_sol_usd, pump_curve_price_usd, resolve_real_price
+from price import (
+    WSOL,
+    get_jupiter_quote,
+    get_sol_usd,
+    pump_curve_price_from_raw,
+    pump_curve_price_usd,
+    resolve_real_price,
+)
 
 
 _SCHEMA = (
@@ -835,6 +842,34 @@ class CandidateCollector:
                 target_utc = _utc_from_epoch(target_epoch + offset)
                 observed_utc = _utc_from_epoch(time.time())
                 started = time.monotonic()
+                # Run #10b §1: the "+0 s" sample is the read the security filter
+                # already made — the same four accounts in the same slot,
+                # moments earlier. Re-reading them was one of the two duplicate
+                # batches per candidate (1 547 of 6 565 requests in 10a), so the
+                # snapshot is priced directly. It is still a curve RPC read, not
+                # an indexer or an interpolation; a coin without a snapshot (the
+                # filter read failed) takes the ordinary read below.
+                snapshot_raw = (
+                    (coin.entry_snapshot or {}).get('curve_raw')
+                    if offset == 0 and coin.source == 'Pump.fun' else None
+                )
+                if snapshot_raw:
+                    sol_usd = await get_sol_usd(session)
+                    price = pump_curve_price_from_raw(snapshot_raw, sol_usd)
+                    origin = 'on_chain_pump_curve' if price and price > 0 else ''
+                    snapshot_at = float(
+                        (coin.entry_snapshot or {}).get('observed_at_epoch')
+                        or time.time()
+                    )
+                    self.record_observation(
+                        coin.mint, coin.source, offset, target_utc,
+                        'ok' if price and price > 0 else 'no_price', price,
+                        origin or None, 0.0,
+                        None if price and price > 0 else 'price_unavailable',
+                        observed_at_utc=_utc_from_epoch(snapshot_at),
+                    )
+                    completed.add(offset)
+                    continue
                 try:
                     async with self._observation_sem:
                         async with asyncio.timeout(10.0):

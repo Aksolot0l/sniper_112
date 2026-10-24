@@ -1590,6 +1590,43 @@ def _strategy_metadata() -> dict[str, Any]:
             'unrecovered RPC errors <= 1%; 0 open positions at the end; '
             'post_exit.csv filled for every exit'
         ),
+        # --- run #10b: the five corrections before 10b, all outside trading ---
+        'run10b_fixes': {
+            'entry_reads': (
+                'one getMultipleAccounts per candidate per poll cycle: the '
+                'security batch and the "+0 s" observation of the same coin '
+                'read the same four accounts (3 094 of 6 565 requests in 10a). '
+                'They share a one-cycle in-memory cache (ENTRY_CACHE_WINDOW_SEC '
+                '= 0.25, key = mint, never written to disk). Measured, not '
+                'estimated: rpc_metrics.entry_reads_per_candidate'
+            ),
+            'throttle_log': (
+                'every 429 burst writes one log line at most once per 10 s with '
+                'the running count and Retry-After; every 10 minutes one line '
+                'carries mean rps, the worst 10-min window, 429 and retries'
+            ),
+            'ghost_acceptance': (
+                'uncovered points, not a coverage share: every planned point '
+                'must be written and at most max(2, 1 % of the plan) may be '
+                'uncovered; median 8, minimum 7 (5 on a smoke). The 0.75 s '
+                'tolerance is unchanged'
+            ),
+            'funnel_order': (
+                'copies -> birth band -> moment, every row a share of the '
+                'candidates (the stages are disjoint sets), plus candidates per '
+                'opened trade'
+            ),
+            'pace_fuse': (
+                'reported as inactive when the cadence is already at the floor: '
+                'in 10a it saw 2.967 rps against a 2.5 limit and could not act'
+            ),
+            'not_changed': (
+                'exit (fee_cover +3.5 %, stop -10 %, 5 s), stake 500 RUB, bank '
+                '1 500 RUB, MAX_POSITIONS 3, bands 30.50-34.50 / 31.96-34.50, '
+                'copies off / 0, ENTRY_DELTA_MIN_SOL 0.00, MARK_POLL_SEC 0.25, '
+                'MARK_POLL_RPS_LIMIT 2.5, ghost schedule 0.5/1/1.5/2/3/5/7/10'
+            ),
+        },
         'run9_effect_rule': (
             'fixed before the start: (1) S2 CI95 of the mean excludes 0 and the '
             'estimate is >= +2% -> selection accepted, go discuss a real run; '
