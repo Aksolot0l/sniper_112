@@ -130,6 +130,10 @@ class ReadOnlyRpcMetrics:
         # timestamps are kept (an 8 h run is ~47 k floats) and the rolling
         # maximum is computed at snapshot time.
         self.request_times: deque[float] = deque(maxlen=200_000)
+        # Run #10b §1: which code path asked for the read. HTTP batches can
+        # merge two paths, so the split is kept on LOGICAL reads — the number
+        # that actually drives decisions and the one an RPS budget is made of.
+        self.logical_by_source: Counter[str] = Counter()
 
     def record(
         self, latency_ms: float, account_count: int, null_count: int = 0,
@@ -206,6 +210,7 @@ class ReadOnlyRpcMetrics:
             'latency_ms_p95': percentile(0.95),
             'latency_samples': len(values),
             'error_types': dict(self.errors),
+            'logical_requests_by_source': dict(sorted(self.logical_by_source.items())),
         }
 
 
@@ -417,12 +422,13 @@ class ReadOnlyRpcBatcher:
     async def get_multiple_accounts(
         self, addresses: list[str] | tuple[str, ...], *,
         encoding: str = 'base64', commitment: str = 'processed',
-        retry_null: bool = True,
+        retry_null: bool = True, source: str = 'other',
     ) -> tuple[dict[str, Optional[dict[str, Any]]], Optional[int]]:
         unique = list(dict.fromkeys(str(address) for address in addresses if address))
         if not unique:
             return {}, None
         _rpc_metrics.logical_requests += 1
+        _rpc_metrics.logical_by_source[source] += 1
         if self.closed or self.worker is None:
             _rpc_metrics.batch_groups += 1
             return await _rpc_get_multiple_accounts_direct(
@@ -520,13 +526,15 @@ async def rpc_get_multiple_accounts(
     encoding: str = 'base64',
     commitment: str = 'processed',
     retry_null: bool = True,
+    source: str = 'other',
 ) -> tuple[dict[str, Optional[dict[str, Any]]], Optional[int]]:
     if _rpc_batcher is not None and _rpc_batcher.session is session:
         return await _rpc_batcher.get_multiple_accounts(
             addresses, encoding=encoding, commitment=commitment,
-            retry_null=retry_null,
+            retry_null=retry_null, source=source,
         )
     _rpc_metrics.logical_requests += 1
+    _rpc_metrics.logical_by_source[source] += 1
     _rpc_metrics.batch_groups += 1
     return await _rpc_get_multiple_accounts_direct(
         session, http_rpc_url, addresses, encoding=encoding,
@@ -677,11 +685,26 @@ async def find_curve_owner(
         return None
 
 
+def _account_raw(account: Optional[Dict[str, Any]]) -> Optional[bytes]:
+    """Account bytes from a base64 getMultipleAccounts value."""
+    if not isinstance(account, dict):
+        return None
+    encoded = account.get('data')
+    if isinstance(encoded, list) and encoded and isinstance(encoded[0], str):
+        try:
+            return base64.b64decode(encoded[0], validate=True)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 async def pump_curve_price_usd(
     session: aiohttp.ClientSession,
     http_rpc_url: str,
     mint: str,
     curve: Optional[str],
+    *,
+    source: str = 'observation',
 ) -> Optional[float]:
     # ПЛАН:
     # 1. Если адрес кривой неизвестен — найти его
@@ -696,7 +719,17 @@ async def pump_curve_price_usd(
     if not curve:
         return None
 
-    raw = await rpc_get_account_raw(session, http_rpc_url, curve)
+    # Run #10b §1: the scheduled observation of a coin at "+0 s" happens in the
+    # same poll cycle as the security read that already fetched these four
+    # accounts. Going through the one-cycle cache makes the second read free
+    # instead of paying for the identical batch twice. The import is local on
+    # purpose: entry_reads imports this module, and the cache is only needed
+    # here at call time.
+    from entry_reads import entry_account_cache
+    accounts, _slot = await entry_account_cache().accounts(
+        session, http_rpc_url, str(mint or curve), mint, curve, source=source,
+    )
+    raw = _account_raw(accounts.get(curve))
     if not raw or len(raw) < 48:
         return None
 

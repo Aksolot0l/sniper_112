@@ -31,6 +31,10 @@ from portfolio_ab import (
     ARM_IDS, ARM_REFERENCE, ABPaperSimulator, entry_band_label,
     exit_mode_from_env, profiles_from_settings,
 )
+from entry_reads import (
+    log_entry_reads,
+    reset_entry_account_cache,
+)
 from price import (
     ReadOnlyRpcBatcher,
     get_sol_usd,
@@ -1881,6 +1885,9 @@ async def main() -> None:
     manifest = _safe_manifest(settings, run_id, run_dir)
     _write_json(run_dir / 'manifest.json', manifest)
     reset_rpc_metrics()
+    # Run #10b §1: a run starts with an empty entry cache. Nothing is persisted,
+    # so a restart cannot inherit a snapshot from another process.
+    reset_entry_account_cache()
 
     creator_history_raw = os.getenv('CREATOR_HISTORY_DIR', str(project_root / 'runs'))
     creator_history_dir = Path(creator_history_raw)
@@ -2162,6 +2169,9 @@ async def main() -> None:
             except Exception as exc:
                 funnel = {'available': False, 'reason': type(exc).__name__}
             manifest['funnel'] = funnel
+            # Run #10b §1: the entry read budget is a measurement, not an
+            # estimate — it is written from the cache's own counters.
+            log_entry_reads()
             manifest['stop_policy'] = summary.get('stop_policy', {})
             _write_json(run_dir / 'manifest.json', manifest)
             try:

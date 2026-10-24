@@ -17,7 +17,8 @@ DIST = PROJECT.parent / 'dist'
 
 INCLUDE_FILES = [
     'config.py', 'console.py', 'creator_probe.py', 'creator_watch.py', 'detector.py',
-    'enrich.py', 'filters.py', 'live_ab_dashboard.py', 'main_ab.py', 'make_ab_checkpoint.py',
+    'enrich.py', 'entry_reads.py', 'filters.py', 'live_ab_dashboard.py', 'main_ab.py',
+    'make_ab_checkpoint.py',
     'models.py', 'portfolio_ab.py', 'price.py', 'pump_curve_quote.py',
     'pumpportal_validation.py', 'run_local_session.py', 'run_overnight_ab_paper.py',
     'smoke_test.py', 'sqlite_snapshots.py', 'storage.py', 'telemetry.py',

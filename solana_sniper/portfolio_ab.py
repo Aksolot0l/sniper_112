@@ -44,6 +44,11 @@ from pump_curve_quote import (
     quote_sell_exact_tokens,
 )
 from pumpportal_validation import PUMP_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT, b58decode
+from entry_reads import (
+    begin_entry_cycle,
+    entry_account_cache,
+    merge_entry_stats,
+)
 from price import (
     WSOL,
     get_jupiter_quote,
@@ -1456,10 +1461,20 @@ class ABPaperSimulator:
             addresses.append(PUMP_FEE_CONFIG_PDA)
         if len(addresses) < 2:
             return None
-        accounts, slot = await rpc_get_multiple_accounts(
-            self.session, self.settings.http_rpc_url, addresses,
-            encoding='base64', commitment='processed', retry_null=True,
-        )
+        if curve_address:
+            # Run #10b §1: the same four-account batch the filters take, keyed
+            # by the curve because this path never sees the mint. One cycle of
+            # grace, no persistence.
+            accounts, slot = await entry_account_cache().accounts(
+                self.session, self.settings.http_rpc_url, str(curve_address),
+                None, curve_address, source='entry_snapshot',
+            )
+        else:
+            accounts, slot = await rpc_get_multiple_accounts(
+                self.session, self.settings.http_rpc_url, addresses,
+                encoding='base64', commitment='processed', retry_null=True,
+                source='preflight',
+            )
         fee_context = self._make_fee_context_from_accounts(accounts, slot)
         if fee_context is None:
             return None
@@ -2506,6 +2521,9 @@ class ABPaperSimulator:
             # less often would be measured on a different price stream, which
             # is exactly what invalidated the run #6 shadows.
             self._poll_cycle += 1
+            # Run #10b §1: a new cycle starts with an empty entry cache, so no
+            # candidate can be served a snapshot older than one poll cycle.
+            begin_entry_cycle()
             all_positions = [
                 (book, pos)
                 for book in self.books.values()
@@ -2544,6 +2562,9 @@ class ABPaperSimulator:
                 accounts, context_slot = await rpc_get_multiple_accounts(
                     self.session, self.settings.http_rpc_url, addresses,
                     encoding='base64', commitment='processed', retry_null=True,
+                    # Run #10b §1: the position/ghost stream is never served
+                    # from the entry cache — an exit must see this cycle's read.
+                    source='positions' if all_positions else 'ghost',
                 )
                 current_fee_context = self._make_fee_context_from_accounts(accounts, context_slot)
                 if current_fee_context is not None:
@@ -3670,9 +3691,10 @@ class ABPaperSimulator:
             addresses.append(PUMP_GLOBAL_PDA)
         if PUMP_FEE_CONFIG_PDA:
             addresses.append(PUMP_FEE_CONFIG_PDA)
-        accounts, slot = await rpc_get_multiple_accounts(
-            self.session, self.settings.http_rpc_url, addresses,
-            encoding='base64', commitment='processed', retry_null=True,
+        # Run #10b §1: curve-keyed entry of the one-cycle cache.
+        accounts, slot = await entry_account_cache().accounts(
+            self.session, self.settings.http_rpc_url, str(curve_address),
+            None, curve_address, source='curve_state',
         )
         account = accounts.get(curve_address)
         if not isinstance(account, dict) or account.get('owner') != PUMP_PROGRAM_ID:
@@ -4694,7 +4716,7 @@ class ABPaperSimulator:
             },
             'enrich': self.enrich.stats(),
             'rpc_metrics': {
-                **rpc_metrics_snapshot(),
+                **merge_entry_stats(rpc_metrics_snapshot()),
                 'requests_per_profile': dict(sorted(self.rpc_reads_by_profile.items())),
             },
             # --- run #8 §3(7): the one line a reviewer reads first ---

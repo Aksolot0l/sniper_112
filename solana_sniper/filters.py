@@ -38,6 +38,7 @@ from pump_curve_quote import (
     PUMP_GLOBAL_PDA,
     decode_account_data,
 )
+from entry_reads import entry_account_cache, mint_account_info
 from price import (
     WSOL,
     fetch_dexscreener_pairs,
@@ -378,7 +379,19 @@ async def fetch_pump_mint_curve_accounts(
     retries: int = 1,
     retry_delay_sec: float = 0.1,
 ) -> Optional[tuple[Dict[str, Any], bytes, dict[str, Any]]]:
-    """Read mint, curve, Global, and FeeConfig in one consistent RPC batch."""
+    """Read mint, curve, Global, and FeeConfig in one consistent RPC batch.
+
+    Run #10b §1: the batch is base64 and goes through the one-cycle entry
+    cache. The mint is decoded from the same answer (SPL Mint layout) instead of
+    asking the provider to parse it, because a batch has one encoding and the
+    curve side has always been base64. Nothing else changes: same four
+    addresses, same owner checks, same snapshot keys.
+
+    `retries`/`retry_delay_sec` are kept for call compatibility; null values are
+    retried once inside `price._rpc_get_multiple_accounts_direct`, and a 429 is
+    retried by the back-pressure loop, so a second loop here would only add
+    requests.
+    """
     expected_curve = derive_pump_bonding_curve(mint)
     if (
         not curve or expected_curve is None or curve != expected_curve
@@ -386,9 +399,8 @@ async def fetch_pump_mint_curve_accounts(
     ):
         return None
     addresses = [mint, curve, PUMP_GLOBAL_PDA, PUMP_FEE_CONFIG_PDA]
-    accounts, context_slot = await rpc_get_multiple_accounts(
-        session, http_rpc_url, addresses, encoding='jsonParsed',
-        commitment='processed', retry_null=True,
+    accounts, context_slot = await entry_account_cache().accounts(
+        session, http_rpc_url, str(mint), mint, curve, source='filters',
     )
     if context_slot is None:
         return None
@@ -406,9 +418,7 @@ async def fetch_pump_mint_curve_accounts(
         return None
     if fee_account.get('owner') != PUMP_FEE_PROGRAM_ID:
         return None
-    mint_data = mint_account.get('data') or {}
-    parsed = mint_data.get('parsed') if isinstance(mint_data, dict) else None
-    info = parsed.get('info') if isinstance(parsed, dict) else None
+    info = mint_account_info(mint_account)
     curve_raw = decode_account_data(curve_account)
     global_raw = decode_account_data(global_account)
     fee_config_raw = decode_account_data(fee_account)

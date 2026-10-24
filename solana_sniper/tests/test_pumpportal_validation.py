@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from detector import on_transaction_signal
+from entry_reads import begin_entry_cycle, reset_entry_account_cache
 from filters import check_pump_curve, check_pump_supply, fetch_pump_mint_curve_accounts, run_all_checks
 from models import NewCoin
 from pumpportal_validation import (
@@ -92,6 +93,23 @@ def curve_bytes(
     return bytes(raw)
 
 
+def mint_bytes(meta: dict) -> bytes:
+    """SPL Mint layout: the run #10b §1 batch reads it as base64."""
+    raw = bytearray(82)
+    mint_authority = meta.get('mintAuthority')
+    if mint_authority:
+        struct.pack_into('<I', raw, 0, 1)
+        raw[4:36] = b58decode(mint_authority)
+    struct.pack_into('<Q', raw, 36, int(meta.get('supply') or 0))
+    raw[44] = int(meta.get('decimals') or 0)
+    raw[45] = 1
+    freeze_authority = meta.get('freezeAuthority')
+    if freeze_authority:
+        struct.pack_into('<I', raw, 46, 1)
+        raw[50:82] = b58decode(freeze_authority)
+    return bytes(raw)
+
+
 def pump_accounts_data(meta: dict, raw: bytes, slot: int = 12345) -> dict:
     global_raw = b'global-fixture-bytes'
     fee_config_raw = b'fee-config-fixture-bytes'
@@ -99,7 +117,8 @@ def pump_accounts_data(meta: dict, raw: bytes, slot: int = 12345) -> dict:
         'result': {
             'context': {'slot': slot},
             'value': [
-                {'owner': TOKEN_PROGRAM_ID, 'data': {'parsed': {'info': meta}}},
+                {'owner': TOKEN_PROGRAM_ID,
+                 'data': [base64.b64encode(mint_bytes(meta)).decode('ascii'), 'base64']},
                 {'owner': PUMP_PROGRAM_ID, 'data': [base64.b64encode(raw).decode('ascii'), 'base64']},
                 {'owner': PUMP_PROGRAM_ID, 'data': [base64.b64encode(global_raw).decode('ascii'), 'base64']},
                 {'owner': PUMP_FEE_PROGRAM_ID, 'data': [base64.b64encode(fee_config_raw).decode('ascii'), 'base64']},
@@ -109,6 +128,11 @@ def pump_accounts_data(meta: dict, raw: bytes, slot: int = 12345) -> dict:
 
 
 class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # Run #10b §1: the entry batch lives one cycle in memory. A new test is
+        # a new run, so a fixture can never be answered by another test's batch.
+        reset_entry_account_cache()
+
     def test_known_curve_pda_matches_event_mint(self) -> None:
         ok, reason, evidence = validate_pumpportal_create(VALID_CREATE)
         self.assertTrue(ok, reason)
@@ -231,7 +255,8 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
             'result': {
                 'context': {'slot': 12345},
                 'value': [
-                    {'owner': TOKEN_PROGRAM_ID, 'data': {'parsed': {'info': meta}}},
+                    {'owner': TOKEN_PROGRAM_ID,
+                     'data': [base64.b64encode(mint_bytes(meta)).decode('ascii'), 'base64']},
                     {'owner': PUMP_PROGRAM_ID, 'data': [base64.b64encode(raw).decode('ascii'), 'base64']},
                     {'owner': PUMP_PROGRAM_ID, 'data': [base64.b64encode(global_raw).decode('ascii'), 'base64']},
                     {'owner': PUMP_FEE_PROGRAM_ID, 'data': [base64.b64encode(fee_config_raw).decode('ascii'), 'base64']},
@@ -245,7 +270,12 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result[0], meta)
+        # The mint is decoded locally from the same base64 batch; the fields
+        # are the ones jsonParsed used to hand back.
+        self.assertEqual(result[0], {
+            'mintAuthority': None, 'freezeAuthority': None,
+            'decimals': 6, 'supply': '1000000000000000', 'isInitialized': True,
+        })
         self.assertEqual(result[1], raw)
         self.assertEqual(result[2]['context_slot'], 12345)
         self.assertEqual(result[2]['curve_raw'], raw)
@@ -255,6 +285,7 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.payloads[0]['method'], 'getMultipleAccounts')
         self.assertEqual(session.payloads[0]['params'][0], addresses)
         self.assertEqual(session.payloads[0]['params'][1]['commitment'], 'processed')
+        self.assertEqual(session.payloads[0]['params'][1]['encoding'], 'base64')
 
         data['result']['value'][2]['owner'] = 'wrong-owner'
         rejected = await fetch_pump_mint_curve_accounts(
@@ -311,6 +342,10 @@ class PumpPortalValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(verified.curve_observed_at, float)
         self.assertEqual(session.calls, 1)
 
+        # A second read of the same mint inside one poll cycle is served from
+        # the cache by design (run #10b §1), so a genuinely new read starts a
+        # new cycle — that is exactly what the poll loop does every 250 ms.
+        begin_entry_cycle()
         wrong_quote_session = FakePostSession(
             pump_accounts_data(meta, curve_bytes(b58encode(bytes([4]) * 32)))
         )
