@@ -17,8 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import os
+from unittest.mock import patch
+
 import price
-from main_ab import _peak_ok, _peak_window_text
+from main_ab import _peak_ok, _peak_window_text, _run9_summary_markdown, _safe_manifest
+from tests.test_run_report import _settings
+from tests.test_run9_report import RUN9_ENV
 from tools.rpc_decomposition import decompose
 
 
@@ -221,6 +226,75 @@ class DecompositionFromHistogramTests(unittest.TestCase):
             result = decompose(run_dir, 20.0, 30.0)
         self.assertEqual(result['buckets_available'], 0)
         self.assertIn('legacy run without requests_per_5sec', result['poll_note'])
+
+
+
+class HourReportTests(unittest.TestCase):
+    """The 10a' report has to show the peak, its window and its ratio."""
+
+    def _report(self, rpc: dict) -> str:
+        with patch.dict(os.environ, {**RUN9_ENV, 'RUN_DURATION_SEC': '3600'}, clear=True):
+            manifest = _safe_manifest(_settings(), 'run-10', Path('/tmp/run-10'))
+        manifest['actual_duration_sec'] = 3_600
+        manifest['telemetry'] = {'dropped_events': 0, 'write_errors': 0}
+        manifest['rpc_metrics'] = rpc
+        summary = {
+            'portfolio_s0': {'stats': {'n': 129}},
+            'portfolio_s2': {'stats': {'n': 19}},
+            'profiles': {'portfolio_s0': {'arm_id': 'S0'},
+                         'portfolio_s2': {'arm_id': 'S2'}},
+            'mark_poll': {'mark_poll_sec': 0.25, 'mark_poll_adapted': False,
+                          'rps_limit_10min': 2.5},
+            'drain': {'left_open': 0, 'waited_sec': 0.0},
+        }
+        return _run9_summary_markdown(manifest, {}, summary)
+
+    def _rpc(self, **extra) -> dict:
+        rpc = {
+            'requests': 4_956, 'requests_per_sec': 1.372,
+            'requests_per_sec_max_10min': 2.03,
+            'requests_per_sec_max_10min_count': 1_218,
+            'requests_per_sec_max_10min_window_sec': [1_650.0, 2_250.0],
+            'requests_per_sec_peak_to_mean_ratio': 1.48,
+            'http_429_count': 0, 'retry_count': 0, 'recovered_failures': 0,
+            'unrecovered_rate': 0.0, 'entry_reads_per_candidate': 1.0,
+            'entry_reads_total': 1_567, 'entry_candidates': 1_567,
+            'entry_reads_served_from_cache': 0,
+        }
+        rpc.update(extra)
+        return rpc
+
+    def test_the_bullet_carries_the_peak_the_window_and_the_ratio(self) -> None:
+        text = self._report(self._rpc())
+        self.assertIn(
+            '- пик 10-мин окна: 2.03 rps (окно 27.5–37.5 мин), '
+            'среднее 1.37, отношение 1.48',
+            text,
+        )
+
+    def test_a_peak_above_the_absolute_ceiling_passes_on_the_ratio(self) -> None:
+        text = self._report(self._rpc())
+        row = next(line for line in text.splitlines() if '1.75 × среднего' in line)
+        self.assertIn('✅', row)
+
+    def test_the_same_peak_fails_when_the_ratio_is_too_high(self) -> None:
+        text = self._report(self._rpc(
+            requests_per_sec_max_10min=2.4,
+            requests_per_sec_peak_to_mean_ratio=1.9,
+        ))
+        row = next(line for line in text.splitlines() if '1.75 × среднего' in line)
+        self.assertIn('❌', row)
+
+    def test_entry_reads_are_a_measured_acceptance_row(self) -> None:
+        text = self._report(self._rpc(entry_reads_per_candidate=1.23))
+        row = next(line for line in text.splitlines()
+                   if line.startswith('| входных чтений на кандидата'))
+        self.assertIn('1.23', row)
+        self.assertIn('❌', row)
+        green = self._report(self._rpc())
+        green_row = next(line for line in green.splitlines()
+                         if line.startswith('| входных чтений на кандидата'))
+        self.assertIn('✅', green_row)
 
 
 if __name__ == '__main__':
