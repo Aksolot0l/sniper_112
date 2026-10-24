@@ -612,6 +612,38 @@ def _is_run9(manifest: dict[str, Any]) -> bool:
     )
 
 
+def _funnel_share(value: int, total: int) -> float:
+    return (value / total) if total else 0.0
+
+
+def _funnel_counts(funnel: dict[str, Any], arm: str) -> dict[str, Any]:
+    """Run #10b §4: the S2 funnel in the order the code applies it.
+
+    The stages are disjoint sets of candidates, not shares of the decision rows:
+    a coin stopped by the copy filter never reaches the birth band, so 525 copy
+    rejects and 474 band rejects of 1 064 candidates are 49.3 % and 44.6 % — not
+    "96.5 % of 544 entry rows", which is how run #10a was read.
+    """
+    funnel = funnel or {}
+    total = int(funnel.get('security_pass') or funnel.get('entry_state') or 0)
+    copies = int(((funnel.get('entry_skips') or {}).get(arm) or {})
+                 .get('name_copies_120s') or 0)
+    signal = funnel.get(f'{arm}_signal') or {}
+    band = int(signal.get('birth_out_of_band') or 0)
+    moment = int(signal.get('momentum_too_late') or 0)
+    opened = int((funnel.get('opened') or {}).get(arm) or 0)
+    other = total - (copies + band + moment + opened)
+    return {
+        'candidates': total,
+        'copies': copies,
+        'band': band,
+        'moment': moment,
+        'other': other,
+        'opened': opened,
+        'candidates_per_trade': round(total / opened, 1) if opened else None,
+    }
+
+
 def _run9_summary_markdown(
     manifest: dict[str, Any], funnel: dict[str, Any], summary: dict[str, Any],
 ) -> str:
@@ -792,16 +824,32 @@ def _run9_summary_markdown(
         'триггера в том же снимке, а реальная продажа приходит позже.')
     add('')
 
-    add('## Воронка отказов')
+    add('## Воронка отказов: копии → полоса → момент')
     add('')
-    add('| книга | name_copies | birth_band | delta_min | delta_max | slots_full | no_price |')
-    add('|---|---:|---:|---:|---:|---:|---:|')
+    add('Порядок проверок фиксирован кодом и одинаков для всех книг: сначала копии '
+        'тикера (`name_copies_120s`), затем полоса рождения, затем момент. '
+        '**Множества не пересекаются**: монета, отсечённая по копиям, до полосы не '
+        'доходит, поэтому доли считаются от числа кандидатов, а не от числа строк '
+        'решений — в 10a 525 отказов по копиям были 49.3 % от 1 064 кандидатов, '
+        'а не 96.5 % от 544 строк `portfolio_s2_entry`.')
+    add('')
+    add('| книга | кандидатов | отсев по копиям | отсев по полосе | отсев по моменту | '
+        'прочее | открыто | кандидатов на 1 сделку |')
+    add('|---|---:|---:|---:|---:|---:|---:|---:|')
     for name in arms:
-        counts = (summary.get(name) or {}).get('reject_counts') or {}
-        add(f"| {label(name)} | "
-            + ' | '.join(str(counts.get(key, 0)) for key in
-                         ('name_copies', 'birth_band', 'delta_min', 'delta_max',
-                          'slots_full', 'no_price')) + ' |')
+        rows = _funnel_counts(funnel, name)
+        total = rows['candidates']
+        add(f"| {label(name)} | {total} | "
+            f"{rows['copies']} ({_share(_funnel_share(rows['copies'], total))}) | "
+            f"{rows['band']} ({_share(_funnel_share(rows['band'], total))}) | "
+            f"{rows['moment']} ({_share(_funnel_share(rows['moment'], total))}) | "
+            f"{rows['other']} | "
+            f"{rows['opened']} ({_share(_funnel_share(rows['opened'], total))}) | "
+            f"{m(rows['candidates_per_trade'])} |")
+    add('')
+    add('«Прочее» — отказы рантайма, у которых нет стадии в телеметрии '
+        '(нет денег на слот, нет цены, отказ книги). Сумма строки равна числу '
+        'кандидатов; если она не сходится, в воронке дыра, а не округление.')
     add('')
     add(f"Бакеты delta: {funnel.get('delta_buckets')}")
     add('')
